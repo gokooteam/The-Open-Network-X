@@ -21,6 +21,10 @@ pub enum NetworkError {
     TruncatedPacket,
     AbstractAddressMismatch,
     DecryptionFailed,
+    /// Underlying UDP socket I/O failure (carries the OS error message).
+    /// Kept distinct from [`Self::DecryptionFailed`]: conflating transport
+    /// faults with crypto faults sends debuggers down the wrong path.
+    TransportIo(String),
     InvalidSignature,
     ExpiredTimestamp,
     ZeroChannelAbuse,
@@ -43,6 +47,7 @@ impl fmt::Display for NetworkError {
                 write!(f, "Abstract address preimage SHA-256 hash mismatch")
             }
             Self::DecryptionFailed => write!(f, "Payload decryption or integrity check failed"),
+            Self::TransportIo(e) => write!(f, "UDP transport I/O error: {e}"),
             Self::InvalidSignature => write!(f, "Invalid packet digital signature"),
             Self::ExpiredTimestamp => write!(f, "Packet timestamp is outside valid window"),
             Self::ZeroChannelAbuse => {
