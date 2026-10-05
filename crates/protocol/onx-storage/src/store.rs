@@ -39,7 +39,7 @@ use onx_state_model::{AccountState, GenesisDocument, ShardStateTree};
 use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump when the table layout changes; `open`
 /// refuses databases written by a different version (fail-closed).
@@ -65,9 +65,50 @@ pub struct ChainStore {
     db: Database,
 }
 
+/// Sibling temp path used for crash-atomic first-time initialization.
+/// `<db>.init-tmp` is created and then atomically renamed to `<db>`.
+fn init_tmp_path(path: &Path) -> PathBuf {
+    let mut s = path.as_os_str().to_owned();
+    s.push(".init-tmp");
+    PathBuf::from(s)
+}
+
+/// Map a `Database::create` failure on open. redb surfaces a torn or
+/// foreign header as an `InvalidData` I/O error; the init-temp file was
+/// already cleaned by the caller, so a bad magic on an existing,
+/// non-empty database means real damage or foreign data: fail closed as
+/// [`StorageError::Corrupt`] instead of leaking redb's raw error, and
+/// never silently reinitialize over it.
+fn map_open_error(e: redb::DatabaseError, path: &Path) -> StorageError {
+    let bad_magic = matches!(
+        &e,
+        redb::DatabaseError::Storage(redb::StorageError::Io(io_e))
+            if io_e.kind() == std::io::ErrorKind::InvalidData
+    );
+    let nonempty = path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    if bad_magic && nonempty {
+        StorageError::Corrupt(format!(
+            "database file '{}' has an invalid header (torn write or foreign data); refusing to open rather than reinitializing",
+            path.display()
+        ))
+    } else {
+        StorageError::from(e)
+    }
+}
+
 impl ChainStore {
     /// Open (or create) the database file at `path`. Parent directories
     /// are created. Refuses databases with a newer schema version.
+    ///
+    /// First-time initialization is crash-atomic: the database is
+    /// created at `<path>.init-tmp` and atomically renamed into place,
+    /// so a SIGKILL landing inside redb's initial `Database::create`
+    /// (before the magic number is written) can only tear the temp file,
+    /// which is deleted on the next open. `path` either doesn't exist or
+    /// is a fully initialized database. A bad magic number on an
+    /// existing, non-empty database is [`StorageError::Corrupt`]
+    /// (fail-closed): it implies a torn header or foreign data, and
+    /// silently reinitializing could destroy committed state.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -75,7 +116,17 @@ impl ChainStore {
                 std::fs::create_dir_all(parent)?;
             }
         }
-        let db = Database::create(path)?;
+        let tmp = init_tmp_path(path);
+        if tmp.exists() {
+            // Leftover from a crashed init: it can never contain committed
+            // data (init never completed), so removal is safe.
+            std::fs::remove_file(&tmp)?;
+        }
+        if !path.exists() {
+            Database::create(&tmp)?;
+            std::fs::rename(&tmp, path)?;
+        }
+        let db = Database::create(path).map_err(|e| map_open_error(e, path))?;
         let store = Self { db };
         store.create_tables()?;
         store.ensure_schema_version()?;
