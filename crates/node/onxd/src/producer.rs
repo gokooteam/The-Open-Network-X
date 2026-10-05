@@ -21,7 +21,7 @@
 //! candidates come from `Mempool::select_candidates` (deterministic
 //! `(sender, nonce)` order), `lt` is `head.last_lt + 1` (logical, never
 //! wall-clock), and the fee collector is fixed config. Timing affects
-//! *which* transactions made it into the mempool before a tick, never the
+//! *which* messages made it into the mempool before a tick, never the
 //! block built from a given mempool state.
 //!
 //! ## Identities
@@ -82,7 +82,7 @@ pub struct ProducerConfig {
 #[derive(Debug, Default)]
 pub struct ProducerStats {
     pub blocks_produced: u64,
-    pub txs_committed: u64,
+    pub msgs_committed: u64,
     pub txs_rejected: u64,
     pub ticks_idle: u64,
 }
@@ -163,7 +163,9 @@ fn run_tick(
     let state: State = store
         .load_state()
         .map_err(|e| TickError::Fatal(format!("producer: load_state failed: {e}")))?
-        .ok_or_else(|| TickError::Fatal("producer: no state (genesis not initialized)".to_string()))?;
+        .ok_or_else(|| {
+            TickError::Fatal("producer: no state (genesis not initialized)".to_string())
+        })?;
 
     // 3. Deterministic candidate selection against this exact state.
     let candidates = mempool
@@ -194,17 +196,17 @@ fn run_tick(
         .map_err(|e| TickError::Fatal(format!("producer: cannot write block file: {e}")))?;
 
     // 8. Remove committed transactions from the mempool.
-    mempool.remove_committed(&block.body.transactions);
+    mempool.remove_committed(&block.body.messages);
 
     stats.blocks_produced += 1;
-    stats.txs_committed += block.body.transactions.len() as u64;
+    stats.msgs_committed += block.body.messages.len() as u64;
     if let Some(t) = &cfg.telemetry {
         t.set_block_height(block.header.seqno as i64);
     }
     eprintln!(
-        "producer: committed block seqno={} txs={} root={}",
+        "producer: committed block seqno={} msgs={} root={}",
         block.header.seqno,
-        block.body.transactions.len(),
+        block.body.messages.len(),
         hex::encode(block.header.state_root)
     );
     Ok(true)

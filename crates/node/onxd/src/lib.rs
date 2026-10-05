@@ -284,9 +284,8 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
          receiving the validator half of fees"
             .to_string()
     })?;
-    let fee_collector_bytes = hex::decode(fee_collector_hex).map_err(|_| {
-        format!("fee_collector is not valid hex: {fee_collector_hex}")
-    })?;
+    let fee_collector_bytes = hex::decode(fee_collector_hex)
+        .map_err(|_| format!("fee_collector is not valid hex: {fee_collector_hex}"))?;
     if fee_collector_bytes.len() != 32 {
         return Err(format!(
             "fee_collector must be 32 bytes hex, got {} bytes",
@@ -325,7 +324,15 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     // Role note: the loop runs for every role in this milestone. There is
     // one honest producer and no validator set yet; role-differentiated
     // block production is consensus-phase work.
-    let mempool = Mempool::new(Path::new(&config.tx_pool_dir), config.mempool_max_txs)?;
+    let mempool_chain_id = store
+        .chain_id()
+        .map_err(|err| format!("failed to read chain id: {err}"))?
+        .ok_or_else(|| "no genesis: chain id unavailable (genesis not initialized)".to_string())?;
+    let mempool = Mempool::new(
+        Path::new(&config.tx_pool_dir),
+        config.mempool_max_txs,
+        mempool_chain_id,
+    )?;
     fs::create_dir_all(&config.tx_pool_dir).map_err(|err| {
         format!(
             "failed to initialize tx pool dir {}: {err}",
@@ -342,8 +349,9 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     };
     let shutdown = Arc::new(AtomicBool::new(false));
     let producer_shutdown = shutdown.clone();
-    let producer_task =
-        tokio::task::spawn_blocking(move || run_producer_loop(store, mempool, producer_cfg, producer_shutdown));
+    let producer_task = tokio::task::spawn_blocking(move || {
+        run_producer_loop(store, mempool, producer_cfg, producer_shutdown)
+    });
 
     let runtime_shutdown = config
         .shutdown_after_ms
@@ -367,13 +375,13 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
 
     // Graceful shutdown: the flag stops the producer after its current tick
     // — an in-flight commit_block is atomic, so the store is always left in
-    // a fully-committed state. Uncommitted mempool transactions stay in
+    // a fully-committed state. Uncommitted mempool messages stay in
     // pending/ and are re-proposed on the next startup.
     shutdown.store(true, Ordering::Relaxed);
     match producer_task.await {
         Ok(Ok(stats)) => eprintln!(
-            "onxd: producer stopped cleanly: {} blocks, {} txs committed, {} rejected",
-            stats.blocks_produced, stats.txs_committed, stats.txs_rejected
+            "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
+            stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
         ),
         Ok(Err(e)) => eprintln!("onxd: producer exited with error: {e}"),
         Err(e) => eprintln!("onxd: producer task panicked: {e}"),

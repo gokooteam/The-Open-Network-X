@@ -116,8 +116,8 @@ fn replay(genesis_path: &Path, blocks_dir: &Path, data_dir: &Path) -> Result<(),
         }
 
         // commit_block runs the pure STF first (fail-closed validation of
-        // seqno, prev-hash, workchain, lt, txs_root, claimed state root and
-        // every transaction), then persists everything atomically.
+        // seqno, prev-hash, workchain, lt, msgs_root, claimed state root and
+        // every external message), then persists everything atomically.
         store
             .commit_block(&state, &block)
             .map_err(|e| format!("{name}: rejected: {e}"))?;

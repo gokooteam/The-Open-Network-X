@@ -1,9 +1,9 @@
-//! Phase 3 cross-process determinism probe.
+//! Message-model cross-process determinism probe.
 //!
 //! Builds a fixed genesis, then applies a seeded pseudo-random sequence of
-//! blocks (Onyx transfers with fees) through the honest producer path
-//! (`propose_block`) and validator path (`apply_block`). Prints the final
-//! state root, last block hash, and transaction count.
+//! blocks (external messages carrying Onyx transfers) through the honest
+//! producer path (`propose_block`) and validator path (`apply_block`).
+//! Prints the final state root, last block hash, and message count.
 //!
 //! Everything is deterministic: fixed seed, fixed genesis, no I/O besides
 //! stdout, no time, no randomness source. Two OS processes running this
@@ -16,7 +16,7 @@ use onx_primitives::{domain_hash, DomainTag, SecretKey};
 use onx_state_model::{
     derive_account_id, AccountState, GenesisDocument, GenesisValidator, StorageStat,
 };
-use onx_stf::{apply_block, propose_block, State, Transaction};
+use onx_stf::{apply_block, propose_block, ExternalMessage, MsgKind, State};
 use std::collections::BTreeMap;
 
 /// Deterministic xorshift64* — dependency-free and obviously deterministic.
@@ -122,11 +122,19 @@ fn main() {
     // current nonce, so the generator tracks them alongside balances.
     let mut nonces: BTreeMap<AccountId, u64> = BTreeMap::new();
     let mut rng = XorShift64(0x1234_5678_9ABC_DEF0);
-    let mut total_txs: u64 = 0;
+    let mut total_msgs: u64 = 0;
+    let chain_id = state.chain_id;
     const BLOCKS: u64 = 25;
     for b in 1..=BLOCKS {
         let n_txs = 1 + (rng.next() % 8) as usize;
-        let mut txs = Vec::with_capacity(n_txs);
+        let mut msgs = Vec::with_capacity(n_txs);
+        // Two-phase settlement (ADR-0001/0003): the wallet phase debits all
+        // senders before the delivery phase credits any receiver. A message
+        // therefore cannot spend funds received by an earlier message in
+        // the SAME block — the mirror defers credits until after the block
+        // applies, exactly like the STF.
+        let mut pending_credits: Vec<(AccountId, u128)> = Vec::new();
+        let mut pending_collector_fee: u128 = 0;
         for _ in 0..n_txs {
             let from = ids[(rng.next() as usize) % ids.len()];
             let to = ids[(rng.next() as usize) % ids.len()];
@@ -138,27 +146,37 @@ fn main() {
                 continue;
             }
             let amount = 1 + (rng.next() as u128 % spendable);
-            // Mirror the STF's settlement so later txs in this block see it.
+            // Mirror the STF's settlement so later messages in this block see it.
             let (burned, validator_fee) = onx_economics::split_transaction_fee(fee);
             let _ = burned; // burned supply simply vanishes from the mirror
             mirror.insert(from, balance - amount - fee);
-            *mirror.entry(to).or_insert(0) += amount;
-            *mirror.entry(fee_collector).or_insert(0) += validator_fee;
+            // Delivery-phase credits land after the block, not at generation.
+            pending_credits.push((to, amount));
+            pending_collector_fee += validator_fee;
             let nonce = nonces.get(&from).copied().unwrap_or(0);
             nonces.insert(from, nonce + 1);
-            txs.push(Transaction::new_signed(
+            msgs.push(ExternalMessage::new_signed(
+                chain_id,
+                MsgKind::Transfer,
                 from,
+                nonce,
                 to,
                 amount,
                 fee,
-                nonce,
+                Vec::new(),
+                [0u8; 32],
                 &keys[&from],
             ));
         }
         // Producer path builds the block; validator path checks it.
-        let block = propose_block(&state, txs, b, fee_collector).expect("propose must succeed");
+        let block = propose_block(&state, msgs, b, fee_collector).expect("propose must succeed");
         let (next, _receipts) = apply_block(&state, &block).expect("apply must succeed");
-        total_txs += block.body.transactions.len() as u64;
+        // Now the delivery-phase credits become spendable.
+        for (to, amount) in pending_credits {
+            *mirror.entry(to).or_insert(0) += amount;
+        }
+        *mirror.entry(fee_collector).or_insert(0) += pending_collector_fee;
+        total_msgs += block.body.messages.len() as u64;
         state = next;
     }
 
@@ -168,5 +186,5 @@ fn main() {
     );
     println!("final_block_hash={}", hex(&state.last_hash));
     println!("final_seqno={}", state.seqno);
-    println!("total_txs={total_txs}");
+    println!("total_msgs={total_msgs}");
 }
