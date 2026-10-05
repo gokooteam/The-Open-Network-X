@@ -1,3 +1,15 @@
+# ONX genesis configuration (human-readable input to `onx-genesis`).
+#
+# Addresses and validator keys accept two forms:
+# - a 64-character hex string: decoded literally (real key material — the
+#   only form suitable for a real network);
+# - any other string: a DEV label, mapped to key material by a documented
+#   domain-separated hash. Derived keys have no known private key and can
+#   never sign. See phase2-genesis.md for the full derivation story.
+#
+# Workchain ids follow the protocol definition: -1 = masterchain,
+# 0 = basic workchain. The name must match the id.
+
 [[balances]]
 address = "onx:alice"
 amount = 1000000
@@ -11,7 +23,6 @@ public_key = "validator-01"
 stake = 1000
 
 [[workchains]]
-id = 0
+id = -1
 name = "masterchain"
-shard_prefix = "0x00"
 enabled = true

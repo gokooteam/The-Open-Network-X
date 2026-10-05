@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // Scoped ban: HashMap/HashSet are banned in PROTOCOL crates (workspace clippy.toml) where iteration order could reach consensus encodings. This node crate uses them only for keyed lookup (sessions, caches, metrics) whose iteration order never touches consensus output.
 use axum::{
     body::Body,
     extract::{Json, State},
@@ -230,7 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn merkle_proof_binary_round_trip_is_verifiable() {
+    fn merkle_proof_binary_round_trip_is_structurally_valid_but_untrusted() {
         let proof_boc =
             BagOfCells::from_root(onx_state_model::Cell::new(vec![], vec![]).unwrap()).unwrap();
         let root_hash = *proof_boc.root_hash();
@@ -243,6 +244,9 @@ mod tests {
         let bytes = proof.to_bytes();
         let (decoded, consumed) = MerkleProof::from_bytes(&bytes).unwrap();
         assert_eq!(consumed, bytes.len());
-        decoded.verify().unwrap();
+        // Structural round-trip passes, but a self-consistent degenerate
+        // proof (single empty cell, no path to any leaf) must NOT verify
+        // against a trusted root. Trust requires a real Merkle path.
+        assert!(decoded.verify(&root_hash).is_err());
     }
 }

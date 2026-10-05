@@ -1,3 +1,5 @@
+#![deny(clippy::disallowed_types)]
+// Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
 //! ONX canonical data structures.
 //!
 //! Implements `docs/specification/data-structures.md`: workchain,

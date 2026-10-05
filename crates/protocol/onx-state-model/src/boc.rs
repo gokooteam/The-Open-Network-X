@@ -1,13 +1,22 @@
 use crate::cell::Cell;
 use crate::error::StateModelError;
 use onx_primitives::Uint32;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Bag-of-Cells (BoC) structure: A serialized rooted directed acyclic graph (DAG) of cells.
+///
+/// The cell map is a `BTreeMap` keyed by cell hash, NOT a `HashMap`.
+/// `BTreeMap` iterates in ascending key order on every platform and in
+/// every process, which makes `to_bytes()` a canonical encoding: the same
+/// logical BoC always serializes to the same bytes. A `HashMap` would leak
+/// per-process hash-seed iteration order into the encoding and break
+/// cross-node / cross-run determinism (see Phase 1 of the replay plan).
+/// `HashMap`/`HashSet` are banned in protocol crates via clippy
+/// `disallowed-types` (workspace `clippy.toml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BagOfCells {
     root_hash: [u8; 32],
-    cells: HashMap<[u8; 32], Cell>,
+    cells: BTreeMap<[u8; 32], Cell>,
 }
 
 impl BagOfCells {
@@ -15,7 +24,7 @@ impl BagOfCells {
     /// Rejects if root hash is missing or if the cell graph contains a cycle.
     pub fn new(
         root_hash: [u8; 32],
-        cells: HashMap<[u8; 32], Cell>,
+        cells: BTreeMap<[u8; 32], Cell>,
     ) -> Result<Self, StateModelError> {
         if !cells.contains_key(&root_hash) {
             return Err(StateModelError::DeserializationError(
@@ -30,7 +39,7 @@ impl BagOfCells {
 
     /// Builds a BagOfCells from a root Cell and recursively collects all reachable descendant cells.
     pub fn from_root(root: Cell) -> Result<Self, StateModelError> {
-        let mut cells = HashMap::new();
+        let mut cells = BTreeMap::new();
         let root_hash = root.hash();
         cells.insert(root_hash, root);
         let boc = Self { root_hash, cells };
@@ -49,7 +58,7 @@ impl BagOfCells {
         &self.root_hash
     }
 
-    pub fn cells(&self) -> &HashMap<[u8; 32], Cell> {
+    pub fn cells(&self) -> &BTreeMap<[u8; 32], Cell> {
         &self.cells
     }
 
@@ -59,14 +68,14 @@ impl BagOfCells {
 
     /// Verifies that the cell graph starting from root forms a valid Directed Acyclic Graph (DAG) with no cycles.
     pub fn verify_dag(&self) -> Result<(), StateModelError> {
-        let mut visiting = HashSet::new();
-        let mut visited = HashSet::new();
+        let mut visiting = BTreeSet::new();
+        let mut visited = BTreeSet::new();
 
         fn dfs(
             node: &[u8; 32],
-            cells: &HashMap<[u8; 32], Cell>,
-            visiting: &mut HashSet<[u8; 32]>,
-            visited: &mut HashSet<[u8; 32]>,
+            cells: &BTreeMap<[u8; 32], Cell>,
+            visiting: &mut BTreeSet<[u8; 32]>,
+            visited: &mut BTreeSet<[u8; 32]>,
         ) -> Result<(), StateModelError> {
             if visiting.contains(node) {
                 return Err(StateModelError::CyclicCellReference);
@@ -90,11 +99,16 @@ impl BagOfCells {
     }
 
     /// Serializes the BagOfCells into binary bytes.
+    ///
+    /// Canonical encoding: cells are written in ascending order of cell
+    /// hash (the `BTreeMap` iteration order). The same logical BoC therefore
+    /// serializes to identical bytes in every process and on every node.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&self.root_hash);
         bytes.extend_from_slice(&Uint32(self.cells.len() as u32).encode());
 
+        // BTreeMap iteration order == ascending hash order: deterministic.
         for (hash, cell) in &self.cells {
             bytes.extend_from_slice(hash);
             let cell_bytes = cell.to_bytes();
@@ -134,7 +148,7 @@ impl BagOfCells {
             ));
         }
 
-        let mut cells = HashMap::with_capacity(count);
+        let mut cells = BTreeMap::new();
         for _ in 0..count {
             if slice.len() < offset + 36 {
                 return Err(StateModelError::DeserializationError(

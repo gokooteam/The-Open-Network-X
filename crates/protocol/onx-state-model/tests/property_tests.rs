@@ -1,7 +1,7 @@
 //! Property tests enforcing the malformed-input and canonical-round-trip rules
 //! in `docs/specification/state-model.md` §5.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use onx_state_model::{BagOfCells, Cell, StateModelError};
 use proptest::prelude::*;
@@ -23,7 +23,7 @@ proptest! {
     #[test]
     fn boc_round_trips(leaves in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..=32), 1..=4),
                        root_data in proptest::collection::vec(any::<u8>(), 0..=128)) {
-        let mut cells = HashMap::new();
+        let mut cells = BTreeMap::new();
         let mut refs = Vec::new();
         for data in leaves {
             let leaf = Cell::new(data, vec![]).unwrap();

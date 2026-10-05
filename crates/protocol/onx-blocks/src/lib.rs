@@ -1,3 +1,5 @@
+#![deny(clippy::disallowed_types)]
+// Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
 //! ONX block structural validity, masterchain coupling, and split/merge
 //! announcement flags.
 //!

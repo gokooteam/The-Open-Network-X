@@ -1,15 +1,15 @@
 # Open Network X
 
-[![CI](https://github.com/quickerup/The-Open-Network-X/actions/workflows/ci.yml/badge.svg)](https://github.com/quickerup/The-Open-Network-X/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/quickerup/The-Open-Network-X/actions/workflows/codeql.yml/badge.svg)](https://github.com/quickerup/The-Open-Network-X/actions/workflows/codeql.yml)
-[![Code Coverage](https://github.com/quickerup/The-Open-Network-X/actions/workflows/coverage.yml/badge.svg)](https://github.com/quickerup/The-Open-Network-X/actions/workflows/coverage.yml)
-[![Cargo Deny](https://github.com/quickerup/The-Open-Network-X/actions/workflows/deny.yml/badge.svg)](https://github.com/quickerup/The-Open-Network-X/actions/workflows/deny.yml)
+[![CI](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml/badge.svg)](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/codeql.yml/badge.svg)](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/codeql.yml)
+[![Code Coverage](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/coverage.yml/badge.svg)](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/coverage.yml)
+[![Cargo Deny](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/deny.yml/badge.svg)](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/deny.yml)
 
-[![License: Apache-2.0](https://img.shields.io/github/license/quickerup/The-Open-Network-X)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/github/license/gokooteam/The-Open-Network-X)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.98.1-orange?logo=rust&logoColor=white)](rust-toolchain.toml)
-[![Last Commit](https://img.shields.io/github/last-commit/quickerup/The-Open-Network-X)](https://github.com/quickerup/The-Open-Network-X/commits/main)
-[![Open Issues](https://img.shields.io/github/issues/quickerup/The-Open-Network-X)](https://github.com/quickerup/The-Open-Network-X/issues)
-[![Stars](https://img.shields.io/github/stars/quickerup/The-Open-Network-X?style=social)](https://github.com/quickerup/The-Open-Network-X/stargazers)
+[![Last Commit](https://img.shields.io/github/last-commit/gokooteam/The-Open-Network-X)](https://github.com/gokooteam/The-Open-Network-X/commits/main)
+[![Open Issues](https://img.shields.io/github/issues/gokooteam/The-Open-Network-X)](https://github.com/gokooteam/The-Open-Network-X/issues)
+[![Stars](https://img.shields.io/github/stars/gokooteam/The-Open-Network-X?style=social)](https://github.com/gokooteam/The-Open-Network-X/stargazers)
 
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 [![Status](https://img.shields.io/badge/status-early--research-orange)](#project-status)
@@ -91,53 +91,32 @@ ONX follows several principles:
 
 ## Project status
 
-Early research / architecture phase. The initial goal is to establish the protocol specification and engineering principles before attempting to build a production blockchain. Nothing in this repository should currently be interpreted as production-ready blockchain infrastructure.
+**The deterministic-replay milestone is the current definition of done:**
+`onx replay --genesis genesis.toml --blocks ./blocks/` deterministically
+executes, persists, recovers, and replays a chain while reproducing identical
+state roots. Everything below is graded honestly — no "done" claims the code
+hasn't earned.
 
-Specification work completed so far, with accompanying architecture decision records in `docs/decisions/`:
+| Component | Spec | Logic | Integrated | Adversarially tested |
+| --- | --- | --- | --- | --- |
+| `onx replay` command | ✅ plan | ✅ | ✅ | ✅ kill -9, corruption, two-process, golden vectors |
+| Canonical encodings (BoC) | ✅ | ✅ | ✅ | ✅ 50× probe, cross-process byte-identical |
+| Genesis (real accounts, chain ID) | ✅ | ✅ | ✅ | ✅ cross-process determinism |
+| STF — Onyx transfers + fees | ✅ | ✅ | ✅ | ✅ randomized sequences, cross-process |
+| Merkle proofs | ✅ | ✅ | ✅ | ✅ fabricated/absent-key proofs rejected |
+| Atomic storage + crash recovery | ✅ | ✅ | ✅ | ✅ 100× kill -9, full-or-nothing |
+| VM / TVM execution | ✅ | ❌ scaffold | ❌ | ❌ — frozen until replay passes |
+| Consensus | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
+| Networking (ADNL/DHT) | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
+| Sharding | ✅ | ❌ | ❌ | ❌ — frozen |
+| Payment channels | ✅ | ❌ | ❌ | ❌ — frozen |
+| RPC / telemetry | ✅ | partial | ❌ | ❌ — frozen |
 
-| Layer | Specification | Decision record |
-| --- | --- | --- |
-| Architecture baseline | `docs/specification/architecture.md` | `ADR-0001` |
-| Protocol primitives | `docs/specification/protocol-primitives.md` | `ADR-0002` |
-| Data structures | `docs/specification/data-structures.md` | `ADR-0002`, `ADR-0016` |
-| State model | `docs/specification/state-model.md` | `ADR-0003` |
-| Implementation language | — | `ADR-0004` |
-| Transactions and messages | `docs/specification/transactions.md` | `ADR-0005`, `ADR-0018` |
-| Blocks and masterchain coupling | `docs/specification/blocks.md` | `ADR-0006`, `ADR-0016` |
-| Execution (virtual machine) | `docs/specification/execution.md`, `tvm-instruction-set.md` | `ADR-0007`, `ADR-0017` |
-| Consensus and validator operation | `docs/specification/consensus.md` | `ADR-0008` |
-| Networking (ADNL, DHT, overlays) | `docs/specification/networking-*.md` | `ADR-0009`–`ADR-0011` |
-| Dynamic sharding | `docs/specification/sharding.md` | `ADR-0012` |
-| Economics | `docs/specification/economics.md` | `ADR-0013`, `ADR-0019` |
-| Payment channels | `docs/specification/payment-channels.md` | `ADR-0014` |
+"Adversarially tested" means a probe tried to break it — torn writes,
+fabricated proofs, corrupted files, killed processes — and it held. A green
+test suite once coexisted with all four original bugs; the probes are the
+point, not the suite.
 
-All protocol layers now have their corresponding specification, decision records, and Rust implementations in `crates/`.
-
-```mermaid
-flowchart TD
-    subgraph Legend[" "]
-        direction LR
-        L1["Spec + code done"]:::done
-    end
-
-    A["Architecture baseline<br/>ADR-0001"]:::done
-    B["Protocol primitives<br/>ADR-0002 + onx-primitives crate"]:::done
-    C["Data structures<br/>ADR-0002, ADR-0016 + onx-data-structures crate"]:::done
-    D["State model<br/>ADR-0003 + onx-state-model crate"]:::done
-    E["Transactions & messages<br/>ADR-0005, ADR-0018 + onx-transactions crate"]:::done
-    F["Blocks & masterchain coupling<br/>ADR-0006, ADR-0016 + onx-blocks crate"]:::done
-    G["Execution / VM<br/>ADR-0007, ADR-0017 + onx-execution crate"]:::done
-    H["Consensus & validator operation<br/>ADR-0008 + onx-consensus crate"]:::done
-    I["Networking<br/>ADR-0009–ADR-0011 + onx-networking crate"]:::done
-    J["Dynamic sharding<br/>ADR-0012 + onx-sharding crate"]:::done
-    K["Economics<br/>ADR-0013, ADR-0019 + onx-economics crate"]:::done
-    L["Payment channels<br/>ADR-0014 + onx-payment-channels crate"]:::done
-
-    A --> B --> C --> D --> E --> F --> G --> H --> I --> J --> K --> L
-
-    classDef done fill:#2f9e44,stroke:#2f9e44,color:#fff
-    style Legend fill:transparent,stroke:transparent
-```
 
 See [`ROADMAP.md`](ROADMAP.md) for the full changelog and roadmap of what has been built, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow every contribution is expected to follow.
 
