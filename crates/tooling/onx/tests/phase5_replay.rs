@@ -12,7 +12,10 @@
 
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
+use onx_primitives::SecretKey;
+use onx_state_model::AccountState;
 use onx_stf::{propose_block, Block, State, Transaction};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -24,12 +27,24 @@ fn addr_hex(byte: u8) -> String {
     format!("{byte:02x}").repeat(32)
 }
 
+/// Deterministic signing key for a test account byte.
+///
+/// Test-only: the seed is public, so these keys are not secret. The
+/// corresponding pubkey is written into the genesis TOML, so transactions
+/// from these accounts actually authorize.
+fn test_secret_key(byte: u8) -> SecretKey {
+    SecretKey::from_seed(&[byte; 32]).expect("fixed test seed decodes")
+}
+
 fn write_genesis_toml(dir: &Path) -> PathBuf {
     let mut toml = String::from("# test genesis — fixed, deterministic\n");
     for i in 0..4u8 {
+        let byte = 0xaa + i;
+        let pubkey_hex = hex::encode(test_secret_key(byte).public_key().encode());
         toml.push_str(&format!(
-            "[[balances]]\naddress = \"{}\"\namount = 1000000000000\n\n",
-            addr_hex(0xaa + i)
+            "[[balances]]\naddress = \"{}\"\namount = 1000000000000\npublic_key = \"{}\"\n\n",
+            addr_hex(byte),
+            pubkey_hex
         ));
     }
     toml.push_str(&format!(
@@ -69,6 +84,9 @@ fn build_chain(
     let collector = account_id(0xaa);
     let mut rng = seed;
     let mut blocks = Vec::new();
+    // Per-account nonces: every signed transaction consumes the sender's
+    // current nonce, so the fixture tracks them alongside the chain.
+    let mut nonces: BTreeMap<AccountId, u64> = BTreeMap::new();
     for _ in 0..n_blocks {
         let mut txs = Vec::new();
         for _ in 0..txs_per {
@@ -77,12 +95,18 @@ fn build_chain(
             if to == from {
                 to = account_id(0xdd);
             }
-            txs.push(Transaction {
+            let nonce = nonces.get(&from).copied().unwrap_or(0);
+            nonces.insert(from, nonce + 1);
+            // The account byte doubles as the key seed (see test_secret_key).
+            let secret = test_secret_key(from.to_bytes()[0]);
+            txs.push(Transaction::new_signed(
                 from,
                 to,
-                amount_nanos: (1_000 + xorshift64(&mut rng) % 50_000) as u128,
-                fee_nanos: (10 + xorshift64(&mut rng) % 100) as u128,
-            });
+                (1_000 + xorshift64(&mut rng) % 50_000) as u128,
+                (10 + xorshift64(&mut rng) % 100) as u128,
+                nonce,
+                &secret,
+            ));
         }
         let lt = state.last_lt + 1;
         let block = propose_block(&state, txs, lt, collector).unwrap();
@@ -147,17 +171,26 @@ fn tmpdir(name: &str) -> PathBuf {
 // matching, the code changed — investigate, do not update the vectors.
 // Amethyst approved the Phase 5 acceptance tests (including golden vectors)
 // with her "Go" on 2026-10-05.
+//
+// REFROZEN 2026-10-05 for the tx-auth upgrade (ONX_TX_V2): genesis accounts
+// now carry Ed25519 pubkeys (141-byte account encoding instead of 101) and
+// all transactions are signed with per-account nonces, so every root below
+// legitimately changed. The refreeze was regenerated from the V2
+// implementation via `replay_prints_vectors_for_freezing` and the chain
+// verified internally consistent (replay succeeds, roots deterministic
+// across runs). This is the new frozen baseline: the same rule applies —
+// investigate, do not update.
 // ---------------------------------------------------------------------------
 
 /// Genesis root of the fixed test genesis config above.
 const GOLDEN_GENESIS_ROOT: &str =
-    "7c6520dc99bb15a9a981d0d4b8b94593835eb88179c5dbcb786b00c8f1491617";
+    "079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d";
 /// State root after block 3 of the fixed 5-block × 4-tx chain (seed 0xC10C).
 const GOLDEN_ROOT_AFTER_3: &str =
-    "6490159ef7f06b0328c756f3b187a996f696de5ac509c681ceb3e968320b26c6";
+    "3fbb03b29519164464d470e1facbb62f96d0f1ea4fe2e4dce3df87661650af36";
 /// Final state root after block 5 of the fixed chain.
 const GOLDEN_ROOT_AFTER_5: &str =
-    "b9baeba0e1b10ddaafad9936feb6e3fc02aeb114aaddc7a888e2fc27502b5660";
+    "8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098";
 
 fn root_at_seqno(stdout: &str, seqno: u32) -> &str {
     let prefix = format!("seqno={seqno} ");
@@ -375,16 +408,24 @@ fn replay_rejects_wrong_prev_hash() {
 fn replay_rejects_invalid_transaction_block() {
     let dir = tmpdir("badtx");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 3, 4, 0xBAD);
-    // Hand-assemble block 4 with a tx spending far more than any balance.
-    // txs_root is correct (assemble computes it); the STF must reject the
-    // transaction itself — the tx error fires before the state-root check.
-    let evil_txs = vec![Transaction {
-        from: account_id(0xaa),
-        to: account_id(0xbb),
-        amount_nanos: u128::MAX,
-        fee_nanos: 10,
-    }];
+    let (blocks, state) = build_chain(&genesis, 3, 4, 0xBAD);
+    // Hand-assemble block 4 with a properly signed tx spending far more than
+    // any balance. txs_root is correct (assemble computes it); the STF must
+    // reject the transaction itself — the tx error fires before the
+    // state-root check.
+    let sender = account_id(0xaa);
+    let nonce = match state.tree.get(&sender) {
+        Some(AccountState::Active { nonce, .. }) => *nonce,
+        _ => panic!("fixture sender must be active"),
+    };
+    let evil_txs = vec![Transaction::new_signed(
+        sender,
+        account_id(0xbb),
+        u128::MAX,
+        10,
+        nonce,
+        &test_secret_key(0xaa),
+    )];
     let prev = &blocks[2];
     let evil = Block::assemble(
         4,
@@ -394,7 +435,8 @@ fn replay_rejects_invalid_transaction_block() {
         account_id(0xaa),
         evil_txs,
         [0xff; 32], // garbage claimed root: must not mask the tx error
-    );
+    )
+    .expect("evil block has one transaction");
     let blocks_dir = dir.join("blocks");
     write_block_files(&blocks_dir, &blocks);
     std::fs::write(

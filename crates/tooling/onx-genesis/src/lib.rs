@@ -1,5 +1,6 @@
 #![deny(clippy::disallowed_types)] // Genesis construction is consensus-critical: deterministic iteration only.
 use onx_data_structures::{ShardIdent, WorkchainIdent};
+use onx_primitives::PublicKey;
 use onx_state_model::{
     parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, GenesisDocument,
     GenesisValidator, StorageStat,
@@ -14,6 +15,13 @@ use std::path::{Component, Path, PathBuf};
 pub struct Balance {
     pub address: String,
     pub amount: u64,
+    /// Optional Ed25519 public key (hex literal or label, same three-way
+    /// rule as validator keys) authorizing spends from this account.
+    /// Absent means *keyless*: the account can receive but never spend.
+    /// When present, the key must be a valid curve point — rejected
+    /// otherwise, so no genesis account can ever carry an unverifiable key.
+    #[serde(default)]
+    pub public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,6 +52,7 @@ impl Default for GenesisConfig {
             balances: vec![Balance {
                 address: "onx:genesis-account".to_string(),
                 amount: 5_000_000_000_000_000_000,
+                public_key: None,
             }],
             validators: vec![Validator {
                 public_key: "validator-pubkey-00".to_string(),
@@ -177,7 +186,22 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
             ));
         }
         // Genesis accounts are plain value accounts: no code, no data,
-        // logical time zero. Code-bearing accounts arrive via transactions.
+        // logical time zero, nonce zero. Code-bearing accounts arrive via
+        // transactions. The public key is optional: without one the account
+        // is keyless (can receive, never spend).
+        let pubkey = match &b.public_key {
+            Some(key_str) => {
+                let bytes = parse_or_derive_pubkey(key_str).map_err(|e| e.to_string())?;
+                PublicKey::decode_exact(&bytes).map_err(|e| {
+                    format!(
+                        "onx-genesis failed: balance {:?} has invalid public_key: {e}",
+                        b.address
+                    )
+                })?;
+                bytes
+            }
+            None => [0u8; 32],
+        };
         accounts.insert(
             id,
             AccountState::Active {
@@ -189,6 +213,8 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
                     cell_count: 0,
                     byte_count: 0,
                 },
+                pubkey,
+                nonce: 0,
             },
         );
     }

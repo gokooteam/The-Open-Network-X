@@ -25,3 +25,4 @@ onx-data-structures = { path = "../../protocol/onx-data-structures" }
 
 [dev-dependencies]
 # (none — tests use std::process against the built binary)
+onx-primitives = { path = "../../protocol/onx-primitives" }

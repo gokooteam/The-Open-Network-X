@@ -2,8 +2,13 @@
 //!
 //! Layout (big-endian, fixed-size, strict):
 //! ```text
-//! magic "ONXBLK01"(8) || header(148) || body(u32be count || 96-byte txs)
+//! magic "ONXBLK02"(8) || header(148) || body(u32be count || 168-byte txs)
 //! ```
+//!
+//! Magic `ONXBLK02`: the tx-auth upgrade changed the transaction encoding
+//! (V1 96-byte unsigned → V2 168-byte signed), so V1 files are rejected at
+//! the magic check, never silently misparsed. V1 never shipped anywhere
+//! (pre-release milestone), so there is no migration path to maintain.
 //!
 //! The magic prefix makes "not a block file" a distinct, immediate error
 //! rather than a confusing parse failure. Everything after the magic reuses
@@ -16,7 +21,7 @@ use onx_storage::{decode_body, encode_body};
 
 /// Magic prefix identifying a block file. Versioned so a future format
 /// change is detectable instead of silently misparsed.
-pub const BLOCK_FILE_MAGIC: &[u8; 8] = b"ONXBLK01";
+pub const BLOCK_FILE_MAGIC: &[u8; 8] = b"ONXBLK02";
 
 /// Canonical block file name for a sequence number: zero-padded so
 /// lexicographic filename order matches chain order.
@@ -58,7 +63,7 @@ impl std::error::Error for BlockFileError {}
 /// Encode a block to its canonical file bytes.
 pub fn encode_block_file(block: &Block) -> Vec<u8> {
     let mut out = Vec::with_capacity(
-        BLOCK_FILE_MAGIC.len() + BLOCK_HEADER_BYTE_LEN + 4 + block.body.transactions.len() * 96,
+        BLOCK_FILE_MAGIC.len() + BLOCK_HEADER_BYTE_LEN + 4 + block.body.transactions.len() * 168,
     );
     out.extend_from_slice(BLOCK_FILE_MAGIC);
     out.extend_from_slice(&block.header.to_bytes());
@@ -99,11 +104,15 @@ mod tests {
     use onx_stf::block::Transaction;
 
     fn sample_block() -> Block {
+        // Pure encode/decode round-trip: the signature is opaque bytes here
+        // (no verification at the file layer — that's the STF's job).
         let tx = Transaction {
             from: AccountId::from_bytes([1u8; 32]),
             to: AccountId::from_bytes([2u8; 32]),
             amount_nanos: 1_000,
             fee_nanos: 10,
+            nonce: 0,
+            signature: [0xAB; 64],
         };
         Block::assemble(
             1,
@@ -114,6 +123,7 @@ mod tests {
             vec![tx],
             [7u8; 32],
         )
+        .expect("sample block has one transaction")
     }
 
     #[test]

@@ -6,13 +6,16 @@
 //! to match an uninterrupted run byte-for-byte. Set `ONX_CRASH_ITERS` to
 //! control the iteration count (default 100).
 
+use onx_state_model::AccountState;
 use onx_stf::{apply_block, propose_block, Block, State};
 use onx_storage::error::StorageError;
 use onx_storage::store::SCHEMA_VERSION;
 use onx_storage::support::{
-    test_accounts, test_block_lt, test_block_txs, test_fee_collector, test_genesis,
+    test_accounts, test_block_lt, test_block_txs, test_block_txs_with_nonces, test_fee_collector,
+    test_genesis, TestTxGen,
 };
 use onx_storage::{decode_body, encode_body, ChainStore};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,6 +40,23 @@ fn crash_iters() -> usize {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(100)
+}
+
+/// Read live account nonces out of a state: adversarial tests tamper with
+/// `seqno`/`last_hash` but the transactions must still authorize against
+/// the *actual* account nonces, or `propose_block` fails before the store's
+/// continuity check is even reached.
+fn nonces_of(
+    state: &State,
+    accounts: &[onx_data_structures::AccountId],
+) -> BTreeMap<onx_data_structures::AccountId, u64> {
+    let mut nonces = BTreeMap::new();
+    for id in accounts {
+        if let Some(AccountState::Active { nonce, .. }) = state.tree.get(id) {
+            nonces.insert(*id, *nonce);
+        }
+    }
+    nonces
 }
 
 /// Drive a chain to `num_blocks` in this process (open/resume safe), and
@@ -243,13 +263,16 @@ fn storage_dirty_set_complete() -> Result<(), StorageError> {
     let accounts = test_accounts();
     let collector = test_fee_collector();
     let mut state = store.load_state()?.expect("genesis state");
+    // Stateful generator: the seed alternates per block, so nonces cannot
+    // be replayed from any single seed's history.
+    let mut gen = TestTxGen::new();
 
     for n in 1..=6u32 {
         // Alternate fee patterns so the collector is touched on some blocks.
         let seed = if n % 2 == 0 { 0xFEEu64 } else { 0xBEEu64 };
         let block = propose_block(
             &state,
-            test_block_txs(seed, n, &accounts),
+            gen.block_txs(seed, n, &accounts),
             test_block_lt(n),
             collector,
         )
@@ -299,6 +322,150 @@ fn storage_refuses_newer_schema() -> Result<(), StorageError> {
     assert!(
         matches!(err, StorageError::SchemaMismatch { .. }),
         "expected SchemaMismatch, got: {err}"
+    );
+    cleanup(&path);
+    Ok(())
+}
+
+/// Gap 1: a block built on a diverged in-memory state must be rejected,
+/// even though the pure STF accepts it. The STF can only check the block
+/// against the state it is given; only the store can check that state
+/// against the stored head.
+#[test]
+fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
+    let path = temp_db_path("diverged");
+    let store = ChainStore::open(&path)?;
+    let doc = test_genesis();
+    store.init_genesis(&doc)?;
+    let accounts = test_accounts();
+    let collector = test_fee_collector();
+
+    // Honest block 1: head = (1, h1).
+    let state0 = store.load_state()?.expect("genesis state");
+    let block1 =
+        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    store.commit_block(&state0, &block1)?;
+    let (head_seqno, head_hash) = store.head()?.expect("head");
+    assert_eq!(head_seqno, 1);
+
+    // Diverged in-memory state: right seqno, wrong base hash. propose_block
+    // (and the STF inside commit_block) accept the resulting block — the
+    // corruption is invisible without the stored head to compare against.
+    // Transactions are signed with nonces read from the diverged state
+    // itself: they must authorize, or propose fails before the store check.
+    let mut bad_state = store.load_state()?.expect("state");
+    bad_state.last_hash = [0xAA; 32];
+    let nonces = nonces_of(&bad_state, &accounts);
+    let bad_block = propose_block(
+        &bad_state,
+        test_block_txs_with_nonces(8, 2, &accounts, &nonces),
+        2,
+        collector,
+    )
+    .expect("propose");
+    assert_eq!(bad_block.header.seqno, 2);
+    assert_eq!(bad_block.header.prev_hash, [0xAA; 32]);
+
+    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    assert!(
+        matches!(err, StorageError::HeadMismatch { .. }),
+        "expected HeadMismatch, got: {err}"
+    );
+    // Fail-closed: head, indexes, and roots are untouched; the write
+    // transaction was dropped before any insert.
+    assert_eq!(store.head()?, Some((head_seqno, head_hash)));
+    assert!(store.block_hash_for_seqno(2)?.is_none());
+    assert!(store.state_root_at(2)?.is_none());
+    cleanup(&path);
+    Ok(())
+}
+
+/// Gap 1: a block that skips seqnos must be rejected, even with a correct
+/// prev_hash. Without the continuity check the store would persist a
+/// gapped chain (dense-prefix invariants broken, replay order undefined).
+#[test]
+fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
+    let path = temp_db_path("skipseq");
+    let store = ChainStore::open(&path)?;
+    let doc = test_genesis();
+    store.init_genesis(&doc)?;
+    let accounts = test_accounts();
+    let collector = test_fee_collector();
+
+    let state0 = store.load_state()?.expect("genesis state");
+    let block1 =
+        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    store.commit_block(&state0, &block1)?;
+
+    // State claims seqno 5 while the stored head is at 1. The proposed
+    // block carries the real head hash as prev_hash — only the seqno half
+    // of the continuity check can catch it. Transactions authorize against
+    // the state's actual nonces (seed-7 block 1 applied), not the claimed
+    // seqno, or propose fails before the store check.
+    let mut bad_state = store.load_state()?.expect("state");
+    bad_state.seqno = 5;
+    let nonces = nonces_of(&bad_state, &accounts);
+    let bad_block = propose_block(
+        &bad_state,
+        test_block_txs_with_nonces(8, 6, &accounts, &nonces),
+        6,
+        collector,
+    )
+    .expect("propose");
+    assert_eq!(bad_block.header.seqno, 6);
+    assert_eq!(bad_block.header.prev_hash, store.head()?.expect("head").1);
+
+    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    assert!(
+        matches!(err, StorageError::HeadMismatch { .. }),
+        "expected HeadMismatch, got: {err}"
+    );
+    assert_eq!(store.head()?.expect("head").0, 1);
+    assert!(store.block_hash_for_seqno(6)?.is_none());
+    cleanup(&path);
+    Ok(())
+}
+
+/// Gap 2: `load_state` must fail closed when the rebuilt state does not
+/// hash to the stored post-state root — otherwise a self-producing node
+/// would build its next block on corrupt state.
+#[test]
+fn storage_load_state_rejects_tampered_root() -> Result<(), StorageError> {
+    let path = temp_db_path("tamperedroot");
+    let store = ChainStore::open(&path)?;
+    let doc = test_genesis();
+    store.init_genesis(&doc)?;
+    let accounts = test_accounts();
+    let collector = test_fee_collector();
+
+    let state0 = store.load_state()?.expect("genesis state");
+    let block1 =
+        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    store.commit_block(&state0, &block1)?;
+    // Sanity: the untampered database loads fine.
+    assert!(store.load_state()?.is_some());
+    drop(store);
+
+    // Tamper with the stored post-state root behind the store's back.
+    {
+        let db = redb::Database::create(&path)?;
+        let wtxn = db.begin_write()?;
+        {
+            let mut roots =
+                wtxn.open_table(redb::TableDefinition::<&[u8], &[u8]>::new("state_roots"))?;
+            roots.insert(1u32.to_be_bytes().as_slice(), [0xBB; 32].as_slice())?;
+        }
+        wtxn.commit()?;
+    }
+
+    let store = ChainStore::open(&path)?;
+    let err = match store.load_state() {
+        Ok(_) => panic!("load_state succeeded on a tampered root"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, StorageError::StateRootMismatch { seqno: 1, .. }),
+        "expected StateRootMismatch, got: {err}"
     );
     cleanup(&path);
     Ok(())
@@ -414,5 +581,43 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         drop(store);
         cleanup(&path);
     }
+    Ok(())
+}
+
+/// Schema v2 dropped the write-only `cells` table (Claude gap 3). A v1
+/// database — identifiable by its stored schema version — must be rejected
+/// fail-closed, not silently opened with a stale layout. v1 was never
+/// released, so no migration is provided: resync from genesis.
+#[test]
+fn storage_rejects_v1_schema_with_cells_table() -> Result<(), StorageError> {
+    let path = temp_db_path("v1reject");
+    // Forge a v1 database behind the store's back: schema_version = 1 and
+    // a populated `cells` table, as v1 would have written.
+    {
+        let db = redb::Database::create(&path)?;
+        let wtxn = db.begin_write()?;
+        {
+            let mut meta = wtxn.open_table(redb::TableDefinition::<&[u8], &[u8]>::new("meta"))?;
+            meta.insert(b"schema_version".as_slice(), 1u32.to_be_bytes().as_slice())?;
+            let mut cells = wtxn.open_table(redb::TableDefinition::<&[u8], &[u8]>::new("cells"))?;
+            cells.insert([0xABu8; 32].as_slice(), [0xCDu8; 10].as_slice())?;
+        }
+        wtxn.commit()?;
+    }
+    let err = match ChainStore::open(&path) {
+        Ok(_) => panic!("open of a v1 database should have failed"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(
+            err,
+            StorageError::SchemaMismatch {
+                found: 1,
+                supported: 2
+            }
+        ),
+        "expected SchemaMismatch {{ found: 1, supported: 2 }}, got: {err}"
+    );
+    cleanup(&path);
     Ok(())
 }

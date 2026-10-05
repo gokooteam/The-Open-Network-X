@@ -1214,6 +1214,7 @@ dependencies = [
  "hex",
  "onx-data-structures",
  "onx-genesis",
+ "onx-primitives",
  "onx-state-model",
  "onx-stf",
  "onx-storage",

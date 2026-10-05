@@ -5,11 +5,12 @@
 //!
 //! Layout (big-endian, fixed-size):
 //! ```text
-//! tx_count u32be(4) || tx[0](96) || tx[1](96) || ...
+//! tx_count u32be(4) || tx[0](168) || tx[1](168) || ...
 //! ```
 //! Each transaction is exactly [`TRANSACTION_BYTE_LEN`] bytes (see
-//! `onx_stf::block`), so the total length is `4 + 96 * tx_count` and any
-//! deviation is corruption, not a parse choice.
+//! `onx_stf::block` — 104-byte V2 body + 64-byte Ed25519 signature), so the
+//! total length is `4 + 168 * tx_count` and any deviation is corruption,
+//! not a parse choice.
 
 use crate::error::StorageError;
 use onx_stf::block::{BlockBody, Transaction, TRANSACTION_BYTE_LEN};
@@ -70,11 +71,15 @@ mod tests {
     use onx_data_structures::AccountId;
 
     fn tx(from: u8, to: u8) -> Transaction {
+        // Opaque bytes for the encode/decode round-trip (no verification
+        // at the codec layer).
         Transaction {
             from: AccountId::from_bytes([from; 32]),
             to: AccountId::from_bytes([to; 32]),
             amount_nanos: 1_000,
             fee_nanos: 10,
+            nonce: 0,
+            signature: [0xAB; 64],
         }
     }
 

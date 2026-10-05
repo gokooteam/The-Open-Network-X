@@ -12,6 +12,7 @@
 //! `stf_cross_process_determinism` in `tests/phase3_stf.rs` enforces it.
 
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
+use onx_primitives::{domain_hash, DomainTag, SecretKey};
 use onx_state_model::{
     derive_account_id, AccountState, GenesisDocument, GenesisValidator, StorageStat,
 };
@@ -38,7 +39,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn active_account(balance_nanos: u128) -> AccountState {
+/// Domain tag for the probe's deterministic signing keys.
+///
+/// Probe-only: the preimage is public, so these keys are not secret.
+const PROBE_KEY_V1: DomainTag = DomainTag::from_ascii("ONX_PROBE_KEY_V1");
+
+fn probe_secret_key(name: &str) -> SecretKey {
+    let seed = domain_hash(&PROBE_KEY_V1, name.as_bytes());
+    SecretKey::from_seed(&seed).expect("domain hash output is a valid seed")
+}
+
+fn active_account(balance_nanos: u128, pubkey: [u8; 32]) -> AccountState {
     AccountState::Active {
         balance_nanos,
         last_trans_lt: 0,
@@ -48,6 +59,8 @@ fn active_account(balance_nanos: u128) -> AccountState {
             cell_count: 0,
             byte_count: 0,
         },
+        pubkey,
+        nonce: 0,
     }
 }
 
@@ -71,14 +84,20 @@ fn main() {
         "probe-heidi",
     ];
     let mut ids: Vec<AccountId> = Vec::new();
+    let mut keys: BTreeMap<AccountId, SecretKey> = BTreeMap::new();
     for (i, name) in names.iter().enumerate() {
         let id = derive_account_id(name);
-        // Distinct balances so the PRNG has something to chew on.
+        // Distinct balances so the PRNG has something to chew on. Each
+        // account carries the pubkey matching its deterministic probe key,
+        // so generated transactions actually authorize.
+        let secret = probe_secret_key(name);
+        let pubkey = secret.public_key().encode();
         accounts.insert(
             id,
-            active_account(1_000_000_000 + (i as u128) * 111_111_111),
+            active_account(1_000_000_000 + (i as u128) * 111_111_111, pubkey),
         );
         ids.push(id);
+        keys.insert(id, secret);
     }
     let fee_collector = derive_account_id("probe-collector");
     let doc = GenesisDocument::new(workchain, shard, validators, accounts)
@@ -99,6 +118,9 @@ fn main() {
         );
     }
     mirror.insert(fee_collector, 0);
+    // Per-account nonces: every signed transaction consumes the account's
+    // current nonce, so the generator tracks them alongside balances.
+    let mut nonces: BTreeMap<AccountId, u64> = BTreeMap::new();
     let mut rng = XorShift64(0x1234_5678_9ABC_DEF0);
     let mut total_txs: u64 = 0;
     const BLOCKS: u64 = 25;
@@ -122,12 +144,16 @@ fn main() {
             mirror.insert(from, balance - amount - fee);
             *mirror.entry(to).or_insert(0) += amount;
             *mirror.entry(fee_collector).or_insert(0) += validator_fee;
-            txs.push(Transaction {
+            let nonce = nonces.get(&from).copied().unwrap_or(0);
+            nonces.insert(from, nonce + 1);
+            txs.push(Transaction::new_signed(
                 from,
                 to,
-                amount_nanos: amount,
-                fee_nanos: fee,
-            });
+                amount,
+                fee,
+                nonce,
+                &keys[&from],
+            ));
         }
         // Producer path builds the block; validator path checks it.
         let block = propose_block(&state, txs, b, fee_collector).expect("propose must succeed");

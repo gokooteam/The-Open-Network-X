@@ -25,6 +25,24 @@ pub enum StorageError {
         existing: [u8; 32],
         incoming: [u8; 32],
     },
+    /// The block being committed does not build on the stored head: its
+    /// (seqno, prev_hash) is not (head.seqno + 1, head.block_hash). The
+    /// caller's in-memory state is stale or diverged. The commit is refused
+    /// rather than writing a gapped or rebased chain.
+    HeadMismatch {
+        head_seqno: u32,
+        head_hash: [u8; 32],
+        block_seqno: u32,
+        block_prev_hash: [u8; 32],
+    },
+    /// The state rebuilt by `load_state` does not hash to the stored
+    /// post-state root for the head seqno. The persisted accounts are
+    /// internally inconsistent; refusing to build on corrupt state.
+    StateRootMismatch {
+        seqno: u32,
+        stored: [u8; 32],
+        rebuilt: [u8; 32],
+    },
     /// State-model failure (decoding a stored record, trie construction).
     State(StateModelError),
     /// The STF rejected the block being committed.
@@ -39,7 +57,7 @@ impl fmt::Display for StorageError {
             Self::Corrupt(msg) => write!(f, "corrupt persisted state: {msg}"),
             Self::SchemaMismatch { found, supported } => write!(
                 f,
-                "schema version {found} is newer than supported {supported}; refusing to open"
+                "schema version {found} is not supported (this build expects {supported}); refusing to open"
             ),
             Self::ForkDetected {
                 seqno,
@@ -50,6 +68,27 @@ impl fmt::Display for StorageError {
                 "fork detected at seqno {seqno}: stored {}, incoming {}",
                 hex16(existing),
                 hex16(incoming)
+            ),
+            Self::HeadMismatch {
+                head_seqno,
+                head_hash,
+                block_seqno,
+                block_prev_hash,
+            } => write!(
+                f,
+                "block seqno {block_seqno} does not build on stored head ({head_seqno}, {}): prev_hash is {}",
+                hex16(head_hash),
+                hex16(block_prev_hash)
+            ),
+            Self::StateRootMismatch {
+                seqno,
+                stored,
+                rebuilt,
+            } => write!(
+                f,
+                "rebuilt state root {} != stored root {} at seqno {seqno}: persisted state is corrupt",
+                hex16(rebuilt),
+                hex16(stored)
             ),
             Self::State(e) => write!(f, "state error: {e}"),
             Self::Stf(e) => write!(f, "block rejected by STF: {e}"),

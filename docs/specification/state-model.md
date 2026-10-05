@@ -63,7 +63,7 @@ The ONX protocol requires an authenticated, deterministic state model governing 
 ## 4. Serialization
 
 ### 4.1 Account State Record Layout
-Active account state record binary layout (`AccountState`):
+Active account state record binary layout (`AccountState`), 141 bytes total:
 ```
 1. state_type     : uint8   (0x01 for Active)
 2. balance_nanos  : uint128 (16 bytes, big-endian)
@@ -72,7 +72,17 @@ Active account state record binary layout (`AccountState`):
 5. data_hash     : uint256 (32 bytes, SHA-256 storage root hash)
 6. cell_count    : uint32  (4 bytes, total cells used)
 7. byte_count    : uint64  (8 bytes, total bytes used)
+8. pubkey        : uint256 (32 bytes, Ed25519 public key authorizing spends;
+                            all-zero = keyless: can receive, never spend)
+9. nonce         : uint64  (8 bytes, big-endian per-account sequence number)
 ```
+The `pubkey`/`nonce` pair is the transaction-authorization upgrade
+(`ONX_TX_V2`): a transaction is valid only if its signature verifies
+against the sender's `pubkey` and its `nonce` equals the account's
+`nonce`; a successful application bumps the nonce by one, which is what
+makes transaction replay impossible. Nonces start at 0 for genesis
+accounts and for accounts created by receiving their first transfer
+(created accounts are keyless: `pubkey` zero, `nonce` 0).
 
 ### 4.2 Cell Binary Serialization
 A single Cell binary structure:
