@@ -84,6 +84,24 @@ pub enum StfError {
     /// 2^64 spends — but silent wrapping is never acceptable in consensus
     /// code).
     NonceOverflow,
+    /// Transaction kind byte is not a known `TxKind` discriminant.
+    BadTxKind(u8),
+    /// Contract-call message exceeds `MAX_MESSAGE_BYTES`.
+    MessageTooLarge { len: usize },
+    /// A contract call targeted an account with no contract code. Contract
+    /// calls never create accounts — the recipient must already be an
+    /// `Active` contract.
+    ContractHasNoCode(AccountId),
+    /// Contract execution raised a TVM exception (including out-of-gas).
+    /// The transaction is invalid, which makes the block invalid —
+    /// fail-closed, with all of the transaction's effects reverted (the VM
+    /// runs before any state write, so there is nothing to roll back).
+    VmExecutionFailed { kind: String },
+    /// Contract execution produced outbound messages. The VM's message
+    /// egress is deliberately unwired in this milestone — a contract that
+    /// tries to send messages makes its transaction invalid rather than
+    /// having the messages silently dropped.
+    OutMessagesNotSupported { count: usize },
 }
 
 impl fmt::Display for StfError {
@@ -162,6 +180,20 @@ impl fmt::Display for StfError {
             }
             Self::InvalidSignature => write!(f, "invalid transaction signature"),
             Self::NonceOverflow => write!(f, "account nonce overflow"),
+            Self::BadTxKind(b) => write!(f, "unknown transaction kind byte: {b:#04x}"),
+            Self::MessageTooLarge { len } => {
+                write!(f, "contract message too large: {len} bytes")
+            }
+            Self::ContractHasNoCode(a) => {
+                write!(f, "contract call to account {a:?} which has no code")
+            }
+            Self::VmExecutionFailed { kind } => {
+                write!(f, "contract execution failed: {kind}")
+            }
+            Self::OutMessagesNotSupported { count } => write!(
+                f,
+                "contract produced {count} outbound messages; message egress is not yet supported"
+            ),
         }
     }
 }

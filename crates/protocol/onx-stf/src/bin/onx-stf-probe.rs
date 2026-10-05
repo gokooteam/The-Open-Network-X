@@ -53,8 +53,8 @@ fn active_account(balance_nanos: u128, pubkey: [u8; 32]) -> AccountState {
     AccountState::Active {
         balance_nanos,
         last_trans_lt: 0,
-        code_hash: [0u8; 32],
-        data_hash: [0u8; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,

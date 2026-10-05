@@ -11,6 +11,7 @@ onx-primitives = { path = "../onx-primitives" }
 onx-data-structures = { path = "../onx-data-structures" }
 onx-state-model = { path = "../onx-state-model" }
 onx-economics = { path = "../onx-economics" }
+onx-execution = { path = "../onx-execution" }
 
 [[bin]]
 name = "onx-stf-probe"

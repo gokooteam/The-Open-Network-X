@@ -64,8 +64,8 @@ pub fn test_genesis() -> GenesisDocument {
             AccountState::Active {
                 balance_nanos: TEST_GENESIS_BALANCE,
                 last_trans_lt: 0,
-                code_hash: [0; 32],
-                data_hash: [0; 32],
+                code: None,
+                data: None,
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,

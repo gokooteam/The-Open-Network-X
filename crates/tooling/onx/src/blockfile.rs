@@ -1,14 +1,15 @@
 //! On-disk block file format for `onx replay`.
 //!
-//! Layout (big-endian, fixed-size, strict):
+//! Layout (big-endian, strict):
 //! ```text
-//! magic "ONXBLK02"(8) || header(148) || body(u32be count || 168-byte txs)
+//! magic "ONXBLK03"(8) || header(148) || body(u32be count || [u32be tx_len || tx_bytes]*)
 //! ```
 //!
-//! Magic `ONXBLK02`: the tx-auth upgrade changed the transaction encoding
-//! (V1 96-byte unsigned → V2 168-byte signed), so V1 files are rejected at
-//! the magic check, never silently misparsed. V1 never shipped anywhere
-//! (pre-release milestone), so there is no migration path to maintain.
+//! Magic `ONXBLK03`: the TVM integration changed the transaction encoding
+//! (V2 fixed 168-byte → V3 variable-length with kind byte and message), so
+//! V2 files are rejected at the magic check, never silently misparsed.
+//! Neither V1 nor V2 ever shipped anywhere (pre-release milestone), so
+//! there is no migration path to maintain.
 //!
 //! The magic prefix makes "not a block file" a distinct, immediate error
 //! rather than a confusing parse failure. Everything after the magic reuses
@@ -21,7 +22,7 @@ use onx_storage::{decode_body, encode_body};
 
 /// Magic prefix identifying a block file. Versioned so a future format
 /// change is detectable instead of silently misparsed.
-pub const BLOCK_FILE_MAGIC: &[u8; 8] = b"ONXBLK02";
+pub const BLOCK_FILE_MAGIC: &[u8; 8] = b"ONXBLK03";
 
 /// Canonical block file name for a sequence number: zero-padded so
 /// lexicographic filename order matches chain order.
@@ -63,7 +64,7 @@ impl std::error::Error for BlockFileError {}
 /// Encode a block to its canonical file bytes.
 pub fn encode_block_file(block: &Block) -> Vec<u8> {
     let mut out = Vec::with_capacity(
-        BLOCK_FILE_MAGIC.len() + BLOCK_HEADER_BYTE_LEN + 4 + block.body.transactions.len() * 168,
+        BLOCK_FILE_MAGIC.len() + BLOCK_HEADER_BYTE_LEN + 4 + block.body.transactions.len() * 200,
     );
     out.extend_from_slice(BLOCK_FILE_MAGIC);
     out.extend_from_slice(&block.header.to_bytes());
@@ -101,17 +102,19 @@ pub fn decode_block_file(bytes: &[u8]) -> Result<Block, BlockFileError> {
 mod tests {
     use super::*;
     use onx_data_structures::AccountId;
-    use onx_stf::block::Transaction;
+    use onx_stf::block::{Transaction, TxKind};
 
     fn sample_block() -> Block {
         // Pure encode/decode round-trip: the signature is opaque bytes here
         // (no verification at the file layer — that's the STF's job).
         let tx = Transaction {
+            kind: TxKind::Transfer,
             from: AccountId::from_bytes([1u8; 32]),
             to: AccountId::from_bytes([2u8; 32]),
             amount_nanos: 1_000,
             fee_nanos: 10,
             nonce: 0,
+            message: Vec::new(),
             signature: [0xAB; 64],
         };
         Block::assemble(

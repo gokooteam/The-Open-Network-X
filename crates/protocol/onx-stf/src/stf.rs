@@ -1,9 +1,24 @@
-use crate::block::{txs_root, Block, Transaction};
+use crate::block::{txs_root, Block, Transaction, TxKind};
 use crate::error::StfError;
 use crate::state::State;
-use onx_data_structures::AccountId;
-use onx_primitives::PublicKey;
-use onx_state_model::{AccountState, ShardStateTree, StorageStat};
+use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
+use onx_execution::{ExecutionContext, ExecutionResult, Interpreter, StackValue};
+use onx_primitives::{domain_hash, DomainTag, PublicKey};
+use onx_state_model::{AccountState, Cell, ShardStateTree, StorageStat};
+
+/// Gas purchased per nano-Onyx of declared transaction fee, for contract
+/// calls. The fee still splits 50/50 burn/validator via the normal fee
+/// model — gas only bounds execution; there is no gas refund and no fee
+/// market yet (both deferred). A zero-fee contract call gets zero gas and
+/// fails closed with `OutOfGas`.
+pub const GAS_PER_NANO: u64 = 1_000;
+
+/// Domain tag for the flat hash of a contract call's inbound message bytes,
+/// carried as the VM message's `body_cell_hash`. The interpreter does not
+/// yet read the message — this commits to the delivered bytes so the
+/// integration is byte-exact when it does. Multi-cell body chains are
+/// future work.
+pub const ONX_MSG_BODY_V1: DomainTag = DomainTag::from_ascii("ONX_MSG_BODY_V1");
 
 /// What happened to one transaction during block application.
 ///
@@ -20,6 +35,8 @@ pub struct AppliedTx {
     pub fee_validator_nanos: u128,
     pub sender_balance_after: u128,
     pub receiver_balance_after: u128,
+    /// TVM gas consumed by a contract call; 0 for plain transfers.
+    pub gas_used: u64,
 }
 
 /// The ordered per-transaction outcomes of [`apply_block`].
@@ -56,7 +73,13 @@ pub fn propose_block(
         });
     }
     let mut scratch = state.tree.clone();
-    apply_txs(&mut scratch, &transactions, lt, &fee_collector)?;
+    apply_txs(
+        &mut scratch,
+        &transactions,
+        lt,
+        state.workchain,
+        &fee_collector,
+    )?;
     let state_root = scratch.state_root_hash()?;
 
     Block::assemble(
@@ -134,7 +157,13 @@ pub fn apply_block(state: &State, block: &Block) -> Result<(State, Receipts), St
     }
 
     let mut tree = state.tree.clone();
-    let applied = apply_txs(&mut tree, &block.body.transactions, h.lt, &h.fee_collector)?;
+    let applied = apply_txs(
+        &mut tree,
+        &block.body.transactions,
+        h.lt,
+        state.workchain,
+        &h.fee_collector,
+    )?;
 
     let new_root = tree.state_root_hash()?;
     if new_root != h.state_root {
@@ -161,11 +190,12 @@ fn apply_txs(
     tree: &mut ShardStateTree,
     transactions: &[Transaction],
     lt: u64,
+    workchain: i32,
     fee_collector: &AccountId,
 ) -> Result<Vec<AppliedTx>, StfError> {
     let mut applied = Vec::with_capacity(transactions.len());
     for tx in transactions {
-        applied.push(apply_tx(tree, tx, lt, fee_collector)?);
+        applied.push(apply_tx(tree, tx, lt, workchain, fee_collector)?);
     }
     Ok(applied)
 }
@@ -197,6 +227,7 @@ fn apply_tx(
     tree: &mut ShardStateTree,
     tx: &Transaction,
     lt: u64,
+    workchain: i32,
     fee_collector: &AccountId,
 ) -> Result<AppliedTx, StfError> {
     if tx.amount_nanos == 0 {
@@ -214,24 +245,24 @@ fn apply_tx(
         .unwrap_or(AccountState::Uninitialized);
     let (
         sender_balance,
-        sender_code_hash,
-        sender_data_hash,
+        sender_code,
+        sender_data,
         sender_storage_stat,
         sender_pubkey,
         sender_nonce,
     ) = match &sender_state {
         AccountState::Active {
             balance_nanos,
-            code_hash,
-            data_hash,
+            code,
+            data,
             storage_stat,
             pubkey,
             nonce,
             ..
         } => (
             *balance_nanos,
-            *code_hash,
-            *data_hash,
+            code.clone(),
+            data.clone(),
             *storage_stat,
             *pubkey,
             *nonce,
@@ -267,6 +298,10 @@ fn apply_tx(
     check_lt(&sender_state, lt, tx.from)?;
 
     // --- Validate receiver (read-only) ---
+    // Contract calls target an existing contract: the recipient must
+    // already be `Active` and carry code. They never create accounts.
+    // Plain transfers keep the old behavior (`Uninitialized` receivers are
+    // created as fresh `Active` accounts).
     let receiver_state = tree
         .get(&tx.to)
         .cloned()
@@ -275,7 +310,16 @@ fn apply_tx(
         AccountState::Frozen { .. } | AccountState::Destroyed => {
             return Err(StfError::ReceiverNotReceivable(tx.to))
         }
-        AccountState::Active { .. } | AccountState::Uninitialized => {}
+        AccountState::Active { code, .. } => {
+            if tx.kind == TxKind::ContractCall && code.is_none() {
+                return Err(StfError::ContractHasNoCode(tx.to));
+            }
+        }
+        AccountState::Uninitialized => {
+            if tx.kind == TxKind::ContractCall {
+                return Err(StfError::ReceiverNotReceivable(tx.to));
+            }
+        }
     }
     check_lt(&receiver_state, lt, tx.to)?;
 
@@ -299,13 +343,22 @@ fn apply_tx(
         check_lt(&s, lt, *fee_collector)?;
     }
 
+    // --- Contract execution (pure: no tree mutation) ---
+    // Runs after all validation, before any write. A VM exception aborts
+    // the transaction with the tree untouched — revert-by-construction.
+    let contract_out = if tx.kind == TxKind::ContractCall {
+        Some(execute_contract_call(&receiver_state, tx, lt, workchain)?)
+    } else {
+        None
+    };
+
     // --- All checks passed: write in a fixed order ---
-    // Order: sender debit, receiver credit, collector credit. The receiver
-    // and collector are RE-READ after the sender debit: when from == to
-    // (or the collector is the sender/receiver), the debit must be visible
-    // to the later writes. Reusing the pre-debit copies would clobber the
-    // debit — sequential writes are only correct if each write sees the
-    // previous ones.
+    // Order: sender debit, receiver credit (+ contract data update),
+    // collector credit. The receiver and collector are RE-READ after the
+    // sender debit: when from == to (or the collector is the
+    // sender/receiver), the debit must be visible to the later writes.
+    // Reusing the pre-debit copies would clobber the debit — sequential
+    // writes are only correct if each write sees the previous ones.
     let sender_after = sender_balance
         .checked_sub(total_debit)
         .ok_or(StfError::BalanceOverflow)?;
@@ -315,8 +368,8 @@ fn apply_tx(
         AccountState::Active {
             balance_nanos: sender_after,
             last_trans_lt: lt,
-            code_hash: sender_code_hash,
-            data_hash: sender_data_hash,
+            code: sender_code,
+            data: sender_data,
             storage_stat: sender_storage_stat,
             pubkey: sender_pubkey,
             nonce: sender_nonce_after,
@@ -331,6 +384,12 @@ fn apply_tx(
     // check is re-run against the fresh read for the from == to case.
     check_lt(&receiver_current, lt, tx.to)?;
     let receiver_after = credit_account(tree, tx.to, &receiver_current, tx.amount_nanos, lt)?;
+
+    // Contract data update: applied to the post-credit account so the
+    // balance movement above is preserved.
+    if let Some(out) = &contract_out {
+        update_contract_data(tree, tx.to, &out.new_data, lt)?;
+    }
 
     if validator_fee > 0 {
         let collector_current = tree
@@ -350,6 +409,7 @@ fn apply_tx(
         fee_validator_nanos: validator_fee,
         sender_balance_after: sender_after,
         receiver_balance_after: receiver_after,
+        gas_used: contract_out.map(|o| o.gas_used).unwrap_or(0),
     })
 }
 
@@ -382,11 +442,11 @@ fn credit_account(
     amount: u128,
     lt: u64,
 ) -> Result<u128, StfError> {
-    let (new_balance, code_hash, data_hash, storage_stat, pubkey, nonce) = match current {
+    let (new_balance, code, data, storage_stat, pubkey, nonce) = match current {
         AccountState::Active {
             balance_nanos,
-            code_hash,
-            data_hash,
+            code,
+            data,
             storage_stat,
             pubkey,
             nonce,
@@ -395,16 +455,16 @@ fn credit_account(
             balance_nanos
                 .checked_add(amount)
                 .ok_or(StfError::BalanceOverflow)?,
-            *code_hash,
-            *data_hash,
+            code.clone(),
+            data.clone(),
             *storage_stat,
             *pubkey,
             *nonce,
         ),
         AccountState::Uninitialized => (
             amount,
-            [0u8; 32],
-            [0u8; 32],
+            None,
+            None,
             StorageStat {
                 cell_count: 0,
                 byte_count: 0,
@@ -422,12 +482,162 @@ fn credit_account(
         AccountState::Active {
             balance_nanos: new_balance,
             last_trans_lt: lt,
-            code_hash,
-            data_hash,
+            code,
+            data,
             storage_stat,
             pubkey,
             nonce,
         },
     );
     Ok(new_balance)
+}
+
+/// Output of a successful contract execution: the contract's new
+/// persistent data cell and the gas consumed.
+struct ContractExecOutput {
+    new_data: Cell,
+    gas_used: u64,
+}
+
+/// Execute a contract call against the recipient's code and data.
+///
+/// Pure: reads only the already-validated recipient account, never touches
+/// the tree. The caller guarantees the recipient is `Active` with code;
+/// this is re-checked here (fail-closed) so the function is safe to call
+/// on its own.
+///
+/// Calling convention (documented, deterministic):
+/// - The contract's persistent data cell is pushed on the operand stack at
+///   entry. (The interpreter has no c4-push opcode yet; the STF seeds the
+///   stack instead.)
+/// - `SETDATA` (0x4D) installs the new persistent data cell; on halt, the
+///   interpreter's data is the contract's new state.
+/// - `ExecutionContext.gen_utime` is derived from the block lt — the VM
+///   never sees wall-clock time.
+/// - Gas limit is `fee_nanos * GAS_PER_NANO` (saturating at `u64::MAX`).
+fn execute_contract_call(
+    recipient: &AccountState,
+    tx: &Transaction,
+    lt: u64,
+    workchain: i32,
+) -> Result<ContractExecOutput, StfError> {
+    let (code_cell, data_cell) = match recipient {
+        AccountState::Active {
+            code: Some(code),
+            data,
+            ..
+        } => (
+            code.clone(),
+            data.clone()
+                .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid")),
+        ),
+        AccountState::Active { .. } => return Err(StfError::ContractHasNoCode(tx.to)),
+        _ => return Err(StfError::ReceiverNotReceivable(tx.to)),
+    };
+
+    let gas_limit = tx
+        .fee_nanos
+        .saturating_mul(GAS_PER_NANO as u128)
+        .min(u64::MAX as u128) as u64;
+    // gen_utime is NOT wall-clock: it is the block's logical time,
+    // saturated into u32. Feeding real time here would break determinism.
+    let context = ExecutionContext {
+        gen_utime: u32::try_from(lt).unwrap_or(u32::MAX),
+        start_lt: lt,
+        end_lt: lt,
+        gas_limit,
+    };
+    let message = inbound_message(tx, lt, workchain);
+
+    let mut interp = Interpreter::new(code_cell, data_cell.clone(), message, context);
+    interp.stack.push(StackValue::Cell(data_cell));
+    match interp.run() {
+        ExecutionResult::Success {
+            new_data,
+            out_messages,
+            gas_used,
+        } => {
+            if !out_messages.is_empty() {
+                return Err(StfError::OutMessagesNotSupported {
+                    count: out_messages.len(),
+                });
+            }
+            Ok(ContractExecOutput { new_data, gas_used })
+        }
+        ExecutionResult::Exception { kind, .. } => Err(StfError::VmExecutionFailed {
+            kind: kind.to_string(),
+        }),
+    }
+}
+
+/// Build the inbound `Message` delivered to the contract. The interpreter
+/// does not yet read it, but it is part of the deterministic execution
+/// input and is committed to via `body_cell_hash`.
+fn inbound_message(tx: &Transaction, lt: u64, workchain: i32) -> Message {
+    use onx_primitives::{Int32, Uint128, Uint256, Uint64};
+    Message {
+        msg_type: MessageType::Internal,
+        src_address: FullAddress::new(WorkchainIdent(Int32(workchain)), tx.from),
+        dest_address: FullAddress::new(WorkchainIdent(Int32(workchain)), tx.to),
+        amount_nanos: Uint128(tx.amount_nanos),
+        extra_currencies: Vec::new(),
+        created_lt: Uint64(lt),
+        body_cell_hash: Uint256(domain_hash(&ONX_MSG_BODY_V1, &tx.message)),
+    }
+}
+
+/// Write the contract's new persistent data cell after successful
+/// execution, preserving balance, code, and all other account fields.
+/// Recomputes `storage_stat` from the embedded cells.
+fn update_contract_data(
+    tree: &mut ShardStateTree,
+    id: AccountId,
+    new_data: &Cell,
+    lt: u64,
+) -> Result<(), StfError> {
+    let current = tree
+        .get(&id)
+        .cloned()
+        .unwrap_or(AccountState::Uninitialized);
+    match current {
+        AccountState::Active {
+            balance_nanos,
+            code,
+            pubkey,
+            nonce,
+            ..
+        } => {
+            let new_stat = storage_stat_for(code.as_ref(), Some(new_data));
+            tree.insert(
+                id,
+                AccountState::Active {
+                    balance_nanos,
+                    last_trans_lt: lt,
+                    code,
+                    data: Some(new_data.clone()),
+                    storage_stat: new_stat,
+                    pubkey,
+                    nonce,
+                },
+            );
+            Ok(())
+        }
+        _ => Err(StfError::ReceiverNotReceivable(id)),
+    }
+}
+
+/// Storage accounting for embedded contract cells: counts the cells and
+/// their canonical byte sizes. Deterministic; recomputed whenever code or
+/// data changes.
+fn storage_stat_for(code: Option<&Cell>, data: Option<&Cell>) -> StorageStat {
+    let mut cell_count = 0u32;
+    let mut byte_count = 0u64;
+    for cell in [code, data].into_iter().flatten() {
+        cell_count += 1;
+        byte_count += cell.to_bytes().len() as u64;
+    }
+    StorageStat {
+        cell_count,
+        byte_count,
+    }
 }

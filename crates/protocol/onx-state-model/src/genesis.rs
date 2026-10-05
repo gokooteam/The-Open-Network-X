@@ -344,8 +344,8 @@ mod tests {
             AccountState::Active {
                 balance_nanos: 1_000_000,
                 last_trans_lt: 0,
-                code_hash: [0u8; 32],
-                data_hash: [0u8; 32],
+                code: None,
+                data: None,
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
@@ -359,8 +359,8 @@ mod tests {
             AccountState::Active {
                 balance_nanos: 2_000_000,
                 last_trans_lt: 0,
-                code_hash: [0u8; 32],
-                data_hash: [0u8; 32],
+                code: None,
+                data: None,
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,

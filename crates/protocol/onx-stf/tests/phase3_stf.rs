@@ -52,8 +52,8 @@ fn active(balance_nanos: u128, id: &AccountId) -> AccountState {
     AccountState::Active {
         balance_nanos,
         last_trans_lt: 0,
-        code_hash: [0u8; 32],
-        data_hash: [0u8; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
@@ -99,6 +99,7 @@ fn stf_happy_path_transfer_with_fee_split() {
     // onx-economics: 500 burned, 500 to the collector.
     let mut signer = TxSigner::default();
     let tx = signer.sign(alice, bob, 1_000_000, 1_000);
+    let tx_hash = tx.hash();
     let block = propose_block(&state, vec![tx], 1, collector).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
 
@@ -111,7 +112,7 @@ fn stf_happy_path_transfer_with_fee_split() {
 
     assert_eq!(receipts.0.len(), 1);
     let r = &receipts.0[0];
-    assert_eq!(r.tx_hash, tx.hash());
+    assert_eq!(r.tx_hash, tx_hash);
     assert_eq!(r.fee_burned_nanos, 500);
     assert_eq!(r.fee_validator_nanos, 500);
     assert_eq!(r.sender_balance_after, 10_000_000 - 1_001_000);
@@ -295,21 +296,23 @@ fn stf_header_commits_to_ordered_set() {
     let tx1 = signer.sign(ids[0], ids[1], 1, 0);
     let mut signer = TxSigner::default();
     let tx2 = signer.sign(ids[1], ids[0], 1, 0);
-    let r1 = txs_root(&[tx1, tx2]);
-    let r2 = txs_root(&[tx2, tx1]);
+    let r1 = txs_root(&[tx1.clone(), tx2.clone()]);
+    let r2 = txs_root(&[tx2.clone(), tx1.clone()]);
     assert_ne!(r1, r2);
 
     // Header round-trips through canonical bytes.
-    let block = propose_block(&state, vec![tx1, tx2], 1, collector).unwrap();
+    let block = propose_block(&state, vec![tx1.clone(), tx2.clone()], 1, collector).unwrap();
     let bytes = block.header.to_bytes();
     assert_eq!(bytes.len(), onx_stf::block::BLOCK_HEADER_BYTE_LEN);
     let back = BlockHeader::from_bytes(&bytes).unwrap();
     assert_eq!(back, block.header);
     assert_eq!(back.hash(), block.header.hash());
 
-    // Transaction round-trips too.
+    // Transaction round-trips too. V3 transactions are variable-length
+    // (kind byte + length-prefixed message); a plain transfer is
+    // 109 + 64 = 173 bytes.
     let tx_bytes = tx1.to_bytes();
-    assert_eq!(tx_bytes.len(), onx_stf::block::TRANSACTION_BYTE_LEN);
+    assert_eq!(tx_bytes.len(), 173);
     assert_eq!(Transaction::from_bytes(&tx_bytes).unwrap(), tx1);
 }
 

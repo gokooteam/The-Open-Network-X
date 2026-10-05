@@ -4,102 +4,165 @@ use onx_primitives::{
     domain_hash, DomainTag, Int32, PublicKey, SecretKey, Signature, Uint128, Uint32, Uint64,
 };
 
-/// Domain tag for a single canonical V2 transaction encoding (tx identity).
-pub const ONX_TX_V2: DomainTag = DomainTag::from_ascii("ONX_TX_V2");
+/// Domain tag for a single canonical V3 transaction encoding (tx identity).
+pub const ONX_TX_V3: DomainTag = DomainTag::from_ascii("ONX_TX_V3");
 /// Domain tag for the transaction signature payload. The signed message is
 /// `tag || body_bytes`; a signature produced for any other domain will not
 /// verify here, even over an identical body.
-pub const ONX_TX_V2_SIGN: DomainTag = DomainTag::from_ascii("ONX_TX_V2_SIGN");
+pub const ONX_TX_V3_SIGN: DomainTag = DomainTag::from_ascii("ONX_TX_V3_SIGN");
 /// Domain tag for the ordered transaction-set commitment in a block header.
-/// The construction is unchanged from V1 (concatenation of tx hashes), but
-/// the tag is bumped because tx identity itself moved to `ONX_TX_V2` —
-/// a V1-era root can never collide with a V2 root.
+/// The construction is unchanged (concatenation of tx hashes), but the tag
+/// is bumped because tx identity itself moved to `ONX_TX_V3` — a V2-era
+/// root can never collide with a V3 root.
 ///
-/// V1 (`ONX_TX_V1` / `ONX_TXS_ROOT_V1`) is dropped entirely: it never
-/// shipped anywhere (pre-release milestone), so there is no chain to
-/// migrate and no reason to keep unverifiable transaction formats alive.
-pub const ONX_TXS_ROOT_V2: DomainTag = DomainTag::from_ascii("ONX_TXS_ROOT_V2");
+/// V1 (`ONX_TX_V1` / `ONX_TXS_ROOT_V1`) and V2 (`ONX_TX_V2` /
+/// `ONX_TX_V2_SIGN` / `ONX_TXS_ROOT_V2`) are dropped entirely: neither ever
+/// shipped anywhere (pre-release milestone, all uncommitted), so there is
+/// no chain to migrate and no reason to keep superseded transaction formats
+/// alive. One canonical transaction format, not an archaeological layer cake.
+pub const ONX_TXS_ROOT_V3: DomainTag = DomainTag::from_ascii("ONX_TXS_ROOT_V3");
 /// Domain tag for a canonical block header encoding (unchanged by the
 /// tx-auth upgrade: the header commits to tx hashes, not tx bodies).
 pub const ONX_BLOCK_HDR_V1: DomainTag = DomainTag::from_ascii("ONX_BLOCK_HDR_V1");
 
-/// Canonical byte length of one [`Transaction`] *body* (everything the
-/// signature covers):
-/// `from(32) || to(32) || amount_nanos u128be(16) || fee_nanos u128be(16) || nonce u64be(8)`.
-pub const TRANSACTION_BODY_BYTE_LEN: usize = 104;
+/// Transaction kind discriminant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TxKind {
+    /// Plain value transfer. The message must be empty.
+    Transfer = 0,
+    /// Contract call: `message` carries the inbound message bytes for the
+    /// recipient contract's code, executed by the TVM in `apply_tx`.
+    ContractCall = 1,
+}
 
-/// Canonical byte length of one [`Transaction`] on the wire / in a block:
-/// body (104) followed by the 64-byte Ed25519 signature.
-pub const TRANSACTION_BYTE_LEN: usize = TRANSACTION_BODY_BYTE_LEN + Signature::BYTE_LEN;
+impl TxKind {
+    pub fn from_u8(value: u8) -> Result<Self, StfError> {
+        match value {
+            0 => Ok(Self::Transfer),
+            1 => Ok(Self::ContractCall),
+            other => Err(StfError::BadTxKind(other)),
+        }
+    }
+}
 
-/// A signed Onyx value transfer with an explicit fee and a per-account nonce.
+/// Maximum inbound message bytes on a contract call. Bounds transaction
+/// size: the message is fed to contract execution, so an unbounded message
+/// is a resource-exhaustion vector even before gas accounting.
+pub const MAX_MESSAGE_BYTES: usize = 65_535;
+
+/// Canonical byte length of the fixed prefix of one [`Transaction`] *body*
+/// (everything before the variable-length message):
+/// `kind(1) || from(32) || to(32) || amount_nanos u128be(16) ||`
+/// `fee_nanos u128be(16) || nonce u64be(8) || msg_len u32be(4)` = 109 bytes.
+pub const TRANSACTION_BODY_PREFIX_LEN: usize = 109;
+
+/// A signed Onyx transaction: value transfer, optionally carrying a
+/// contract message.
 ///
-/// Authorization model:
+/// Authorization model (unchanged from V2):
 /// - `from` must be an `Active` account carrying a non-zero Ed25519 pubkey.
 /// - `nonce` must equal the account's current nonce; it increments on every
 ///   successful spend, so a signed transaction can never be replayed and
 ///   nonces cannot skip.
-/// - `signature` is Ed25519 over `ONX_TX_V2_SIGN || body_bytes`, i.e. it
-///   covers every field except itself. Verification failure makes the
-///   transaction invalid, which makes the block invalid (fail-closed).
+/// - `signature` is Ed25519 over `ONX_TX_V3_SIGN || body_bytes`, i.e. it
+///   covers every field except itself — including the kind byte and the
+///   full message. Verification failure makes the transaction invalid,
+///   which makes the block invalid (fail-closed).
 ///
-/// `fee_nanos` may be zero. There is no minimum fee yet — the fee market is
-/// deferred; what matters for replay is that the declared fee is applied
-/// deterministically.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Kind semantics:
+/// - `Transfer` with an empty message is the plain value transfer.
+///   (A `Transfer` carrying a non-empty message is malformed — rejected at
+///   parse, never silently downgraded.)
+/// - `ContractCall` routes `message` into the recipient contract's TVM code
+///   in `apply_tx`. The recipient must be an `Active` account carrying code;
+///   VM failure makes the transaction invalid, which makes the block
+///   invalid (fail-closed, reverting all of the transaction's effects).
+///
+/// `fee_nanos` may be zero for transfers. For contract calls the fee buys
+/// execution gas (`gas_limit = fee_nanos * GAS_PER_NANO` in the STF), so a
+/// zero-fee contract call gets zero gas and fails closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transaction {
+    pub kind: TxKind,
     pub from: AccountId,
     pub to: AccountId,
     pub amount_nanos: u128,
     pub fee_nanos: u128,
     pub nonce: u64,
+    pub message: Vec<u8>,
     pub signature: [u8; 64],
 }
 
 impl Transaction {
     /// Canonical encoding of the signed body: the exact bytes covered by
-    /// the signature (`TRANSACTION_BODY_BYTE_LEN` bytes, big-endian).
+    /// the signature (big-endian, strict).
     pub fn body_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(TRANSACTION_BODY_BYTE_LEN);
+        let mut out = Vec::with_capacity(TRANSACTION_BODY_PREFIX_LEN + self.message.len());
+        out.push(self.kind as u8);
         out.extend_from_slice(&self.from.to_bytes());
         out.extend_from_slice(&self.to.to_bytes());
         out.extend_from_slice(&Uint128(self.amount_nanos).encode());
         out.extend_from_slice(&Uint128(self.fee_nanos).encode());
         out.extend_from_slice(&Uint64(self.nonce).encode());
+        out.extend_from_slice(&(self.message.len() as u32).to_be_bytes());
+        out.extend_from_slice(&self.message);
         out
     }
 
     /// Parse exactly one canonical transaction body (unsigned part).
-    /// Rejects wrong lengths and trailing bytes.
+    /// Rejects bad kind bytes, over-long messages, `Transfer` with a
+    /// non-empty message, and trailing bytes.
     pub fn body_from_bytes(bytes: &[u8]) -> Result<Self, StfError> {
-        if bytes.len() != TRANSACTION_BODY_BYTE_LEN {
+        if bytes.len() < TRANSACTION_BODY_PREFIX_LEN {
             return Err(StfError::MalformedTransaction {
-                expected_len: TRANSACTION_BODY_BYTE_LEN,
+                expected_len: TRANSACTION_BODY_PREFIX_LEN,
                 got_len: bytes.len(),
             });
         }
+        let kind = TxKind::from_u8(bytes[0])?;
         let mut from = [0u8; 32];
-        from.copy_from_slice(&bytes[0..32]);
+        from.copy_from_slice(&bytes[1..33]);
         let mut to = [0u8; 32];
-        to.copy_from_slice(&bytes[32..64]);
+        to.copy_from_slice(&bytes[33..65]);
         let mut amount_b = [0u8; 16];
-        amount_b.copy_from_slice(&bytes[64..80]);
+        amount_b.copy_from_slice(&bytes[65..81]);
         let mut fee_b = [0u8; 16];
-        fee_b.copy_from_slice(&bytes[80..96]);
+        fee_b.copy_from_slice(&bytes[81..97]);
         let mut nonce_b = [0u8; 8];
-        nonce_b.copy_from_slice(&bytes[96..104]);
+        nonce_b.copy_from_slice(&bytes[97..105]);
+        let msg_len =
+            u32::from_be_bytes(bytes[105..109].try_into().expect("slice len checked")) as usize;
+        if msg_len > MAX_MESSAGE_BYTES {
+            return Err(StfError::MessageTooLarge { len: msg_len });
+        }
+        if bytes.len() != TRANSACTION_BODY_PREFIX_LEN + msg_len {
+            return Err(StfError::MalformedTransaction {
+                expected_len: TRANSACTION_BODY_PREFIX_LEN + msg_len,
+                got_len: bytes.len(),
+            });
+        }
+        let message = bytes[TRANSACTION_BODY_PREFIX_LEN..].to_vec();
+        if kind == TxKind::Transfer && !message.is_empty() {
+            return Err(StfError::MalformedTransaction {
+                expected_len: TRANSACTION_BODY_PREFIX_LEN,
+                got_len: bytes.len(),
+            });
+        }
         Ok(Self {
+            kind,
             from: AccountId::from_bytes(from),
             to: AccountId::from_bytes(to),
             amount_nanos: u128::from_be_bytes(amount_b),
             fee_nanos: u128::from_be_bytes(fee_b),
             nonce: u64::from_be_bytes(nonce_b),
+            message,
             signature: [0u8; 64],
         })
     }
 
-    /// Build a signed transaction: assemble the body, sign
-    /// `ONX_TX_V2_SIGN || body_bytes` with `secret`, attach the signature.
+    /// Build a signed transfer: assemble the body, sign
+    /// `ONX_TX_V3_SIGN || body_bytes` with `secret`, attach the signature.
     ///
     /// This is the wallet/producer-side constructor. The STF never signs;
     /// it only verifies.
@@ -111,15 +174,70 @@ impl Transaction {
         nonce: u64,
         secret: &SecretKey,
     ) -> Self {
-        let mut tx = Self {
+        Self::new_signed_kind(
+            TxKind::Transfer,
             from,
             to,
             amount_nanos,
             fee_nanos,
             nonce,
+            Vec::new(),
+            secret,
+        )
+    }
+
+    /// Build a signed contract call carrying `message` bytes for the
+    /// recipient contract. Panics on over-long messages — this is the
+    /// producer side, and a message that cannot be encoded must never be
+    /// signed (fail fast here, fail closed in the STF).
+    pub fn new_signed_call(
+        from: AccountId,
+        to: AccountId,
+        amount_nanos: u128,
+        fee_nanos: u128,
+        nonce: u64,
+        message: Vec<u8>,
+        secret: &SecretKey,
+    ) -> Self {
+        assert!(
+            message.len() <= MAX_MESSAGE_BYTES,
+            "contract message too large: {} > {MAX_MESSAGE_BYTES}",
+            message.len()
+        );
+        Self::new_signed_kind(
+            TxKind::ContractCall,
+            from,
+            to,
+            amount_nanos,
+            fee_nanos,
+            nonce,
+            message,
+            secret,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_signed_kind(
+        kind: TxKind,
+        from: AccountId,
+        to: AccountId,
+        amount_nanos: u128,
+        fee_nanos: u128,
+        nonce: u64,
+        message: Vec<u8>,
+        secret: &SecretKey,
+    ) -> Self {
+        let mut tx = Self {
+            kind,
+            from,
+            to,
+            amount_nanos,
+            fee_nanos,
+            nonce,
+            message,
             signature: [0u8; 64],
         };
-        let sig = secret.sign(&ONX_TX_V2_SIGN, &tx.body_bytes());
+        let sig = secret.sign(&ONX_TX_V3_SIGN, &tx.body_bytes());
         tx.signature = sig.encode();
         tx
     }
@@ -134,15 +252,16 @@ impl Transaction {
         let sig =
             Signature::decode_exact(&self.signature).map_err(|_| StfError::InvalidSignature)?;
         pubkey
-            .verify(&ONX_TX_V2_SIGN, &self.body_bytes(), &sig)
+            .verify(&ONX_TX_V3_SIGN, &self.body_bytes(), &sig)
             .map_err(|_| StfError::InvalidSignature)
     }
 
-    /// Canonical encoding (`TRANSACTION_BYTE_LEN` bytes, big-endian):
-    /// body followed by the 64-byte signature.
+    /// Canonical encoding: body followed by the 64-byte signature.
+    /// Variable length: `body_bytes().len() + 64`.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(TRANSACTION_BYTE_LEN);
-        out.extend_from_slice(&self.body_bytes());
+        let body = self.body_bytes();
+        let mut out = Vec::with_capacity(body.len() + Signature::BYTE_LEN);
+        out.extend_from_slice(&body);
         out.extend_from_slice(&self.signature);
         out
     }
@@ -152,40 +271,40 @@ impl Transaction {
     /// that is the STF's job (`apply_tx`), with the sender's on-chain
     /// pubkey as the trust anchor.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, StfError> {
-        if bytes.len() != TRANSACTION_BYTE_LEN {
+        if bytes.len() < TRANSACTION_BODY_PREFIX_LEN + Signature::BYTE_LEN {
             return Err(StfError::MalformedTransaction {
-                expected_len: TRANSACTION_BYTE_LEN,
+                expected_len: TRANSACTION_BODY_PREFIX_LEN + Signature::BYTE_LEN,
                 got_len: bytes.len(),
             });
         }
-        let mut tx = Self::body_from_bytes(&bytes[..TRANSACTION_BODY_BYTE_LEN])?;
-        tx.signature
-            .copy_from_slice(&bytes[TRANSACTION_BODY_BYTE_LEN..]);
+        let body_len = bytes.len() - Signature::BYTE_LEN;
+        let mut tx = Self::body_from_bytes(&bytes[..body_len])?;
+        tx.signature.copy_from_slice(&bytes[body_len..]);
         Ok(tx)
     }
 
     /// Domain-separated hash of the canonical encoding: the transaction's identity.
     pub fn hash(&self) -> [u8; 32] {
-        domain_hash(&ONX_TX_V2, &self.to_bytes())
+        domain_hash(&ONX_TX_V3, &self.to_bytes())
     }
 }
 
 /// Commitment to the ordered transaction set of a block.
 ///
-/// `domain_hash(ONX_TXS_ROOT_V2, tx[0].hash() || tx[1].hash() || ...)`.
-/// The empty body commits to `domain_hash(ONX_TXS_ROOT_V2, b"")` — still a
+/// `domain_hash(ONX_TXS_ROOT_V3, tx[0].hash() || tx[1].hash() || ...)`.
+/// The empty body commits to `domain_hash(ONX_TXS_ROOT_V3, b"")` — still a
 /// well-defined, deterministic value.
 ///
 /// Upgrade path (documented, not implemented): this may later become a
 /// Merkle root over the transaction hashes for light-client proofs. That
-/// change MUST use a new domain tag (`ONX_TXS_ROOT_V3`) so old and new
+/// change MUST use a new domain tag (`ONX_TXS_ROOT_V4`) so old and new
 /// commitments can never collide.
 pub fn txs_root(transactions: &[Transaction]) -> [u8; 32] {
     let mut preimage = Vec::with_capacity(transactions.len() * 32);
     for tx in transactions {
         preimage.extend_from_slice(&tx.hash());
     }
-    domain_hash(&ONX_TXS_ROOT_V2, &preimage)
+    domain_hash(&ONX_TXS_ROOT_V3, &preimage)
 }
 
 /// A block body: the ordered list of transactions.
@@ -287,11 +406,10 @@ impl BlockHeader {
 
 /// Checked `usize -> u32` conversion for the header `tx_count`.
 ///
-/// A `Vec<Transaction>` longer than `u32::MAX` cannot exist in memory
-/// (each transaction is 168 bytes; that many would be ~672 GiB of
-/// transactions alone), so this is defense in depth: if it ever fired,
-/// silently truncating with `as u32` would commit a header whose
-/// `tx_count` disagrees with the body it commits to. Fail closed instead.
+/// A `Vec<Transaction>` longer than `u32::MAX` cannot exist in memory, so
+/// this is defense in depth: if it ever fired, silently truncating with
+/// `as u32` would commit a header whose `tx_count` disagrees with the body
+/// it commits to. Fail closed instead.
 fn checked_tx_count(n: usize) -> Result<u32, StfError> {
     u32::try_from(n).map_err(|_| StfError::TooManyTransactions { count: n })
 }
@@ -356,7 +474,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_transaction_encoding_is_canonical() {
+    fn v3_transaction_encoding_is_canonical() {
         let secret = SecretKey::from_seed(&[0x42; 32]).unwrap();
         let tx = Transaction::new_signed(
             AccountId::from_bytes([1u8; 32]),
@@ -367,21 +485,54 @@ mod tests {
             &secret,
         );
         let bytes = tx.to_bytes();
-        assert_eq!(bytes.len(), TRANSACTION_BYTE_LEN);
-        assert_eq!(bytes.len(), 168);
+        // V3 transfer with empty message: 109-byte body + 64-byte signature.
+        assert_eq!(bytes.len(), TRANSACTION_BODY_PREFIX_LEN + 64);
+        assert_eq!(bytes.len(), 173);
         // Body is a strict prefix of the encoding.
-        assert_eq!(&bytes[..TRANSACTION_BODY_BYTE_LEN], tx.body_bytes());
+        assert_eq!(&bytes[..TRANSACTION_BODY_PREFIX_LEN], tx.body_bytes());
         let back = Transaction::from_bytes(&bytes).unwrap();
         assert_eq!(back, tx);
-        // Nonce occupies the last 8 body bytes.
-        assert_eq!(u64::from_be_bytes(bytes[96..104].try_into().unwrap()), 7);
+        // Kind byte first, then nonce at offset 97..105, msg_len at 105..109.
+        assert_eq!(bytes[0], 0x00); // Transfer
+        assert_eq!(u64::from_be_bytes(bytes[97..105].try_into().unwrap()), 7);
+        assert_eq!(u32::from_be_bytes(bytes[105..109].try_into().unwrap()), 0);
         // Wrong lengths rejected.
-        assert!(Transaction::from_bytes(&bytes[..167]).is_err());
+        assert!(Transaction::from_bytes(&bytes[..172]).is_err());
         let mut long = bytes.clone();
         long.push(0);
         assert!(Transaction::from_bytes(&long).is_err());
-        // V1-length input (96 bytes) is not a valid V2 transaction.
-        assert!(Transaction::from_bytes(&bytes[..96]).is_err());
+        // V2-length input (168 bytes) is not a valid V3 transaction
+        // (the msg_len field would overrun).
+        assert!(Transaction::from_bytes(&bytes[..168]).is_err());
+        // Bad kind byte rejected.
+        let mut bad_kind = bytes.clone();
+        bad_kind[0] = 0x02;
+        assert!(Transaction::from_bytes(&bad_kind).is_err());
+    }
+
+    #[test]
+    fn contract_call_encoding_carries_message() {
+        let secret = SecretKey::from_seed(&[0x42; 32]).unwrap();
+        let msg = b"increment".to_vec();
+        let tx = Transaction::new_signed_call(
+            AccountId::from_bytes([1u8; 32]),
+            AccountId::from_bytes([2u8; 32]),
+            1_000,
+            10,
+            7,
+            msg.clone(),
+            &secret,
+        );
+        assert_eq!(tx.kind, crate::block::TxKind::ContractCall);
+        let bytes = tx.to_bytes();
+        assert_eq!(bytes.len(), TRANSACTION_BODY_PREFIX_LEN + msg.len() + 64);
+        let back = Transaction::from_bytes(&bytes).unwrap();
+        assert_eq!(back, tx);
+        assert_eq!(back.message, msg);
+        // Transfer with a non-empty message is malformed, not downgraded.
+        let mut evil = tx.clone();
+        evil.kind = crate::block::TxKind::Transfer;
+        assert!(Transaction::from_bytes(&evil.to_bytes()).is_err());
     }
 
     #[test]
@@ -401,16 +552,20 @@ mod tests {
         let other = SecretKey::from_seed(&[0x43; 32]).unwrap().public_key();
         assert!(tx.verify_signature(&other).is_err());
         // Tampered amount: signature is over the original body.
-        let mut evil = tx;
+        let mut evil = tx.clone();
         evil.amount_nanos = 1_001;
         assert!(evil.verify_signature(&pubkey).is_err());
         // Tampered nonce.
-        let mut evil = tx;
+        let mut evil = tx.clone();
         evil.nonce = 1;
         assert!(evil.verify_signature(&pubkey).is_err());
         // Tampered signature bytes.
-        let mut evil = tx;
+        let mut evil = tx.clone();
         evil.signature[0] ^= 0xff;
+        assert!(evil.verify_signature(&pubkey).is_err());
+        // Tampered kind: signature covers the kind byte.
+        let mut evil = tx.clone();
+        evil.kind = crate::block::TxKind::ContractCall;
         assert!(evil.verify_signature(&pubkey).is_err());
     }
 }

@@ -17,8 +17,9 @@
 //!   in protocol crates via clippy `disallowed-types`),
 //! - only `BTreeMap`/`BTreeSet`/`Vec` (insertion-ordered) and fixed-size arrays.
 //!
-//! Scope: Onyx transfers and fees only. No VM — the VM is wired in later,
-//! after replay passes without it (plan §"Frozen until replay passes").
+//! Scope: Onyx transfers, fees, and TVM contract execution. Message-carrying
+//! transactions (`TxKind::ContractCall`) dispatch into `onx-execution`; the
+//! VM runs pure (no I/O, no clocks) with gas bounded by the declared fee.
 //!
 //! Consensus rules implemented here:
 //! - Blocks form a hash chain: `header.seqno == prev.seqno + 1`,
@@ -45,7 +46,9 @@ pub mod error;
 pub mod state;
 pub mod stf;
 
-pub use block::{txs_root, Block, BlockBody, BlockHeader, Transaction};
+pub use block::{txs_root, Block, BlockBody, BlockHeader, Transaction, TxKind};
 pub use error::StfError;
 pub use state::State;
+/// Gas economics for contract execution: 1_000 gas per nano-Onyx of declared fee.
+pub use stf::GAS_PER_NANO;
 pub use stf::{apply_block, propose_block, AppliedTx, Receipts};

@@ -34,8 +34,8 @@ fn keyed(balance: u128, name: &str) -> AccountState {
     AccountState::Active {
         balance_nanos: balance,
         last_trans_lt: 0,
-        code_hash: [0u8; 32],
-        data_hash: [0u8; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
@@ -49,8 +49,8 @@ fn keyless(balance: u128) -> AccountState {
     AccountState::Active {
         balance_nanos: balance,
         last_trans_lt: 0,
-        code_hash: [0u8; 32],
-        data_hash: [0u8; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
@@ -171,7 +171,8 @@ fn tampered_nonce_rejected() {
 fn replayed_tx_rejected() {
     let (state, alice, bob, collector) = genesis("auth-alice-key", false);
     let tx = Transaction::new_signed(alice, bob, 1_000_000, 0, 0, &secret("auth-alice-key"));
-    let state = apply_txs(&state, vec![tx], collector, 1).expect("first apply must succeed");
+    let state =
+        apply_txs(&state, vec![tx.clone()], collector, 1).expect("first apply must succeed");
     // Same bytes again: the nonce was already consumed.
     let err = apply_txs(&state, vec![tx], collector, 2).expect_err("replay must fail");
     match err {

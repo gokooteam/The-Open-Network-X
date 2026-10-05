@@ -1,7 +1,15 @@
+pub mod mempool;
+pub mod producer;
+
+use crate::mempool::Mempool;
+use crate::producer::{run_producer_loop, ProducerConfig};
+use onx_data_structures::AccountId;
 use onx_storage::ChainStore;
 use onx_telemetry::{serve_metrics, TelemetryConfig, TelemetryHandle};
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -32,6 +40,16 @@ pub struct OnxdConfig {
     pub peers: Vec<String>,
     pub bootstrap_genesis: Option<String>,
     pub shutdown_after_ms: Option<u64>,
+    /// Directory where signed transaction files are dropped for the
+    /// mempool. Created with `pending/` and `rejected/` subdirectories.
+    pub tx_pool_dir: String,
+    /// Account receiving the validator half of fees. Hex-encoded 32 bytes.
+    /// Required: block production is explicit about who collects.
+    pub fee_collector: Option<String>,
+    /// Mempool idle poll interval (liveness only, never in block content).
+    pub block_poll_interval_ms: u64,
+    /// Mempool bound; new submissions are rejected when full.
+    pub mempool_max_txs: usize,
 }
 
 impl Default for OnxdConfig {
@@ -44,6 +62,10 @@ impl Default for OnxdConfig {
             peers: Vec::new(),
             bootstrap_genesis: None,
             shutdown_after_ms: None,
+            tx_pool_dir: "./onx-txpool".to_string(),
+            fee_collector: None,
+            block_poll_interval_ms: 200,
+            mempool_max_txs: 10_000,
         }
     }
 }
@@ -63,6 +85,10 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
     let mut peers = Vec::new();
     let mut bootstrap_genesis = None;
     let mut shutdown_after_ms = None;
+    let mut tx_pool_dir = "./onx-txpool".to_string();
+    let mut fee_collector: Option<String> = None;
+    let mut block_poll_interval_ms = 200u64;
+    let mut mempool_max_txs = 10_000usize;
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -97,6 +123,18 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
                             .map_err(|_| format!("invalid shutdown_after_ms value: {value}"))?,
                     );
                 }
+                "tx_pool_dir" => tx_pool_dir = value.to_string(),
+                "fee_collector" => fee_collector = Some(value.to_string()),
+                "block_poll_interval_ms" => {
+                    block_poll_interval_ms = value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid block_poll_interval_ms value: {value}"))?;
+                }
+                "mempool_max_txs" => {
+                    mempool_max_txs = value
+                        .parse::<usize>()
+                        .map_err(|_| format!("invalid mempool_max_txs value: {value}"))?;
+                }
                 _ => {}
             }
         }
@@ -110,6 +148,10 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
         peers,
         bootstrap_genesis,
         shutdown_after_ms,
+        tx_pool_dir,
+        fee_collector,
+        block_poll_interval_ms,
+        mempool_max_txs,
     })
 }
 
@@ -161,9 +203,32 @@ pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
                 }
                 config.peers.push(args[idx].clone());
             }
+            "--tx-pool-dir" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--tx-pool-dir requires a value".to_string());
+                }
+                config.tx_pool_dir = args[idx].clone();
+            }
+            "--fee-collector" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--fee-collector requires a value".to_string());
+                }
+                config.fee_collector = Some(args[idx].clone());
+            }
+            "--block-poll-interval-ms" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--block-poll-interval-ms requires a value".to_string());
+                }
+                config.block_poll_interval_ms = args[idx]
+                    .parse::<u64>()
+                    .map_err(|_| "invalid --block-poll-interval-ms value".to_string())?;
+            }
             "--help" | "-h" => {
                 return Err(
-                    "usage: onxd --config onxd.toml [--role full|validator|lite]".to_string(),
+                    "usage: onxd --config onxd.toml [--role full|validator|lite] [--tx-pool-dir DIR] [--fee-collector HEX] [--block-poll-interval-ms MS]".to_string(),
                 );
             }
             _ => {}
@@ -181,19 +246,56 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         )
     })?;
 
-    // Phase 4: the chain store is a single redb file. Opening it here keeps
-    // the fail-fast behavior (a bad storage path aborts startup); the daemon
-    // itself does not use it yet (networking is frozen until replay passes).
-    let _store = ChainStore::open(Path::new(&config.storage_path).join("chain.redb"))
+    let store = ChainStore::open(Path::new(&config.storage_path).join("chain.redb"))
         .map_err(|err| format!("failed to initialize chain store: {err}"))?;
 
-    if let Some(genesis_path) = &config.bootstrap_genesis {
-        let genesis = fs::read(genesis_path)
-            .map_err(|err| format!("failed to read bootstrap genesis {}: {err}", genesis_path))?;
-        if genesis.is_empty() {
-            return Err(format!("bootstrap genesis is empty: {genesis_path}"));
+    // Genesis is real now, not a non-empty check: parse the TOML config,
+    // build the canonical document, and initialize the store (idempotent
+    // for the same genesis, fail-closed on a different one).
+    match &config.bootstrap_genesis {
+        Some(genesis_path) => {
+            let cfg = onx_genesis::parse_config(genesis_path)
+                .map_err(|err| format!("genesis config {genesis_path}: {err}"))?;
+            let doc = onx_genesis::build_genesis_document(&cfg)
+                .map_err(|err| format!("genesis build {genesis_path}: {err}"))?;
+            store
+                .init_genesis(&doc)
+                .map_err(|err| format!("genesis init: {err}"))?;
+        }
+        None => {
+            let has_genesis = store
+                .genesis_hash()
+                .map_err(|err| format!("failed to read genesis marker: {err}"))?
+                .is_some();
+            if !has_genesis {
+                return Err(
+                    "no genesis: set bootstrap_genesis to a genesis TOML config \
+                     (the store is empty and no genesis was provided)"
+                        .to_string(),
+                );
+            }
         }
     }
+
+    // Fee collector: explicit operator identity, parsed fail-fast. No magic
+    // accounts anywhere in the pipeline.
+    let fee_collector_hex = config.fee_collector.as_deref().ok_or_else(|| {
+        "no fee collector: set fee_collector to the 64-char hex account id \
+         receiving the validator half of fees"
+            .to_string()
+    })?;
+    let fee_collector_bytes = hex::decode(fee_collector_hex).map_err(|_| {
+        format!("fee_collector is not valid hex: {fee_collector_hex}")
+    })?;
+    if fee_collector_bytes.len() != 32 {
+        return Err(format!(
+            "fee_collector must be 32 bytes hex, got {} bytes",
+            fee_collector_bytes.len()
+        ));
+    }
+    let mut fee_collector_arr = [0u8; 32];
+    fee_collector_arr.copy_from_slice(&fee_collector_bytes);
+    let fee_collector = AccountId::from_bytes(fee_collector_arr);
 
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
     // Networking is frozen: reporting a peer count would imply a network
@@ -206,42 +308,79 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         let _ = serve_metrics(metrics_cfg).await;
     });
 
-    let runtime_shutdown = config
-        .shutdown_after_ms
-        .map(|ms| sleep(Duration::from_millis(ms)));
-
-    // Phase 5: the fake network/consensus loop is deleted. It constructed
-    // components and discarded them in a 10ms ticker, and every node shared
-    // the hardcoded secret `[1u8; 32]` — both are gone. Networking stays
-    // frozen until the deterministic-replay milestone passes; refusing to
-    // pretend a network exists.
+    // Networking stays frozen: refusing to pretend a network exists.
     if config.network_enabled {
         return Err(
             "networking is frozen until the deterministic-replay milestone passes: \
              refusing to start with network_enabled=true (there is no real network \
-             loop yet). Set network_enabled=false to run config/storage validation only."
+             loop yet). Set network_enabled=false to run the single-node producer."
                 .to_string(),
         );
     }
 
-    let shutdown = tokio::signal::ctrl_c();
+    // Block production runs on a dedicated blocking thread: propose/commit
+    // are synchronous store operations. The async side only watches for
+    // shutdown and joins the producer afterwards.
+    //
+    // Role note: the loop runs for every role in this milestone. There is
+    // one honest producer and no validator set yet; role-differentiated
+    // block production is consensus-phase work.
+    let mempool = Mempool::new(Path::new(&config.tx_pool_dir), config.mempool_max_txs)?;
+    fs::create_dir_all(&config.tx_pool_dir).map_err(|err| {
+        format!(
+            "failed to initialize tx pool dir {}: {err}",
+            config.tx_pool_dir
+        )
+    })?;
+    let producer_cfg = ProducerConfig {
+        fee_collector,
+        poll_interval: Duration::from_millis(config.block_poll_interval_ms),
+        tx_pool_dir: Path::new(&config.tx_pool_dir).to_path_buf(),
+        blocks_dir: Path::new(&config.storage_path).join("blocks"),
+        consecutive_failure_limit: 3,
+        telemetry: Some(metrics),
+    };
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let producer_shutdown = shutdown.clone();
+    let producer_task =
+        tokio::task::spawn_blocking(move || run_producer_loop(store, mempool, producer_cfg, producer_shutdown));
+
+    let runtime_shutdown = config
+        .shutdown_after_ms
+        .map(|ms| sleep(Duration::from_millis(ms)));
+
+    let shutdown_sig = tokio::signal::ctrl_c();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|err| format!("failed to install SIGTERM watcher: {err}"))?;
 
-    let outcome = tokio::select! {
-        _ = shutdown => Ok(()),
-        _ = sigterm.recv() => Ok(()),
+    tokio::select! {
+        _ = shutdown_sig => {},
+        _ = sigterm.recv() => {},
         _ = async {
             if let Some(timer) = runtime_shutdown {
                 timer.await;
             } else {
                 std::future::pending::<()>().await;
             }
-        } => Ok(()),
-    };
+        } => {},
+    }
+
+    // Graceful shutdown: the flag stops the producer after its current tick
+    // — an in-flight commit_block is atomic, so the store is always left in
+    // a fully-committed state. Uncommitted mempool transactions stay in
+    // pending/ and are re-proposed on the next startup.
+    shutdown.store(true, Ordering::Relaxed);
+    match producer_task.await {
+        Ok(Ok(stats)) => eprintln!(
+            "onxd: producer stopped cleanly: {} blocks, {} txs committed, {} rejected",
+            stats.blocks_produced, stats.txs_committed, stats.txs_rejected
+        ),
+        Ok(Err(e)) => eprintln!("onxd: producer exited with error: {e}"),
+        Err(e) => eprintln!("onxd: producer task panicked: {e}"),
+    }
 
     metrics_task.abort();
-    outcome
+    Ok(())
 }
 
 #[cfg(test)]

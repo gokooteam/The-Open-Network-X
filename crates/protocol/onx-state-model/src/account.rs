@@ -1,5 +1,55 @@
+use crate::cell::Cell;
 use crate::error::StateModelError;
 use onx_primitives::{Uint128, Uint32, Uint64, Uint8};
+
+/// Maximum canonical bytes of one embedded code/data cell inside an
+/// account record. Bounds account size: a cell is at most 2 + 128 + 4*32
+/// bytes by construction, so this is defense in depth, not the real limit.
+const MAX_EMBEDDED_CELL_BYTES: usize = 1024;
+
+/// All-zero hash sentinel: marks "no cell appended" in the account codec.
+/// A real cell's hash is SHA-256-based and never all zeros in practice;
+/// even so, the decoder treats a zero hash as absent, never as a cell
+/// whose hash must verify — so there is no ambiguity to exploit.
+const NO_CELL_HASH: [u8; 32] = [0u8; 32];
+
+/// Encode an optional cell's payload for appending after the fixed account
+/// header. `len u32be(4) || cell_bytes`. Fail-closed on decode.
+fn encode_embedded_cell(out: &mut Vec<u8>, cell: &Cell) {
+    let bytes = cell.to_bytes();
+    out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
+    out.extend_from_slice(&bytes);
+}
+
+/// Decode an embedded cell payload from the front of `slice`, verifying it
+/// hashes to `expected`. Returns the cell and bytes consumed. Fail-closed
+/// on truncation, over-long lengths, malformed cell bytes, or hash mismatch.
+fn decode_embedded_cell(slice: &[u8], expected: &[u8; 32]) -> Result<(Cell, usize), String> {
+    if slice.len() < 4 {
+        return Err("truncated embedded cell length prefix".to_string());
+    }
+    let len = u32::from_be_bytes(slice[0..4].try_into().expect("len checked")) as usize;
+    if len > MAX_EMBEDDED_CELL_BYTES {
+        return Err(format!("embedded cell too large: {len} bytes"));
+    }
+    if slice.len() < 4 + len {
+        return Err(format!(
+            "truncated embedded cell: need {}, got {}",
+            4 + len,
+            slice.len()
+        ));
+    }
+    let (cell, consumed) = Cell::from_bytes(&slice[4..4 + len]).map_err(|e| e.to_string())?;
+    if consumed != len {
+        return Err(format!(
+            "embedded cell length mismatch: prefix {len}, parsed {consumed}"
+        ));
+    }
+    if &cell.hash() != expected {
+        return Err("embedded cell hash does not match account header".to_string());
+    }
+    Ok((cell, 4 + len))
+}
 
 /// Canonical account lifecycle states per docs/specification/state-model.md §3.1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -41,8 +91,15 @@ pub enum AccountState {
     Active {
         balance_nanos: u128,
         last_trans_lt: u64,
-        code_hash: [u8; 32],
-        data_hash: [u8; 32],
+        /// Contract code cell. `None` for plain accounts; `Some` makes this
+        /// account a contract whose code the STF executes on message-carrying
+        /// transactions. Single source of truth — there is no separate
+        /// `code_hash` field to drift out of sync; hashes are computed from
+        /// the cell on demand.
+        code: Option<Cell>,
+        /// Contract persistent data cell (TVM c4). Updated by contract
+        /// execution; `None` for plain accounts.
+        data: Option<Cell>,
         storage_stat: StorageStat,
         /// Ed25519 public key authorized to spend from this account.
         /// All zeros means *keyless*: the account can receive but never
@@ -86,14 +143,32 @@ impl AccountState {
     }
 
     /// Serializes an active account state record according to docs/specification/state-model.md §4.1.
+    ///
+    /// Active layout (fixed 141-byte header, then optional cell payloads):
+    /// `type(1) || balance u128be(16) || lt u64be(8) || code_hash(32) ||`
+    /// `data_hash(32) || cell_count u32be(4) || byte_count u64be(8) ||`
+    /// `pubkey(32) || nonce u64be(8)`
+    /// `[|| code_len u32be(4) || code_bytes]`
+    /// `[|| data_len u32be(4) || data_bytes]`.
+    ///
+    /// `code_hash` is all zeros when the account has no code, otherwise the
+    /// hash of the appended code cell (same for `data_hash`/`data`). A
+    /// plain account (no code, no data) encodes to **exactly the V2 bytes**:
+    /// the 64 hash bytes are zero and nothing is appended — so pre-contract
+    /// state roots and golden vectors are unaffected by this upgrade.
+    ///
+    /// Appending the cells (rather than storing only their hashes) is what
+    /// makes contract code and data part of the persisted state and
+    /// therefore part of the state root: the trie commits to the full
+    /// account, code included.
     pub fn to_bytes(&self) -> Vec<u8> {
         match self {
             Self::Uninitialized => vec![AccountType::Uninitialized.to_u8()],
             Self::Active {
                 balance_nanos,
                 last_trans_lt,
-                code_hash,
-                data_hash,
+                code,
+                data,
                 storage_stat,
                 pubkey,
                 nonce,
@@ -102,14 +177,19 @@ impl AccountState {
                 bytes.push(AccountType::Active.to_u8());
                 bytes.extend_from_slice(&Uint128(*balance_nanos).encode());
                 bytes.extend_from_slice(&Uint64(*last_trans_lt).encode());
-                bytes.extend_from_slice(code_hash);
-                bytes.extend_from_slice(data_hash);
+                bytes.extend_from_slice(&code.as_ref().map(|c| c.hash()).unwrap_or(NO_CELL_HASH));
+                bytes.extend_from_slice(&data.as_ref().map(|c| c.hash()).unwrap_or(NO_CELL_HASH));
                 bytes.extend_from_slice(&Uint32(storage_stat.cell_count).encode());
                 bytes.extend_from_slice(&Uint64(storage_stat.byte_count).encode());
                 // Appended at the end (tx-auth upgrade): pubkey then nonce.
-                // 1+16+8+32+32+4+8+32+8 = 141 bytes total.
                 bytes.extend_from_slice(pubkey);
                 bytes.extend_from_slice(&Uint64(*nonce).encode());
+                if let Some(c) = code {
+                    encode_embedded_cell(&mut bytes, c);
+                }
+                if let Some(d) = data {
+                    encode_embedded_cell(&mut bytes, d);
+                }
                 bytes
             }
             Self::Frozen {
@@ -182,17 +262,21 @@ impl AccountState {
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
                 offset += Uint64::BYTE_LEN;
 
-                if cursor.len() < 64 {
+                if cursor.len() < 32 {
                     return Err(StateModelError::DeserializationError(
-                        "Truncated Active AccountState hashes".to_string(),
+                        "Truncated Active AccountState code hash".to_string(),
                     ));
                 }
-
                 let mut code_hash = [0u8; 32];
                 code_hash.copy_from_slice(&cursor[..32]);
                 cursor = &cursor[32..];
                 offset += 32;
 
+                if cursor.len() < 32 {
+                    return Err(StateModelError::DeserializationError(
+                        "Truncated Active AccountState data hash".to_string(),
+                    ));
+                }
                 let mut data_hash = [0u8; 32];
                 data_hash.copy_from_slice(&cursor[..32]);
                 cursor = &cursor[32..];
@@ -220,12 +304,39 @@ impl AccountState {
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
                 offset += Uint64::BYTE_LEN;
 
+                // Optional appended cell payloads, present iff the header
+                // hash is non-zero. Each payload's hash is verified against
+                // the header (fail-closed).
+                let code = if code_hash != NO_CELL_HASH {
+                    let (cell, used) = decode_embedded_cell(cursor, &code_hash).map_err(|e| {
+                        StateModelError::DeserializationError(format!(
+                            "Truncated Active AccountState code cell: {e}"
+                        ))
+                    })?;
+                    cursor = &cursor[used..];
+                    offset += used;
+                    Some(cell)
+                } else {
+                    None
+                };
+                let data = if data_hash != NO_CELL_HASH {
+                    let (cell, used) = decode_embedded_cell(cursor, &data_hash).map_err(|e| {
+                        StateModelError::DeserializationError(format!(
+                            "Truncated Active AccountState data cell: {e}"
+                        ))
+                    })?;
+                    offset += used;
+                    Some(cell)
+                } else {
+                    None
+                };
+
                 Ok((
                     Self::Active {
                         balance_nanos: balance_val.0,
                         last_trans_lt: lt_val.0,
-                        code_hash,
-                        data_hash,
+                        code,
+                        data,
                         storage_stat: StorageStat {
                             cell_count: cell_count_val.0,
                             byte_count: byte_count_val.0,

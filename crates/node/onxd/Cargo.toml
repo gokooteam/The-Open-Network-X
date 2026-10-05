@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
+hex = "0.4"
 onx-telemetry = { path = "../onx-telemetry" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-execution = { path = "../../protocol/onx-execution" }
@@ -21,6 +22,14 @@ onx-transactions = { path = "../../protocol/onx-transactions" }
 onx-data-structures = { path = "../../protocol/onx-data-structures" }
 onx-primitives = { path = "../../protocol/onx-primitives" }
 onx-storage = { path = "../../protocol/onx-storage" }
+onx-stf = { path = "../../protocol/onx-stf" }
+onx-genesis = { path = "../../tooling/onx-genesis" }
+# Reuses the canonical block-file format for the daemon's block output dir.
+# Layering note: blockfile ideally lives in a protocol crate; until then the
+# node reuses the tooling crate's implementation rather than duplicating the
+# format (two encoders would drift).
+onx = { path = "../../tooling/onx" }
 
 [dev-dependencies]
 tokio = { version = "1.38", features = ["full"] }
+hex = "0.4"
