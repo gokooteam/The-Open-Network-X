@@ -1,3 +1,5 @@
+#![deny(clippy::disallowed_types)]
+// Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
 //! ONX transaction and messaging semantics.
 //!
 //! Implements `docs/specification/transactions.md` (ADR-0005): external and

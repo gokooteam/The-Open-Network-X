@@ -1,0 +1,16 @@
+# Canonical-encoding guardrail (Phase 1 of the ONX deterministic-replay plan).
+#
+# `HashMap`/`HashSet` iteration order depends on per-process hash seeds. Any
+# iteration order that reaches a serialized encoding, a hash, or a state root
+# makes replay nondeterministic across processes and nodes. Protocol crates
+# must use `BTreeMap`/`BTreeSet` instead.
+#
+# The ban is activated per crate with `#![deny(clippy::disallowed_types)]`
+# at the top of each protocol crate's `lib.rs`. Node and tooling crates
+# (peer session tables, DHT records, RPC caches/throttles) legitimately use
+# hash maps for keyed lookup where iteration order never touches consensus
+# output, so they do not carry the deny attribute.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "nondeterministic iteration order breaks consensus determinism; use std::collections::BTreeMap" },
+    { path = "std::collections::HashSet", reason = "nondeterministic iteration order breaks consensus determinism; use std::collections::BTreeSet" },
+]

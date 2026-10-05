@@ -1207,6 +1207,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "onx"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hex",
+ "onx-data-structures",
+ "onx-genesis",
+ "onx-state-model",
+ "onx-stf",
+ "onx-storage",
+]
+
+[[package]]
 name = "onx-blocks"
 version = "0.1.0"
 dependencies = [
@@ -1281,6 +1294,9 @@ dependencies = [
 name = "onx-genesis"
 version = "0.1.0"
 dependencies = [
+ "onx-data-structures",
+ "onx-primitives",
+ "onx-state-model",
  "serde",
  "toml",
 ]
@@ -1361,6 +1377,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "onx-stf"
+version = "0.1.0"
+dependencies = [
+ "onx-data-structures",
+ "onx-economics",
+ "onx-primitives",
+ "onx-state-model",
+]
+
+[[package]]
+name = "onx-storage"
+version = "0.1.0"
+dependencies = [
+ "onx-data-structures",
+ "onx-primitives",
+ "onx-state-model",
+ "onx-stf",
+ "redb",
+]
+
+[[package]]
 name = "onx-system-contracts"
 version = "0.1.0"
 dependencies = [
@@ -1404,6 +1441,7 @@ dependencies = [
  "onx-networking",
  "onx-primitives",
  "onx-state-model",
+ "onx-storage",
  "onx-telemetry",
  "onx-transactions",
  "tokio",
@@ -1820,6 +1858,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d25bf25ec5ae4a3f1b92f929810509a2f53d7dca2f50b794ff57e3face536c8f"
 dependencies = [
  "rand_core 0.6.4",
+]
+
+[[package]]
+name = "redb"
+version = "2.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d64e07496d293ad8ed401c4d193d5b9f0f97671fbd5bf21d691a0c7d2c53dc8"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

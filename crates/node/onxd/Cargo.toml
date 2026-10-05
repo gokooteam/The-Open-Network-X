@@ -20,6 +20,7 @@ onx-networking = { path = "../onx-networking" }
 onx-transactions = { path = "../../protocol/onx-transactions" }
 onx-data-structures = { path = "../../protocol/onx-data-structures" }
 onx-primitives = { path = "../../protocol/onx-primitives" }
+onx-storage = { path = "../../protocol/onx-storage" }
 
 [dev-dependencies]
 tokio = { version = "1.38", features = ["full"] }

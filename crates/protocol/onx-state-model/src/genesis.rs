@@ -1,0 +1,482 @@
+//! Canonical genesis document: the deterministic initial state of one
+//! workchain shard.
+//!
+//! The genesis document is consensus-critical: every node must derive
+//! byte-identical initial state from the same document. The format is therefore
+//! a fixed canonical byte encoding — never TOML, never free text — and the
+//! domain-separated hash of the canonical bytes doubles as the chain ID.
+//!
+//! ## Canonical layout (all integers big-endian)
+//!
+//! ```text
+//! magic:               "ONXG" (4 bytes)
+//! version:             u32 = 1 (4 bytes)
+//! workchain_id:        i32 (4 bytes)
+//! shard_prefix_ident:  u64 (8 bytes)
+//! validator_count:     u32 (4 bytes)
+//! per validator, sorted by pubkey ascending:
+//!     pubkey:          32 bytes
+//!     stake:           u64 (8 bytes)
+//! account_count:       u32 (4 bytes)
+//! per account, ascending AccountId order:
+//!     account_id:      32 bytes
+//!     state_len:       u32 (4 bytes)
+//!     state_bytes:     AccountState canonical encoding
+//! ```
+//!
+//! ## Key derivation
+//!
+//! Human-readable config labels (e.g. `"onx:alice"`) are mapped to key
+//! material deterministically:
+//!
+//! - A 64-character hex string is decoded literally: it is real key material
+//!   supplied by the genesis ceremony.
+//! - A 64-character string that is *not* valid hex is rejected (probable typo,
+//!   never silently reinterpreted).
+//! - Any other string is a label, mapped via a domain-separated hash. Derived
+//!   keys have no known private key and are DEV-ONLY placeholders: they can
+//!   hold genesis balances but can never sign.
+//!
+//! See `~/workspace/goals/open-network-x-development/hidden_files/phase2-genesis.md`
+//! for the full derivation story and reproduction instructions.
+
+use crate::account::AccountState;
+use crate::error::StateModelError;
+use crate::tree::ShardStateTree;
+use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
+use onx_primitives::{domain_hash, DomainTag, Uint32, Uint64};
+use std::collections::BTreeMap;
+
+/// Magic bytes opening every canonical genesis document.
+pub const GENESIS_MAGIC: [u8; 4] = *b"ONXG";
+/// Current genesis document version. Bump only with a format change.
+pub const GENESIS_VERSION: u32 = 1;
+
+/// Domain tag for the genesis hash (which doubles as the chain ID).
+pub const ONX_GENESIS_V1: DomainTag = DomainTag::from_ascii("ONX_GENESIS_V1");
+/// Domain tag for deriving an [`AccountId`] from a config label.
+pub const ONX_GENESIS_ADDR_V1: DomainTag = DomainTag::from_ascii("ONX_GENESIS_ADDR_V1");
+/// Domain tag for deriving a validator public key from a config label
+/// (DEV-ONLY: derived keys have no known private key).
+pub const ONX_GENESIS_VALKEY_V1: DomainTag = DomainTag::from_ascii("ONX_GENESIS_VALKEY_V1");
+
+/// A genesis validator: 32-byte public key plus stake weight.
+///
+/// Validators are metadata in the genesis document (sorted by pubkey for
+/// determinism); they are NOT accounts. Stake-weighted validator-set
+/// enforcement belongs to a later phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenesisValidator {
+    pub pubkey: [u8; 32],
+    pub stake: u64,
+}
+
+/// The canonical genesis document for one workchain shard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GenesisDocument {
+    pub workchain: WorkchainIdent,
+    pub shard: ShardIdent,
+    /// Sorted by pubkey ascending (enforced at construction).
+    pub validators: Vec<GenesisValidator>,
+    /// Ascending AccountId order (BTreeMap iteration).
+    pub accounts: BTreeMap<AccountId, AccountState>,
+}
+
+impl GenesisDocument {
+    /// Builds a genesis document, enforcing determinism invariants:
+    /// validators sorted by pubkey, shard bound to the workchain,
+    /// no duplicate validator keys, at least one validator and one account.
+    pub fn new(
+        workchain: WorkchainIdent,
+        shard: ShardIdent,
+        mut validators: Vec<GenesisValidator>,
+        accounts: BTreeMap<AccountId, AccountState>,
+    ) -> Result<Self, StateModelError> {
+        if shard.workchain_id != workchain {
+            return Err(StateModelError::InvalidGenesis(format!(
+                "shard workchain {:?} does not match document workchain {:?}",
+                shard.workchain_id, workchain
+            )));
+        }
+        if validators.is_empty() {
+            return Err(StateModelError::InvalidGenesis(
+                "genesis requires at least one validator".to_string(),
+            ));
+        }
+        if accounts.is_empty() {
+            return Err(StateModelError::InvalidGenesis(
+                "genesis requires at least one account".to_string(),
+            ));
+        }
+        validators.sort_by_key(|a| a.pubkey);
+        for pair in validators.windows(2) {
+            if pair[0].pubkey == pair[1].pubkey {
+                return Err(StateModelError::InvalidGenesis(
+                    "duplicate validator public key in genesis".to_string(),
+                ));
+            }
+        }
+        Ok(Self {
+            workchain,
+            shard,
+            validators,
+            accounts,
+        })
+    }
+
+    /// Canonical byte encoding of the document (see module docs).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&GENESIS_MAGIC);
+        out.extend_from_slice(&Uint32(GENESIS_VERSION).encode());
+        out.extend_from_slice(&self.workchain.to_bytes());
+        out.extend_from_slice(&self.shard.shard_prefix_ident.encode());
+        out.extend_from_slice(&Uint32(self.validators.len() as u32).encode());
+        for v in &self.validators {
+            out.extend_from_slice(&v.pubkey);
+            out.extend_from_slice(&Uint64(v.stake).encode());
+        }
+        out.extend_from_slice(&Uint32(self.accounts.len() as u32).encode());
+        for (id, state) in &self.accounts {
+            out.extend_from_slice(&id.to_bytes());
+            let state_bytes = state.to_bytes();
+            out.extend_from_slice(&Uint32(state_bytes.len() as u32).encode());
+            out.extend_from_slice(&state_bytes);
+        }
+        out
+    }
+
+    /// Parses a canonical genesis document. Strict: magic, version, counts,
+    /// shard validity, and sort order are all enforced; trailing bytes are
+    /// rejected.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, StateModelError> {
+        let mut cursor = bytes;
+        let take = |cursor: &mut &[u8], n: usize| -> Result<Vec<u8>, StateModelError> {
+            if cursor.len() < n {
+                return Err(StateModelError::DeserializationError(format!(
+                    "genesis truncated: need {} bytes, have {}",
+                    n,
+                    cursor.len()
+                )));
+            }
+            let (head, tail) = cursor.split_at(n);
+            *cursor = tail;
+            Ok(head.to_vec())
+        };
+
+        let magic = take(&mut cursor, 4)?;
+        if magic.as_slice() != GENESIS_MAGIC {
+            return Err(StateModelError::DeserializationError(format!(
+                "bad genesis magic: expected ONXG, got {:02x?}",
+                magic
+            )));
+        }
+        let version_bytes = take(&mut cursor, 4)?;
+        let version = u32::from_be_bytes(version_bytes.try_into().unwrap());
+        if version != GENESIS_VERSION {
+            return Err(StateModelError::DeserializationError(format!(
+                "unsupported genesis version: {}",
+                version
+            )));
+        }
+        let wc_bytes = take(&mut cursor, 4)?;
+        let workchain = WorkchainIdent::from_bytes(wc_bytes.try_into().unwrap());
+        let prefix_bytes = take(&mut cursor, 8)?;
+        let shard = ShardIdent::new(
+            workchain,
+            u64::from_be_bytes(prefix_bytes.try_into().unwrap()),
+        )
+        .map_err(|e| StateModelError::DeserializationError(format!("bad shard ident: {e}")))?;
+
+        let vcount_bytes = take(&mut cursor, 4)?;
+        let vcount = u32::from_be_bytes(vcount_bytes.try_into().unwrap()) as usize;
+        let mut validators = Vec::with_capacity(vcount.min(1024));
+        for _ in 0..vcount {
+            let pubkey = take(&mut cursor, 32)?;
+            let stake_bytes = take(&mut cursor, 8)?;
+            validators.push(GenesisValidator {
+                pubkey: pubkey.try_into().unwrap(),
+                stake: u64::from_be_bytes(stake_bytes.try_into().unwrap()),
+            });
+        }
+
+        let acount_bytes = take(&mut cursor, 4)?;
+        let acount = u32::from_be_bytes(acount_bytes.try_into().unwrap()) as usize;
+        let mut accounts = BTreeMap::new();
+        let mut prev_id: Option<AccountId> = None;
+        for _ in 0..acount {
+            let id_bytes = take(&mut cursor, 32)?;
+            let id = AccountId::from_bytes(id_bytes.try_into().unwrap());
+            if let Some(prev) = prev_id {
+                if id <= prev {
+                    return Err(StateModelError::DeserializationError(
+                        "genesis accounts not in strictly ascending order".to_string(),
+                    ));
+                }
+            }
+            prev_id = Some(id);
+            let len_bytes = take(&mut cursor, 4)?;
+            let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
+            let state_bytes = take(&mut cursor, len)?;
+            let (state, consumed) = AccountState::from_bytes(&state_bytes).map_err(|e| {
+                StateModelError::DeserializationError(format!("bad account state: {e}"))
+            })?;
+            if consumed != state_bytes.len() {
+                return Err(StateModelError::DeserializationError(
+                    "trailing bytes inside account state record".to_string(),
+                ));
+            }
+            accounts.insert(id, state);
+        }
+
+        if !cursor.is_empty() {
+            return Err(StateModelError::TrailingBytes {
+                remaining: cursor.len(),
+            });
+        }
+
+        Self::new(workchain, shard, validators, accounts)
+    }
+
+    /// The genesis hash: domain-separated hash of the canonical bytes.
+    /// This IS the chain ID — it commits to every account, every validator,
+    /// the workchain, and the shard.
+    pub fn genesis_hash(&self) -> [u8; 32] {
+        domain_hash(&ONX_GENESIS_V1, &self.to_bytes())
+    }
+
+    /// Builds the initial [`ShardStateTree`] from the genesis allocations.
+    pub fn state_tree(&self) -> ShardStateTree {
+        let mut tree = ShardStateTree::new();
+        for (id, state) in &self.accounts {
+            tree.insert(*id, state.clone());
+        }
+        tree
+    }
+}
+
+/// Derives a deterministic [`AccountId`] from a human-readable config label.
+///
+/// DEV-ONLY provenance: the preimage is public, so no one can hold the
+/// corresponding private key. Real ceremonies must use 64-hex-char literals
+/// (see [`parse_or_derive_account_id`]).
+pub fn derive_account_id(label: &str) -> AccountId {
+    AccountId::from_bytes(domain_hash(&ONX_GENESIS_ADDR_V1, label.as_bytes()))
+}
+
+/// Derives a deterministic validator public key from a config label.
+///
+/// DEV-ONLY: derived keys have no known private key and can never sign.
+/// A real network must supply explicit 32-byte keys.
+pub fn derive_validator_pubkey(label: &str) -> [u8; 32] {
+    domain_hash(&ONX_GENESIS_VALKEY_V1, label.as_bytes())
+}
+
+fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+        let hi = (chunk[0] as char).to_digit(16).unwrap();
+        let lo = (chunk[1] as char).to_digit(16).unwrap();
+        out[i] = (hi as u8) * 16 + (lo as u8);
+    }
+    Some(out)
+}
+
+/// Maps a balance address string to an [`AccountId`]:
+/// 64 hex chars are decoded literally (real key material);
+/// a 64-char non-hex string is rejected as a probable typo;
+/// anything else is a label, derived deterministically.
+pub fn parse_or_derive_account_id(s: &str) -> Result<AccountId, StateModelError> {
+    if s.len() == 64 {
+        match decode_hex_32(s) {
+            Some(bytes) => return Ok(AccountId::from_bytes(bytes)),
+            None => {
+                return Err(StateModelError::InvalidGenesis(format!(
+                    "address looks like hex (64 chars) but is not valid hex: {s}"
+                )))
+            }
+        }
+    }
+    Ok(derive_account_id(s))
+}
+
+/// Maps a validator key string to 32 bytes: same three-way rule as
+/// [`parse_or_derive_account_id`].
+pub fn parse_or_derive_pubkey(s: &str) -> Result<[u8; 32], StateModelError> {
+    if s.len() == 64 {
+        match decode_hex_32(s) {
+            Some(bytes) => return Ok(bytes),
+            None => {
+                return Err(StateModelError::InvalidGenesis(format!(
+                    "validator key looks like hex (64 chars) but is not valid hex: {s}"
+                )))
+            }
+        }
+    }
+    Ok(derive_validator_pubkey(s))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::account::StorageStat;
+    use std::collections::BTreeMap;
+
+    fn sample_doc() -> GenesisDocument {
+        let workchain = WorkchainIdent::MASTERCHAIN;
+        let shard = ShardIdent::root(workchain);
+        let validators = vec![
+            GenesisValidator {
+                pubkey: derive_validator_pubkey("validator-01"),
+                stake: 1000,
+            },
+            GenesisValidator {
+                pubkey: derive_validator_pubkey("validator-02"),
+                stake: 2000,
+            },
+        ];
+        let mut accounts = BTreeMap::new();
+        accounts.insert(
+            derive_account_id("onx:alice"),
+            AccountState::Active {
+                balance_nanos: 1_000_000,
+                last_trans_lt: 0,
+                code_hash: [0u8; 32],
+                data_hash: [0u8; 32],
+                storage_stat: StorageStat {
+                    cell_count: 0,
+                    byte_count: 0,
+                },
+            },
+        );
+        accounts.insert(
+            derive_account_id("onx:bob"),
+            AccountState::Active {
+                balance_nanos: 2_000_000,
+                last_trans_lt: 0,
+                code_hash: [0u8; 32],
+                data_hash: [0u8; 32],
+                storage_stat: StorageStat {
+                    cell_count: 0,
+                    byte_count: 0,
+                },
+            },
+        );
+        GenesisDocument::new(workchain, shard, validators, accounts).unwrap()
+    }
+
+    #[test]
+    fn round_trip_is_identity() {
+        let doc = sample_doc();
+        let bytes = doc.to_bytes();
+        let parsed = GenesisDocument::from_bytes(&bytes).unwrap();
+        assert_eq!(doc, parsed);
+    }
+
+    #[test]
+    fn rejects_bad_magic_version_and_trailing_bytes() {
+        let doc = sample_doc();
+        let mut bytes = doc.to_bytes();
+        bytes[0] = b'X';
+        assert!(GenesisDocument::from_bytes(&bytes).is_err());
+
+        let mut bytes = doc.to_bytes();
+        bytes[4..8].copy_from_slice(&2u32.to_be_bytes());
+        assert!(GenesisDocument::from_bytes(&bytes).is_err());
+
+        let mut bytes = doc.to_bytes();
+        bytes.push(0x00);
+        assert!(matches!(
+            GenesisDocument::from_bytes(&bytes),
+            Err(StateModelError::TrailingBytes { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_validators_and_accounts() {
+        let workchain = WorkchainIdent::MASTERCHAIN;
+        let shard = ShardIdent::root(workchain);
+        assert!(GenesisDocument::new(workchain, shard, vec![], BTreeMap::new()).is_err());
+        let mut accounts = BTreeMap::new();
+        accounts.insert(derive_account_id("x"), AccountState::Uninitialized);
+        assert!(GenesisDocument::new(workchain, shard, vec![], accounts).is_err());
+    }
+
+    #[test]
+    fn rejects_shard_workchain_mismatch() {
+        let shard = ShardIdent::root(WorkchainIdent::BASIC);
+        let validators = vec![GenesisValidator {
+            pubkey: [7u8; 32],
+            stake: 1,
+        }];
+        let mut accounts = BTreeMap::new();
+        accounts.insert(derive_account_id("x"), AccountState::Uninitialized);
+        assert!(
+            GenesisDocument::new(WorkchainIdent::MASTERCHAIN, shard, validators, accounts).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_validator_pubkeys() {
+        let workchain = WorkchainIdent::MASTERCHAIN;
+        let shard = ShardIdent::root(workchain);
+        let validators = vec![
+            GenesisValidator {
+                pubkey: [9u8; 32],
+                stake: 1,
+            },
+            GenesisValidator {
+                pubkey: [9u8; 32],
+                stake: 2,
+            },
+        ];
+        let mut accounts = BTreeMap::new();
+        accounts.insert(derive_account_id("x"), AccountState::Uninitialized);
+        assert!(GenesisDocument::new(workchain, shard, validators, accounts).is_err());
+    }
+
+    #[test]
+    fn key_derivation_is_deterministic_and_label_sensitive() {
+        assert_eq!(
+            derive_account_id("onx:alice"),
+            derive_account_id("onx:alice")
+        );
+        assert_ne!(derive_account_id("onx:alice"), derive_account_id("onx:bob"));
+        assert_ne!(
+            derive_account_id("onx:alice"),
+            derive_account_id("onx:alice ")
+        );
+    }
+
+    #[test]
+    fn hex_literals_pass_through_and_bad_hex_is_rejected() {
+        let hex = "ab".repeat(32);
+        let id = parse_or_derive_account_id(&hex).unwrap();
+        assert_eq!(id.to_bytes(), [0xabu8; 32]);
+        // 64-char non-hex: probable typo, must error rather than derive.
+        assert!(parse_or_derive_account_id(&"zz".repeat(32)).is_err());
+        // Short strings are labels.
+        assert_eq!(
+            parse_or_derive_account_id("onx:alice").unwrap(),
+            derive_account_id("onx:alice")
+        );
+    }
+
+    #[test]
+    fn genesis_hash_is_stable_and_sensitive() {
+        let doc = sample_doc();
+        let h1 = doc.genesis_hash();
+        let h2 = GenesisDocument::from_bytes(&doc.to_bytes())
+            .unwrap()
+            .genesis_hash();
+        assert_eq!(h1, h2);
+        // Flipping one balance bit changes the chain ID.
+        let mut doc2 = sample_doc();
+        let alice = derive_account_id("onx:alice");
+        doc2.accounts.insert(alice, AccountState::Uninitialized);
+        assert_ne!(doc.genesis_hash(), doc2.genesis_hash());
+    }
+}

@@ -1,6 +1,6 @@
 use crate::{ChannelError, ChannelState, PaymentChannelArbiter};
 use onx_primitives::{Signature, Uint256, Uint64};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -33,12 +33,12 @@ impl SignedStateEnvelope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaymentChannelDaemon {
     pub arbiter: PaymentChannelArbiter,
-    pub latest_by_channel: HashMap<Uint256, ChannelState>,
+    pub latest_by_channel: BTreeMap<Uint256, ChannelState>,
 }
 
 impl PaymentChannelDaemon {
     pub fn new(arbiter: PaymentChannelArbiter) -> Self {
-        let mut map = HashMap::new();
+        let mut map = BTreeMap::new();
         map.insert(arbiter.channel_id, arbiter.latest_state.clone());
         Self {
             arbiter,

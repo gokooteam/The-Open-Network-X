@@ -1,4 +1,11 @@
+#![deny(clippy::disallowed_types)] // Genesis construction is consensus-critical: deterministic iteration only.
+use onx_data_structures::{ShardIdent, WorkchainIdent};
+use onx_state_model::{
+    parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, GenesisDocument,
+    GenesisValidator, StorageStat,
+};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -17,9 +24,10 @@ pub struct Validator {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Workchain {
-    pub id: u32,
+    /// Signed workchain id per the protocol definition:
+    /// -1 = masterchain, 0 = basic workchain.
+    pub id: i32,
     pub name: String,
-    pub shard_prefix: String,
     pub enabled: bool,
 }
 
@@ -42,9 +50,8 @@ impl Default for GenesisConfig {
                 stake: 1_000_000,
             }],
             workchains: vec![Workchain {
-                id: 0,
+                id: -1,
                 name: "masterchain".to_string(),
-                shard_prefix: "0x00".to_string(),
                 enabled: true,
             }],
         }
@@ -111,6 +118,93 @@ pub fn parse_config(path: impl AsRef<Path>) -> Result<GenesisConfig, String> {
     Ok(config)
 }
 
+/// Validates the human-readable config against the protocol definition and
+/// builds the canonical [`GenesisDocument`].
+///
+/// Reconciliation rules (per `onx_data_structures::WorkchainIdent`):
+/// - id `-1` is the masterchain and must be named `"masterchain"`;
+/// - id `0` is the basic workchain and must be named `"basic"`;
+/// - anything else is rejected: label drift like "workchain 0 named
+///   masterchain" is exactly the bug class Phase 2 eliminates.
+///   Exactly one workchain is supported (single-workchain replay scope).
+pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument, String> {
+    if config.workchains.len() != 1 {
+        return Err(format!(
+            "onx-genesis failed: exactly one workchain is supported in the replay scope, found {}",
+            config.workchains.len()
+        ));
+    }
+    let wc = &config.workchains[0];
+    if !wc.enabled {
+        return Err("onx-genesis failed: the single workchain must be enabled".to_string());
+    }
+    let workchain = match (wc.id, wc.name.as_str()) {
+        (-1, "masterchain") => WorkchainIdent::MASTERCHAIN,
+        (0, "basic") => WorkchainIdent::BASIC,
+        _ => {
+            return Err(format!(
+            "onx-genesis failed: workchain id {} named {:?} contradicts the protocol definition \
+                 (masterchain = -1, basic workchain = 0)",
+            wc.id, wc.name
+        ))
+        }
+    };
+    // Single-workchain, single-shard scope: the shard is always the root shard.
+    let shard = ShardIdent::root(workchain);
+
+    if config.validators.is_empty() {
+        return Err("onx-genesis failed: at least one validator is required".to_string());
+    }
+    let mut validators = Vec::with_capacity(config.validators.len());
+    for v in &config.validators {
+        let pubkey = parse_or_derive_pubkey(&v.public_key).map_err(|e| e.to_string())?;
+        validators.push(GenesisValidator {
+            pubkey,
+            stake: v.stake,
+        });
+    }
+
+    if config.balances.is_empty() {
+        return Err("onx-genesis failed: at least one genesis balance is required".to_string());
+    }
+    let mut accounts = BTreeMap::new();
+    for b in &config.balances {
+        let id = parse_or_derive_account_id(&b.address).map_err(|e| e.to_string())?;
+        if accounts.contains_key(&id) {
+            return Err(format!(
+                "onx-genesis failed: duplicate genesis address {:?}",
+                b.address
+            ));
+        }
+        // Genesis accounts are plain value accounts: no code, no data,
+        // logical time zero. Code-bearing accounts arrive via transactions.
+        accounts.insert(
+            id,
+            AccountState::Active {
+                balance_nanos: b.amount as u128,
+                last_trans_lt: 0,
+                code_hash: [0u8; 32],
+                data_hash: [0u8; 32],
+                storage_stat: StorageStat {
+                    cell_count: 0,
+                    byte_count: 0,
+                },
+            },
+        );
+    }
+
+    GenesisDocument::new(workchain, shard, validators, accounts).map_err(|e| e.to_string())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
+        s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap());
+    }
+    s
+}
+
 pub fn generate_genesis(config: &GenesisConfig, output_dir: PathBuf) -> Result<(), String> {
     fs::create_dir_all(&output_dir).map_err(|err| {
         format!(
@@ -119,40 +213,24 @@ pub fn generate_genesis(config: &GenesisConfig, output_dir: PathBuf) -> Result<(
         )
     })?;
 
-    let mut balances = String::new();
-    for balance in &config.balances {
-        balances.push_str(&format!("{}:{};", balance.address, balance.amount));
-    }
-
-    let mut validators = String::new();
-    for validator in &config.validators {
-        validators.push_str(&format!("{}:{};", validator.public_key, validator.stake));
-    }
-
-    let mut workchains = String::new();
-    for wc in &config.workchains {
-        workchains.push_str(&format!(
-            "{}:{}:{}:{};",
-            wc.id, wc.name, wc.shard_prefix, wc.enabled
-        ));
-    }
-
-    let gateway = format!(
-        "ONX_GENESIS_BOC\nmasterchain_genesis#0\nvalidator_keys={validators}\ninitial_balances={balances}\nworkchains={workchains}\n"
-    );
+    let doc = build_genesis_document(config)?;
+    let genesis_bytes = doc.to_bytes();
+    let genesis_hash = doc.genesis_hash();
+    let chain_id_hex = hex_encode(&genesis_hash);
 
     let genesis_boc_path = output_dir.join("genesis.boc");
-    fs::write(&genesis_boc_path, &gateway).map_err(|err| err.to_string())?;
+    fs::write(&genesis_boc_path, &genesis_bytes).map_err(|err| err.to_string())?;
 
-    let shard_header =
-        "ONX_SHARD_HEADER_BOC\nshard=0x00\nworkchain=0\nparent=masterchain_genesis#0\n".to_string();
-    fs::write(output_dir.join("shard-header-0.boc"), shard_header)
-        .map_err(|err| err.to_string())?;
+    // The chain ID is the genesis hash: it commits to every account, every
+    // validator, the workchain, and the shard. Print it so operators and
+    // node configs can pin the exact chain they are joining.
+    println!("onx-genesis: genesis hash (chain ID): {chain_id_hex}");
 
     for idx in 0..4 {
         let node_cfg = format!(
-            "role = \"validator\"\nstorage_path = \"target/onxd-node-{}\"\nnetwork_enabled = true\nnetwork_bind = \"127.0.0.1:{}\"\npeers = \"127.0.0.1:{}\"\nbootstrap_genesis = \"{}\"\n",
+            "role = \"validator\"\nstorage_path = \"target/onxd-node-{}\"\nchain_id = \"{}\"\nnetwork_enabled = true\nnetwork_bind = \"127.0.0.1:{}\"\npeers = \"127.0.0.1:{}\"\nbootstrap_genesis = \"{}\"\n",
             idx,
+            chain_id_hex,
             10_000 + idx * 1_000,
             10_001 + idx * 1_000,
             genesis_boc_path.display()

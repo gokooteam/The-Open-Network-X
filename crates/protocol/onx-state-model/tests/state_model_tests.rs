@@ -214,7 +214,7 @@ fn test_bag_of_cells_serialization_and_cycle_detection() {
     assert_eq!(consumed, boc_bytes.len());
 
     // Test cycle detection
-    let mut map = std::collections::HashMap::new();
+    let mut map = std::collections::BTreeMap::new();
     let hash_a = [0xAA; 32];
     let hash_b = [0xBB; 32];
 
@@ -233,7 +233,7 @@ fn test_bag_of_cells_serialization_and_cycle_detection() {
 #[test]
 fn test_boc_rejects_impossible_cell_count_before_allocation() {
     // Root hash followed by a hostile cell count, with no cell-entry bytes.
-    // The decoder must reject this before using the count as a HashMap
+    // The decoder must reject this before using the count to size a map collection
     // capacity, rather than attempting an attacker-controlled allocation.
     let mut bytes = vec![0u8; 32];
     bytes.extend_from_slice(&u32::MAX.to_be_bytes());
@@ -276,12 +276,12 @@ fn test_shard_state_tree_and_merkle_proofs() {
     tree.insert(acc1, state1);
     tree.insert(acc2, state2);
 
-    let root_hash = tree.state_root_hash();
+    let root_hash = tree.state_root_hash().unwrap();
     assert_ne!(root_hash, [0u8; 32]);
 
     let proof = tree.generate_proof(acc1).unwrap();
     assert_eq!(proof.root_hash, root_hash);
-    assert!(proof.verify().is_ok());
+    assert!(proof.verify(&root_hash).is_ok());
 
     let proof_bytes = proof.to_bytes();
     let (proof_de, consumed) = MerkleProof::from_bytes(&proof_bytes).unwrap();
@@ -292,7 +292,7 @@ fn test_shard_state_tree_and_merkle_proofs() {
     let mut tampered_proof = proof;
     tampered_proof.root_hash = [0xFF; 32];
     assert!(matches!(
-        tampered_proof.verify(),
+        tampered_proof.verify(&root_hash),
         Err(StateModelError::InvalidMerkleProof(_))
     ));
 }

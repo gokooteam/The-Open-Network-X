@@ -1,21 +1,9 @@
-use onx_consensus::{ConsensusEngine, RoundTimeouts, ValidatorSetEntry};
-use onx_data_structures::{ShardIdent, WorkchainIdent};
-use onx_execution::ExecutionContext;
-use onx_networking::{
-    AdnlTransportNode, DhtContact, DhtDaemon, DhtRpc, DhtRpcResponse, DhtTransport, NetworkError,
-    RldpConfig, RldpSender,
-};
-use onx_primitives::{SecretKey, Uint256, Uint64};
-use onx_state_model::StateStorage;
+use onx_storage::ChainStore;
 use onx_telemetry::{serve_metrics, TelemetryConfig, TelemetryHandle};
 use std::fs;
-use std::future::Future;
-use std::net::SocketAddr;
 use std::path::Path;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::{interval, sleep};
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRole {
@@ -185,19 +173,6 @@ pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
     Ok(config)
 }
 
-#[derive(Clone)]
-struct NullDhtTransport;
-
-impl DhtTransport for NullDhtTransport {
-    fn call<'a>(
-        &'a self,
-        _recipient: DhtContact,
-        _request: DhtRpc,
-    ) -> Pin<Box<dyn Future<Output = Result<DhtRpcResponse, NetworkError>> + Send + 'a>> {
-        Box::pin(async { Ok(DhtRpcResponse::Pong) })
-    }
-}
-
 pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     fs::create_dir_all(&config.storage_path).map_err(|err| {
         format!(
@@ -206,9 +181,11 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         )
     })?;
 
-    let storage = StateStorage::open(&config.storage_path)
-        .map_err(|err| format!("failed to initialize state storage: {err}"))?;
-    let _storage = storage;
+    // Phase 4: the chain store is a single redb file. Opening it here keeps
+    // the fail-fast behavior (a bad storage path aborts startup); the daemon
+    // itself does not use it yet (networking is frozen until replay passes).
+    let _store = ChainStore::open(Path::new(&config.storage_path).join("chain.redb"))
+        .map_err(|err| format!("failed to initialize chain store: {err}"))?;
 
     if let Some(genesis_path) = &config.bootstrap_genesis {
         let genesis = fs::read(genesis_path)
@@ -219,7 +196,9 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     }
 
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
-    metrics.set_connected_peers(config.peers.len() as i64);
+    // Networking is frozen: reporting a peer count would imply a network
+    // exists. Zero is the honest value until the real loop lands.
+    metrics.set_connected_peers(0);
     metrics.set_tx_pool_size(0);
 
     let metrics_cfg = TelemetryConfig::default();
@@ -231,79 +210,18 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         .shutdown_after_ms
         .map(|ms| sleep(Duration::from_millis(ms)));
 
-    let mut network_loop = None;
+    // Phase 5: the fake network/consensus loop is deleted. It constructed
+    // components and discarded them in a 10ms ticker, and every node shared
+    // the hardcoded secret `[1u8; 32]` — both are gone. Networking stays
+    // frozen until the deterministic-replay milestone passes; refusing to
+    // pretend a network exists.
     if config.network_enabled {
-        let bind = config.network_bind.clone();
-        let role = config.role;
-        let peers = config.peers.clone();
-        let _ = (bind.clone(), role, peers);
-
-        let addr = bind
-            .parse::<SocketAddr>()
-            .map_err(|err| format!("invalid network bind address: {err}"))?;
-        let seed = [1u8; 32];
-        let secret_key = SecretKey::from_seed(&seed)
-            .map_err(|err| format!("failed to build deterministic secret key: {err}"))?;
-        let public_key = secret_key.public_key();
-        let adnl = AdnlTransportNode::bind(secret_key, addr)
-            .await
-            .map_err(|err| format!("failed to bind ADNL transport: {err}"))?;
-        let _public = public_key;
-        let dht = DhtDaemon::new(public_key, Arc::new(NullDhtTransport));
-        let _ = dht;
-
-        let shard = ShardIdent::root(WorkchainIdent::BASIC);
-        let exec_context = ExecutionContext {
-            gen_utime: 0,
-            start_lt: 0,
-            end_lt: 1,
-            gas_limit: 1_000_000,
-        };
-        let _ = exec_context;
-
-        let validator_entries = vec![ValidatorSetEntry {
-            validator_id: 0,
-            public_key,
-            actual_stake: Uint64::from(1),
-        }];
-        let mut engine = ConsensusEngine::new(
-            shard,
-            0,
-            validator_entries.clone(),
-            0,
-            RoundTimeouts::default(),
-        )
-        .map_err(|err| format!("failed to initialize consensus engine: {err}"))?;
-        let metrics = metrics.clone();
-        let started_at = Instant::now();
-
-        let mut rldp = RldpSender::new(Uint256([0u8; 32]), &[0u8; 1], RldpConfig::default())
-            .map_err(|err| format!("failed to initialize RLDP sender: {err}"))?;
-
-        let handle = tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_millis(10));
-            let target = Uint256([0u8; 32]);
-            loop {
-                ticker.tick().await;
-                let _ = adnl.local_addr();
-                let _ = dht.contact();
-                let _ = dht.closest_contacts(target, 8);
-                let now = started_at.elapsed().as_secs();
-                if engine.on_timeout(now) {
-                    metrics.track_consensus_phase("timeout");
-                }
-                let _ = engine.round();
-                let _ = engine.step();
-                let _ = engine.leader();
-                let height = engine
-                    .finalized()
-                    .map(|block| block.height as i64)
-                    .unwrap_or(0);
-                metrics.set_block_height(height);
-                let _ = rldp.next_round();
-            }
-        });
-        network_loop = Some(handle);
+        return Err(
+            "networking is frozen until the deterministic-replay milestone passes: \
+             refusing to start with network_enabled=true (there is no real network \
+             loop yet). Set network_enabled=false to run config/storage validation only."
+                .to_string(),
+        );
     }
 
     let shutdown = tokio::signal::ctrl_c();
@@ -311,30 +229,15 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         .map_err(|err| format!("failed to install SIGTERM watcher: {err}"))?;
 
     let outcome = tokio::select! {
-        _ = shutdown => {
-            if let Some(handle) = network_loop {
-                handle.abort();
-            }
-            Ok(())
-        }
-        _ = sigterm.recv() => {
-            if let Some(handle) = network_loop {
-                handle.abort();
-            }
-            Ok(())
-        }
+        _ = shutdown => Ok(()),
+        _ = sigterm.recv() => Ok(()),
         _ = async {
             if let Some(timer) = runtime_shutdown {
                 timer.await;
             } else {
                 std::future::pending::<()>().await;
             }
-        } => {
-            if let Some(handle) = network_loop {
-                handle.abort();
-            }
-            Ok(())
-        }
+        } => Ok(()),
     };
 
     metrics_task.abort();
