@@ -621,3 +621,57 @@ fn storage_rejects_v1_schema_with_cells_table() -> Result<(), StorageError> {
     cleanup(&path);
     Ok(())
 }
+
+/// CI green-up: a torn `<db>.init-tmp` left by a SIGKILL inside redb's
+/// first `Database::create` must not poison the next open. The temp can
+/// never contain committed data, so `open` deletes it and initializes
+/// cleanly; the resulting database must be fully usable.
+#[test]
+fn storage_open_recovers_torn_init_temp_file() -> Result<(), StorageError> {
+    let path = temp_db_path("torninit");
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".init-tmp");
+    let tmp = PathBuf::from(tmp);
+    // Plant a torn temp file: garbage where a half-written redb header
+    // would be. (The real torn file comes from a killed Database::create;
+    // the content is irrelevant -- only its presence matters.)
+    std::fs::write(&tmp, [0x5Au8; 64]).expect("write torn tmp");
+    assert!(tmp.exists());
+
+    let store = ChainStore::open(&path)?;
+    // Temp cleaned up, real database initialized in its place.
+    assert!(!tmp.exists(), "torn init-tmp should have been removed");
+    assert!(path.exists(), "database file should exist after open");
+    // And the database is fully usable: genesis init works.
+    store.init_genesis(&test_genesis())?;
+    let (seqno, _) = store.head()?.expect("head set by genesis init");
+    assert_eq!(seqno, 0);
+
+    cleanup(&path);
+    Ok(())
+}
+
+/// CI green-up: a bad magic number on an existing, non-empty database is
+/// corruption, not an invitation to reinitialize. `open` must fail closed
+/// with `StorageError::Corrupt` and leave the file untouched.
+#[test]
+fn storage_open_rejects_bad_magic_fail_closed() -> Result<(), StorageError> {
+    let path = temp_db_path("badmagic");
+    let garbage = [0x5Au8; 128];
+    std::fs::write(&path, garbage).expect("write bad-magic file");
+
+    let err = match ChainStore::open(&path) {
+        Ok(_) => panic!("open of a bad-magic database should have failed"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, StorageError::Corrupt(_)),
+        "expected Corrupt, got: {err}"
+    );
+    // Fail-closed means the file is preserved, not wiped or replaced.
+    let after = std::fs::read(&path).expect("read back bad-magic file");
+    assert_eq!(after, garbage, "bad-magic file must be preserved untouched");
+
+    cleanup(&path);
+    Ok(())
+}
