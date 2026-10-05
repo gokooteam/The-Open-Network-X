@@ -2,17 +2,23 @@
 //! binary across separate OS processes.
 //!
 //! A counter contract is installed via the genesis TOML (`code_hex` /
-//! `data_hex`); three blocks each carrying one signed contract call are
-//! produced with the honest `propose_block` path; then two fresh `onx replay`
-//! subprocesses must print byte-identical `final_state_root`s, and the
-//! replayed state must show the counter at 3 — proving the VM executed
-//! deterministically inside replay, not just in-process.
+//! `data_hex`); three blocks each carrying one signed contract-call
+//! external message are produced with the honest `propose_block` path;
+//! then two fresh `onx replay` subprocesses must print byte-identical
+//! `final_state_root`s, and the replayed state must show the counter at
+//! 3 — proving the VM executed deterministically inside replay, not just
+//! in-process.
+//!
+//! Message-model semantics (ADR-0001/ADR-0002): a failing contract call
+//! BOUNCES — the value returns to the sender and the block stays valid.
+//! The second test pins that: a call to a codeless account produces a
+//! valid block whose receipt shows the bounce, and replay agrees.
 
 use onx::blockfile::{block_file_name, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
-use onx_stf::{propose_block, Block, State, Transaction};
+use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -87,6 +93,13 @@ fn read_counter(cell: &onx_state_model::Cell) -> u64 {
     u64::from_be_bytes(bytes[..8].try_into().unwrap())
 }
 
+fn balance_of(state: &State, id: &AccountId) -> u128 {
+    match state.tree.get(id).expect("account present") {
+        AccountState::Active { balance_nanos, .. } => *balance_nanos,
+        other => panic!("expected active account, got {other:?}"),
+    }
+}
+
 #[test]
 fn tvm_replay_two_processes_byte_identical_with_counter() {
     let dir = tmpdir("two-process");
@@ -97,6 +110,7 @@ fn tvm_replay_two_processes_byte_identical_with_counter() {
     // Build the chain in-process via the honest producer path.
     let config = onx_genesis::parse_config(&genesis).unwrap();
     let doc = onx_genesis::build_genesis_document(&config).unwrap();
+    let chain_id = doc.genesis_hash();
     let mut state = State::from_genesis(&doc);
     let sender = AccountId::from_bytes([0xa1; 32]);
     let contract = AccountId::from_bytes([0xc0; 32]);
@@ -118,17 +132,22 @@ fn tvm_replay_two_processes_byte_identical_with_counter() {
 
     let mut blocks: Vec<Block> = Vec::new();
     for i in 0..3u64 {
-        let tx = Transaction::new_signed_call(
+        let msg = ExternalMessage::new_signed(
+            chain_id,
+            MsgKind::ContractCall,
             sender,
+            i,
             contract,
             1_000,
             100_000,
-            i,
             b"increment".to_vec(),
+            [0u8; 32],
             &secret,
         );
-        let block = propose_block(&state, vec![tx], i + 1, collector).unwrap();
-        let (next, _) = onx_stf::apply_block(&state, &block).unwrap();
+        let block = propose_block(&state, vec![msg], i + 1, collector).unwrap();
+        let (next, receipts) = onx_stf::apply_block(&state, &block).unwrap();
+        // The call executed, not bounced.
+        assert!(!receipts.0[0].deliveries[0].bounced);
         state = next;
         blocks.push(block);
     }
@@ -183,81 +202,110 @@ fn tvm_replay_two_processes_byte_identical_with_counter() {
 }
 
 #[test]
-fn tvm_replay_rejects_block_with_failing_contract_call() {
-    // A block containing a contract call whose VM throws is rejected by
-    // replay, and the head does not advance (fail-closed, same as any
-    // invalid transaction).
-    let dir = tmpdir("reject");
+fn tvm_replay_bounces_failing_contract_call_block_stays_valid() {
+    // Message-model semantics: a contract call whose delivery cannot be
+    // processed (here: the destination has no code) BOUNCES — the value
+    // returns to the sender — and the block stays valid. The old
+    // transaction-era behavior rejected the whole block; this test pins
+    // the new semantics end to end.
+    let dir = tmpdir("bounce");
     let genesis = write_contract_genesis_toml(&dir);
     let blocks_dir = dir.join("blocks");
     std::fs::create_dir_all(&blocks_dir).unwrap();
 
     let config = onx_genesis::parse_config(&genesis).unwrap();
     let doc = onx_genesis::build_genesis_document(&config).unwrap();
-    let state = State::from_genesis(&doc);
+    let chain_id = doc.genesis_hash();
+    let mut state = State::from_genesis(&doc);
     let sender = AccountId::from_bytes([0xa1; 32]);
     let contract = AccountId::from_bytes([0xc0; 32]);
     let collector = AccountId::from_bytes([0xcc; 32]);
     let secret = test_secret_key(0xa1);
+    const SENDER_INITIAL: u128 = 1_000_000_000_000;
 
-    // One good block first (so the head exists), then a block whose
-    // contract call targets a codeless account.
-    let good = Transaction::new_signed_call(
+    // Block 1: one good call (counter 0 -> 1, value 1000 lands on contract).
+    let good = ExternalMessage::new_signed(
+        chain_id,
+        MsgKind::ContractCall,
         sender,
+        0,
         contract,
         1_000,
         100_000,
-        0,
         b"increment".to_vec(),
+        [0u8; 32],
         &secret,
     );
     let block1 = propose_block(&state, vec![good], 1, collector).unwrap();
-    let _ = onx_stf::apply_block(&state, &block1).unwrap();
+    let (next, _) = onx_stf::apply_block(&state, &block1).unwrap();
+    state = next;
     std::fs::write(
         blocks_dir.join(block_file_name(1)),
         encode_block_file(&block1),
     )
     .unwrap();
 
+    // Block 2: a contract call to a codeless account — delivery must
+    // bounce. Built via the honest producer path: a block containing a
+    // bouncing call is valid and committable.
     let codeless = AccountId::from_bytes([0xd0; 32]);
-    // Hand-assemble the bad block with Block::assemble (which computes the
-    // txs_root honestly): apply_block validates transactions before the
-    // state root, so the contract-call failure is what rejects it. (The
-    // state root here is a dummy — unreachable, since tx validation fails
-    // first.)
-    let bad_tx = Transaction::new_signed_call(
+    let bad_msg = ExternalMessage::new_signed(
+        chain_id,
+        MsgKind::ContractCall,
         sender,
+        1,
         codeless,
         1_000,
         100_000,
-        1,
         b"increment".to_vec(),
+        [0u8; 32],
         &secret,
     );
-    let bad_block = onx_stf::block::Block::assemble(
-        2,
-        block1.header.hash(),
-        2,
-        -1,
-        collector,
-        vec![bad_tx],
-        [0u8; 32], // state root is irrelevant: tx validation fails first
-    )
-    .unwrap();
+    let block2 = propose_block(&state, vec![bad_msg], 2, collector).unwrap();
+    let (next, receipts) = onx_stf::apply_block(&state, &block2).unwrap();
+    state = next;
     std::fs::write(
         blocks_dir.join(block_file_name(2)),
-        encode_block_file(&bad_block),
+        encode_block_file(&block2),
     )
     .unwrap();
 
+    // In-process: the delivery bounced (first delivery receipt of the
+    // message is the wallet-emitted internal, marked bounced), and the
+    // value came back to the sender.
+    assert_eq!(receipts.0.len(), 1);
+    assert!(
+        receipts.0[0].deliveries[0].bounced,
+        "codeless contract call must bounce, not execute"
+    );
+    // Sender accounting: block 1 debited 1000 + 100000; block 2 debited
+    // 1000 + 100000 and the 1000 bounced back. Fees are sunk (half burned,
+    // half to the collector).
+    assert_eq!(
+        balance_of(&state, &sender),
+        SENDER_INITIAL - 101_000 - 101_000 + 1_000
+    );
+    // The contract saw only the one good call.
+    match state.tree.get(&contract).unwrap() {
+        AccountState::Active {
+            data: Some(data), ..
+        } => assert_eq!(read_counter(data), 1),
+        other => panic!("contract account malformed: {other:?}"),
+    }
+    let expected_root = hex::encode(state.state_root().unwrap());
+
+    // Replay through the real binary: it must ACCEPT the bouncing block
+    // and agree with the in-memory state exactly.
     let out = run_replay(&genesis, &blocks_dir, &dir.join("data"));
     assert!(
-        !out.status.success(),
-        "replay should have rejected the failing contract call"
+        out.status.success(),
+        "replay rejected a block with a bouncing contract call: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.contains("rejected"),
-        "unexpected replay error: {stderr}"
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        final_root(&stdout),
+        expected_root,
+        "replayed bounce semantics diverged from in-memory apply"
     );
 }

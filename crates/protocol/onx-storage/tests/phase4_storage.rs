@@ -42,6 +42,12 @@ fn crash_iters() -> usize {
         .unwrap_or(100)
 }
 
+/// Chain identity for the test genesis: every generated external message
+/// must carry the genesis hash of the chain it authorizes on (ADR-0005).
+fn chain_id() -> [u8; 32] {
+    test_genesis().genesis_hash()
+}
+
 /// Read live account nonces out of a state: adversarial tests tamper with
 /// `seqno`/`last_hash` but the transactions must still authorize against
 /// the *actual* account nonces, or `propose_block` fails before the store's
@@ -74,7 +80,7 @@ fn run_chain_to(store: &ChainStore, num_blocks: u32, seed: u64) -> Result<[u8; 3
         let next = state.seqno + 1;
         let block = propose_block(
             &state,
-            test_block_txs(seed, next, &accounts),
+            test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
         )
@@ -123,7 +129,7 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
         let next = state.seqno + 1;
         let block: Block = propose_block(
             &state,
-            test_block_txs(seed, next, &accounts),
+            test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
         )
@@ -163,9 +169,7 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
 #[test]
 fn storage_body_encoding_roundtrip() {
     use onx_stf::block::BlockBody;
-    let body = BlockBody {
-        transactions: vec![],
-    };
+    let body = BlockBody { messages: vec![] };
     assert_eq!(decode_body(&encode_body(&body)).expect("decode"), body);
 }
 
@@ -178,8 +182,13 @@ fn storage_idempotent_recommit() -> Result<(), StorageError> {
     let accounts = test_accounts();
     let collector = test_fee_collector();
     let state = store.load_state()?.expect("genesis state");
-    let block =
-        propose_block(&state, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    let block = propose_block(
+        &state,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
 
     store.commit_block(&state, &block)?;
     let head1 = store.head()?;
@@ -202,10 +211,20 @@ fn storage_fork_detected() -> Result<(), StorageError> {
     let collector = test_fee_collector();
     let state = store.load_state()?.expect("genesis state");
 
-    let block_a =
-        propose_block(&state, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
-    let block_b =
-        propose_block(&state, test_block_txs(999, 1, &accounts), 1, collector).expect("propose");
+    let block_a = propose_block(
+        &state,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
+    let block_b = propose_block(
+        &state,
+        test_block_txs(999, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
     assert_ne!(block_a.header.hash(), block_b.header.hash());
 
     store.commit_block(&state, &block_a)?;
@@ -231,8 +250,13 @@ fn storage_rejects_bad_block_atomically() -> Result<(), StorageError> {
     let collector = test_fee_collector();
     let state = store.load_state()?.expect("genesis state");
 
-    let mut block =
-        propose_block(&state, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    let mut block = propose_block(
+        &state,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
     // Tamper with the claimed post-state root: the STF must reject it, and
     // the failed commit must persist nothing.
     block.header.state_root = [0xFF; 32];
@@ -265,7 +289,7 @@ fn storage_dirty_set_complete() -> Result<(), StorageError> {
     let mut state = store.load_state()?.expect("genesis state");
     // Stateful generator: the seed alternates per block, so nonces cannot
     // be replayed from any single seed's history.
-    let mut gen = TestTxGen::new();
+    let mut gen = TestTxGen::new(chain_id());
 
     for n in 1..=6u32 {
         // Alternate fee patterns so the collector is touched on some blocks.
@@ -342,8 +366,13 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
 
     // Honest block 1: head = (1, h1).
     let state0 = store.load_state()?.expect("genesis state");
-    let block1 =
-        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    let block1 = propose_block(
+        &state0,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
     store.commit_block(&state0, &block1)?;
     let (head_seqno, head_hash) = store.head()?.expect("head");
     assert_eq!(head_seqno, 1);
@@ -358,7 +387,7 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
     let nonces = nonces_of(&bad_state, &accounts);
     let bad_block = propose_block(
         &bad_state,
-        test_block_txs_with_nonces(8, 2, &accounts, &nonces),
+        test_block_txs_with_nonces(8, 2, &accounts, &nonces, chain_id()),
         2,
         collector,
     )
@@ -393,8 +422,13 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
     let collector = test_fee_collector();
 
     let state0 = store.load_state()?.expect("genesis state");
-    let block1 =
-        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    let block1 = propose_block(
+        &state0,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
     store.commit_block(&state0, &block1)?;
 
     // State claims seqno 5 while the stored head is at 1. The proposed
@@ -407,7 +441,7 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
     let nonces = nonces_of(&bad_state, &accounts);
     let bad_block = propose_block(
         &bad_state,
-        test_block_txs_with_nonces(8, 6, &accounts, &nonces),
+        test_block_txs_with_nonces(8, 6, &accounts, &nonces, chain_id()),
         6,
         collector,
     )
@@ -439,8 +473,13 @@ fn storage_load_state_rejects_tampered_root() -> Result<(), StorageError> {
     let collector = test_fee_collector();
 
     let state0 = store.load_state()?.expect("genesis state");
-    let block1 =
-        propose_block(&state0, test_block_txs(7, 1, &accounts), 1, collector).expect("propose");
+    let block1 = propose_block(
+        &state0,
+        test_block_txs(7, 1, &accounts, chain_id()),
+        1,
+        collector,
+    )
+    .expect("propose");
     store.commit_block(&state0, &block1)?;
     // Sanity: the untampered database loads fine.
     assert!(store.load_state()?.is_some());
@@ -519,7 +558,7 @@ fn verify_crash_invariants(store: &ChainStore) -> Result<u32, StorageError> {
         let body = store
             .get_block_body(&hash)?
             .expect("head body missing: torn commit");
-        assert_eq!(body.transactions.len() as u32, hdr.tx_count);
+        assert_eq!(body.messages.len() as u32, hdr.msg_count);
     }
     Ok(seqno)
 }

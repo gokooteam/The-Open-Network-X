@@ -2,15 +2,15 @@
 //! (`onx-crash-probe`) and the Phase 4 integration tests.
 //!
 //! This is NOT consensus code: it exists so the probe and the tests generate
-//! byte-identical chains from the same `(seed, seqno)`. Transaction
-//! generation for block `n` depends only on `(seed, n)` — never on process
+//! byte-identical chains from the same `(seed, seqno)`. Message
+//! generation for block `n` depends only on `(seed, n, chain_id)` — never on process
 //! state — so a test can regenerate exactly the block a killed probe was
 //! committing and resume from the head pointer.
 
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
 use onx_primitives::{domain_hash, DomainTag, SecretKey};
 use onx_state_model::{AccountState, GenesisDocument, GenesisValidator, StorageStat};
-use onx_stf::Transaction;
+use onx_stf::{ExternalMessage, MsgKind};
 use std::collections::BTreeMap;
 
 /// Domain tag for deriving test signing keys from account ids.
@@ -25,7 +25,7 @@ pub const ONX_TEST_KEY_V1: DomainTag = DomainTag::from_ascii("ONX_TEST_KEY_V1");
 pub const TEST_ACCOUNT_COUNT: usize = 8;
 /// Genesis balance per account (nanos) — vastly larger than any test spend.
 pub const TEST_GENESIS_BALANCE: u128 = 1_000_000_000;
-/// Transactions per test block.
+/// Messages per test block.
 pub const TEST_TXS_PER_BLOCK: usize = 8;
 
 /// Deterministic fee-collector account for test blocks.
@@ -83,14 +83,14 @@ pub fn test_accounts() -> Vec<AccountId> {
     test_genesis().accounts.keys().cloned().collect()
 }
 
-/// Deterministic transactions for block `seqno`: a pure function of
-/// `(seed, seqno)`. Amounts are tiny relative to genesis balances and fees
-/// are small, so every generated block is always valid against the
+/// Deterministic external messages for block `seqno`: a pure function of
+/// `(seed, seqno, chain_id)`. Amounts are tiny relative to genesis balances
+/// and fees are small, so every generated block is always valid against the
 /// sequential prefix of this seed's chain — no state inspection needed.
 ///
-/// Transactions are signed with [`test_secret_key`], and nonces are
-/// computed by replaying the sender selection of all earlier blocks of the
-/// same seed: block `n`'s k-th transaction from account A carries nonce
+/// Messages are signed with [`test_secret_key`], and nonces are computed by
+/// replaying the sender selection of all earlier blocks of the same seed:
+/// block `n`'s k-th message from account A carries nonce
 /// `sends(A, blocks 1..n) + k`. This keeps the function pure — the crash
 /// probe and the tests can regenerate exactly the block a killed process
 /// was committing — at the cost of O(n) regeneration per block, which is
@@ -100,31 +100,37 @@ pub fn test_accounts() -> Vec<AccountId> {
 /// `1..=seqno` was (or will be) built with the same `seed`. Tests that vary
 /// the seed per block (or otherwise break the uniform history) must use
 /// [`TestTxGen`] instead.
-pub fn test_block_txs(seed: u64, seqno: u32, accounts: &[AccountId]) -> Vec<Transaction> {
+pub fn test_block_txs(
+    seed: u64,
+    seqno: u32,
+    accounts: &[AccountId],
+    chain_id: [u8; 32],
+) -> Vec<ExternalMessage> {
     let mut base_nonce: BTreeMap<AccountId, u64> = BTreeMap::new();
     for b in 1..seqno {
         for (from, _, _, _) in test_block_transfers(seed, b, accounts) {
             *base_nonce.entry(from).or_insert(0) += 1;
         }
     }
-    test_block_txs_with_nonces(seed, seqno, accounts, &base_nonce)
+    test_block_txs_with_nonces(seed, seqno, accounts, &base_nonce, chain_id)
 }
 
-/// Deterministic transactions for block `seqno` with explicitly supplied
-/// base nonces: the k-th transaction from account A carries nonce
+/// Deterministic external messages for block `seqno` with explicitly
+/// supplied base nonces: the k-th message from account A carries nonce
 /// `nonces[A] + k`.
 ///
 /// Used by adversarial tests where the state's nonces do not match the
 /// seed's own history (e.g. a diverged in-memory state whose seqno was
-/// tampered with): the transactions must still authorize against the
-/// *actual* state, or `propose_block` fails before the store's continuity
-/// check is even reached.
+/// tampered with): the messages must still authorize against the *actual*
+/// state, or `propose_block` fails before the store's continuity check is
+/// even reached.
 pub fn test_block_txs_with_nonces(
     seed: u64,
     seqno: u32,
     accounts: &[AccountId],
     nonces: &BTreeMap<AccountId, u64>,
-) -> Vec<Transaction> {
+    chain_id: [u8; 32],
+) -> Vec<ExternalMessage> {
     let mut intra_block: BTreeMap<AccountId, u64> = BTreeMap::new();
     test_block_transfers(seed, seqno, accounts)
         .into_iter()
@@ -132,41 +138,52 @@ pub fn test_block_txs_with_nonces(
             let nonce = nonces.get(&from).copied().unwrap_or(0)
                 + intra_block.get(&from).copied().unwrap_or(0);
             *intra_block.entry(from).or_insert(0) += 1;
-            Transaction::new_signed(
+            ExternalMessage::new_signed(
+                chain_id,
+                MsgKind::Transfer,
                 from,
+                nonce,
                 to,
                 amount_nanos,
                 fee_nanos,
-                nonce,
+                Vec::new(),
+                [0u8; 32],
                 &test_secret_key(&from),
             )
         })
         .collect()
 }
 
-/// Stateful transaction generator for tests whose chains do not have a
+/// Stateful message generator for tests whose chains do not have a
 /// uniform seed history (e.g. alternating the seed per block).
 ///
 /// `test_block_txs` computes nonces by replaying one seed's history, which is
 /// wrong when the seed varies per block. `TestTxGen` instead tracks the
-/// nonces it has handed out, so generated transactions always authorize
+/// nonces it has handed out, so generated messages always authorize
 /// against a state built by applying its blocks in order from genesis.
 pub struct TestTxGen {
     nonces: BTreeMap<AccountId, u64>,
+    chain_id: [u8; 32],
 }
 
 impl TestTxGen {
-    pub fn new() -> Self {
+    pub fn new(chain_id: [u8; 32]) -> Self {
         Self {
             nonces: BTreeMap::new(),
+            chain_id,
         }
     }
 
-    /// Signed transactions for block `seqno` with transfer selection drawn
-    /// from `seed`. Advances the internal nonce counters by this block's
-    /// sends, so the next call continues where this one left off.
-    pub fn block_txs(&mut self, seed: u64, seqno: u32, accounts: &[AccountId]) -> Vec<Transaction> {
-        let txs = test_block_txs_with_nonces(seed, seqno, accounts, &self.nonces);
+    /// Signed external messages for block `seqno` with transfer selection
+    /// drawn from `seed`. Advances the internal nonce counters by this
+    /// block's sends, so the next call continues where this one left off.
+    pub fn block_txs(
+        &mut self,
+        seed: u64,
+        seqno: u32,
+        accounts: &[AccountId],
+    ) -> Vec<ExternalMessage> {
+        let txs = test_block_txs_with_nonces(seed, seqno, accounts, &self.nonces, self.chain_id);
         for (from, _, _, _) in test_block_transfers(seed, seqno, accounts) {
             *self.nonces.entry(from).or_insert(0) += 1;
         }
@@ -176,7 +193,7 @@ impl TestTxGen {
 
 impl Default for TestTxGen {
     fn default() -> Self {
-        Self::new()
+        Self::new([0u8; 32])
     }
 }
 

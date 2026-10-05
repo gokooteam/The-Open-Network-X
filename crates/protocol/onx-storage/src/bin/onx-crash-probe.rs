@@ -47,8 +47,8 @@ fn main() {
         .expect("genesis state");
     while state.seqno < num_blocks {
         let next_seqno = state.seqno + 1;
-        let txs = test_block_txs(seed, next_seqno, &accounts);
-        let block = propose_block(&state, txs, test_block_lt(next_seqno), collector)
+        let msgs = test_block_txs(seed, next_seqno, &accounts, state.chain_id);
+        let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector)
             .expect("propose must succeed");
         store
             .commit_block(&state, &block)

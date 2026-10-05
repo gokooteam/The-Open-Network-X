@@ -62,9 +62,11 @@ All protocol hashing contexts must prepend an explicit domain separation tag bef
 
 | Tag string              | Domain-separates |
 |-------------------------|------------------|
-| `ONX_TX_V2`             | V2 transaction identity: `SHA256(pad32 \|\| 168-byte wire)` (signature included) |
-| `ONX_TX_V2_SIGN`         | V2 signature message: `SHA256(pad32 \|\| 104-byte body)` |
-| `ONX_TXS_ROOT_V2`       | Ordered transaction-set commitment in the block header |
+| `ONX_MSG_EXT_V1`        | External message identity: `SHA256(pad32 \|\| wire)` (signature included) |
+| `ONX_MSG_EXT_SIGN_V1`    | External message signature payload: `SHA256(pad32 \|\| body)` — the body includes `chain_id` |
+| `ONX_MSG_INT_V1`        | Internal message delivery ID: `SHA256(pad32 \|\| canonical bytes)` |
+| `ONX_MSGS_ROOT_V1`      | Ordered external-message-set commitment in the block header |
+| `ONX_ADDR_V1`           | Key-derived address: `SHA256(pad32 \|\| pubkey)` |
 | `ONX_BLOCK_HDR_V1`      | Block header identity: `SHA256(pad32 \|\| 148-byte header)` |
 | `ONX_CELL_HASH_V1`      | Cell representation hash (see `state-model.md` §4.3) |
 | `ONX_GENESIS_V1`        | Genesis document hash, which doubles as the chain ID |
@@ -89,6 +91,8 @@ All protocol hashing contexts must prepend an explicit domain separation tag bef
 | Tag string            | Status |
 |-----------------------|--------|
 | `ONX_TX_V1`, `ONX_TXS_ROOT_V1` | Dropped with the V1 transaction encoding (pre-release, never shipped) |
+| `ONX_TX_V2`, `ONX_TX_V2_SIGN`, `ONX_TXS_ROOT_V2` | Dropped with the V2 transaction encoding (pre-release, never shipped) |
+| `ONX_TX_V3`, `ONX_TX_V3_SIGN`, `ONX_TXS_ROOT_V3` | Dropped with the V3 transaction encoding — replaced by the message model (ADR-0001/0002), pre-release, never shipped |
 | `ONX_TRIE_NODE_V1`    | Defined in `onx-state-model/src/tree.rs` but never used — trie nodes hash as plain cells (`ONX_CELL_HASH_V1`) |
 
 **Test-only** (never consensus): `ONX_TEST_KEY_V1`, `ONX_PROBE_KEY_V1`.

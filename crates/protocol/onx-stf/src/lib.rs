@@ -17,22 +17,27 @@
 //!   in protocol crates via clippy `disallowed-types`),
 //! - only `BTreeMap`/`BTreeSet`/`Vec` (insertion-ordered) and fixed-size arrays.
 //!
-//! Scope: Onyx transfers, fees, and TVM contract execution. Message-carrying
-//! transactions (`TxKind::ContractCall`) dispatch into `onx-execution`; the
-//! VM runs pure (no I/O, no clocks) with gas bounded by the declared fee.
+//! Scope: Onyx value transfers and TVM contract execution, all via
+//! asynchronous messages. External messages authenticate at the built-in
+//! wallet handler (STF, not VM); internal messages deliver as the
+//! receiver's own transaction, dispatching into `onx-execution` for
+//! contract calls. The VM runs pure (no I/O, no clocks) with gas bounded
+//! by the declared fee.
 //!
 //! Consensus rules implemented here:
 //! - Blocks form a hash chain: `header.seqno == prev.seqno + 1`,
 //!   `header.prev_hash == prev.header_hash`, strictly increasing `lt`.
-//! - The header commits to its transactions via `txs_root`; the STF
+//! - The header commits to its external messages via `msgs_root`; the STF
 //!   recomputes it and rejects mismatches.
 //! - The header carries the *claimed* post-state root; the STF recomputes
 //!   the state root from the resulting tree and rejects mismatches. This is
 //!   the property the whole replay milestone rests on.
-//! - A block containing any invalid transaction is itself invalid
-//!   (fail-closed: the first invalid transaction aborts the block).
+//! - A block containing any invalid external message is itself invalid
+//!   (fail-closed: the first invalid message aborts the block).
+//! - Internal messages deliver at most once per block (`DoubleDelivery`
+//!   fails the block); undeliverable messages bounce value to the sender.
 //!
-//! Fee model (documented judgment call): each transaction declares
+//! Fee model (documented judgment call): each external message declares
 //! `fee_nanos`; the sender must cover `amount + fee`. Fees are split per
 //! `onx_economics::split_transaction_fee` (50% burned, 50% validator
 //! reward). The validator half is credited to an explicit `fee_collector`
@@ -43,12 +48,18 @@
 
 pub mod block;
 pub mod error;
+pub mod message;
 pub mod state;
 pub mod stf;
 
-pub use block::{txs_root, Block, BlockBody, BlockHeader, Transaction, TxKind};
+pub use block::{msgs_root, Block, BlockBody, BlockHeader};
 pub use error::StfError;
+pub use message::{
+    derive_address, ExternalMessage, InternalMessage, MsgKind, EXT_BODY_PREFIX_LEN,
+    MAX_MESSAGE_BYTES, ONX_ADDR_V1, ONX_MSGS_ROOT_V1, ONX_MSG_EXT_SIGN_V1, ONX_MSG_EXT_V1,
+    ONX_MSG_INT_V1,
+};
 pub use state::State;
 /// Gas economics for contract execution: 1_000 gas per nano-Onyx of declared fee.
 pub use stf::GAS_PER_NANO;
-pub use stf::{apply_block, propose_block, AppliedTx, Receipts};
+pub use stf::{apply_block, propose_block, AppliedMessage, DeliveryReceipt, Receipts};

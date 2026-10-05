@@ -16,8 +16,8 @@ pub enum StfError {
     WorkchainMismatch { state: i32, block: i32 },
     /// Block logical time is not strictly greater than the last applied lt.
     LogicalTimeRegression { last_lt: u64, block_lt: u64 },
-    /// Recomputed transaction-set hash does not match the header commitment.
-    TxsRootMismatch {
+    /// Recomputed external-message-set hash does not match the header commitment.
+    MsgsRootMismatch {
         expected: [u8; 32],
         actual: [u8; 32],
     },
@@ -39,8 +39,9 @@ pub enum StfError {
         have_nanos: u128,
         need_nanos: u128,
     },
-    /// Receiver is `Frozen` or `Destroyed`. (`Uninitialized` receivers are
-    /// created as fresh `Active` accounts.)
+    /// Receiver is `Frozen` or `Destroyed`. Unreachable in the delivery path
+    /// (frozen/destroyed destinations bounce instead); kept as a defensive
+    /// fail-closed marker for internal caller bugs.
     ReceiverNotReceivable(AccountId),
     /// Balance arithmetic overflowed (practically unreachable given the
     /// supply cap, but checked anyway — silent wrapping is never acceptable
@@ -51,25 +52,27 @@ pub enum StfError {
     /// (Equality with the block lt is allowed: intra-block ordering is by
     /// transaction index.)
     AccountTimeRegression { account: AccountId },
-    /// Transaction bytes are not the canonical length.
-    MalformedTransaction { expected_len: usize, got_len: usize },
+    /// Message bytes are not the canonical encoding.
+    MalformedMessage { expected_len: usize, got_len: usize },
     /// Block header bytes are not the canonical length.
     MalformedHeader { expected_len: usize, got_len: usize },
-    /// Header `tx_count` does not match the number of body transactions.
-    TxCountMismatch { header: u32, body: usize },
-    /// Block body holds more transactions than fit in a `u32` tx_count.
+    /// Header `msg_count` does not match the number of body messages.
+    MsgCountMismatch { header: u32, body: usize },
+    /// Block body holds more messages than fit in a `u32` msg_count.
     /// Practically unreachable (a `Vec` that long cannot exist in memory),
     /// but the checked conversion fails closed instead of truncating.
-    TooManyTransactions { count: usize },
+    TooManyMessages { count: usize },
     /// State trie construction failed while computing a root hash
     /// (fail-closed: the error propagates, never a silent constant —
     /// Phase 0 bug 4). Deterministic given the same input state.
     StateTrie(StateModelError),
-    /// Sender account carries no public key (all-zero pubkey). The account
-    /// can receive but never spend. The all-zero encoding is the Ed25519
-    /// identity point, for which a degenerate signature verifies under any
-    /// message — so keylessness is checked explicitly, never left to the
-    /// signature verifier's edge behavior.
+    /// Sender account carries no public key (all-zero pubkey) and the
+    /// message revealed none. A key-derived account can spend by revealing
+    /// the pubkey that hashes to its address (ADR-0006); an address that
+    /// was not derived from any key stays unspendable. The all-zero
+    /// encoding is the Ed25519 identity point, for which a degenerate
+    /// signature verifies under any message — so keylessness is checked
+    /// explicitly, never left to the signature verifier's edge behavior.
     SenderHasNoKey(AccountId),
     /// Transaction nonce does not equal the sender account's current nonce.
     /// Covers both replay (nonce already used) and gaps (nonce skipped):
@@ -84,24 +87,39 @@ pub enum StfError {
     /// 2^64 spends — but silent wrapping is never acceptable in consensus
     /// code).
     NonceOverflow,
-    /// Transaction kind byte is not a known `TxKind` discriminant.
-    BadTxKind(u8),
+    /// Message kind byte is not a known `MsgKind` discriminant.
+    BadMsgKind(u8),
     /// Contract-call message exceeds `MAX_MESSAGE_BYTES`.
     MessageTooLarge { len: usize },
-    /// A contract call targeted an account with no contract code. Contract
-    /// calls never create accounts — the recipient must already be an
-    /// `Active` contract.
-    ContractHasNoCode(AccountId),
-    /// Contract execution raised a TVM exception (including out-of-gas).
-    /// The transaction is invalid, which makes the block invalid —
-    /// fail-closed, with all of the transaction's effects reverted (the VM
-    /// runs before any state write, so there is nothing to roll back).
-    VmExecutionFailed { kind: String },
-    /// Contract execution produced outbound messages. The VM's message
-    /// egress is deliberately unwired in this milestone — a contract that
-    /// tries to send messages makes its transaction invalid rather than
-    /// having the messages silently dropped.
-    OutMessagesNotSupported { count: usize },
+    /// External message was signed for a different chain. The chain ID is
+    /// the genesis hash, carried in `State`; a signature minted for one
+    /// chain never verifies on another because the signed body includes
+    /// the chain ID (ADR-0005).
+    WrongChainId { expected: [u8; 32], got: [u8; 32] },
+    /// An internal message was already delivered in this block. The
+    /// per-block processed set makes double delivery impossible —
+    /// a re-delivery attempt fails the block closed (ADR-0007).
+    DoubleDelivery { msg_id: [u8; 32] },
+    /// The revealed pubkey does not hash to the sender's account address.
+    AddressKeyMismatch { account: AccountId },
+    /// The message revealed a pubkey, but the sender account already has
+    /// one on file. Key rotation is out of scope for this milestone.
+    UnexpectedPubkeyReveal(AccountId),
+    /// A contract call with zero fee cannot buy gas. Rejected at the wallet
+    /// handler (sender-side fault, fail-closed) rather than bounced.
+    ZeroFeeContractCall,
+    /// Defensive bound on internal-message deliveries per block exceeded.
+    TooManyDeliveries { max: usize },
+    /// A bounce message could not be delivered to its destination (the
+    /// original sender). Unreachable in honest operation — the bounce
+    /// target was `Active` at wallet time and nothing freezes accounts
+    /// mid-block — so this fails the block closed rather than silently
+    /// burning the value.
+    BounceUndeliverable { msg_id: [u8; 32] },
+    /// The fee collector account is `Frozen` or `Destroyed` and cannot
+    /// receive the validator fee share. A protocol configuration fault —
+    /// the block fails closed.
+    FeeCollectorNotReceivable(AccountId),
 }
 
 impl fmt::Display for StfError {
@@ -118,8 +136,8 @@ impl fmt::Display for StfError {
                 f,
                 "logical time regression: block lt {block_lt} <= last lt {last_lt}"
             ),
-            Self::TxsRootMismatch { .. } => {
-                write!(f, "txs_root mismatch: header does not commit to this body")
+            Self::MsgsRootMismatch { .. } => {
+                write!(f, "msgs_root mismatch: header does not commit to this body")
             }
             Self::StateRootMismatch { .. } => {
                 write!(
@@ -147,12 +165,12 @@ impl fmt::Display for StfError {
             Self::AccountTimeRegression { account } => {
                 write!(f, "account {account:?} logical time regression")
             }
-            Self::MalformedTransaction {
+            Self::MalformedMessage {
                 expected_len,
                 got_len,
             } => write!(
                 f,
-                "malformed transaction: expected {expected_len} bytes, got {got_len}"
+                "malformed message: expected {expected_len} bytes, got {got_len}"
             ),
             Self::MalformedHeader {
                 expected_len,
@@ -161,12 +179,12 @@ impl fmt::Display for StfError {
                 f,
                 "malformed block header: expected {expected_len} bytes, got {got_len}"
             ),
-            Self::TxCountMismatch { header, body } => write!(
+            Self::MsgCountMismatch { header, body } => write!(
                 f,
-                "tx_count mismatch: header says {header}, body has {body} transactions"
+                "msg_count mismatch: header says {header}, body has {body} messages"
             ),
-            Self::TooManyTransactions { count } => {
-                write!(f, "too many transactions: {count} exceeds u32::MAX")
+            Self::TooManyMessages { count } => {
+                write!(f, "too many messages: {count} exceeds u32::MAX")
             }
             Self::StateTrie(e) => write!(f, "state trie construction failed: {e}"),
             Self::SenderHasNoKey(a) => {
@@ -180,20 +198,40 @@ impl fmt::Display for StfError {
             }
             Self::InvalidSignature => write!(f, "invalid transaction signature"),
             Self::NonceOverflow => write!(f, "account nonce overflow"),
-            Self::BadTxKind(b) => write!(f, "unknown transaction kind byte: {b:#04x}"),
+            Self::BadMsgKind(b) => write!(f, "unknown message kind byte: {b:#04x}"),
             Self::MessageTooLarge { len } => {
                 write!(f, "contract message too large: {len} bytes")
             }
-            Self::ContractHasNoCode(a) => {
-                write!(f, "contract call to account {a:?} which has no code")
+            Self::WrongChainId { .. } => {
+                write!(f, "message chain ID does not match this chain")
             }
-            Self::VmExecutionFailed { kind } => {
-                write!(f, "contract execution failed: {kind}")
+            Self::DoubleDelivery { msg_id } => {
+                write!(f, "internal message delivered twice: {msg_id:?}")
             }
-            Self::OutMessagesNotSupported { count } => write!(
-                f,
-                "contract produced {count} outbound messages; message egress is not yet supported"
-            ),
+            Self::AddressKeyMismatch { account } => {
+                write!(f, "revealed pubkey does not derive to account {account:?}")
+            }
+            Self::UnexpectedPubkeyReveal(a) => {
+                write!(
+                    f,
+                    "account {a:?} already has a key; unexpected pubkey reveal"
+                )
+            }
+            Self::ZeroFeeContractCall => {
+                write!(f, "contract call carries zero fee: no gas possible")
+            }
+            Self::TooManyDeliveries { max } => {
+                write!(
+                    f,
+                    "delivery round bound exceeded: more than {max} deliveries"
+                )
+            }
+            Self::BounceUndeliverable { msg_id } => {
+                write!(f, "bounce message {msg_id:?} could not be delivered")
+            }
+            Self::FeeCollectorNotReceivable(a) => {
+                write!(f, "fee collector {a:?} is Frozen or Destroyed")
+            }
         }
     }
 }
