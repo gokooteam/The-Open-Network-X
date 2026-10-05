@@ -44,6 +44,18 @@ pub enum AccountState {
         code_hash: [u8; 32],
         data_hash: [u8; 32],
         storage_stat: StorageStat,
+        /// Ed25519 public key authorized to spend from this account.
+        /// All zeros means *keyless*: the account can receive but never
+        /// send (the STF rejects spends from keyless accounts explicitly —
+        /// the all-zero encoding is the Ed25519 identity point, for which
+        /// a degenerate signature verifies under *any* message, so it must
+        /// never be treated as a real key).
+        pubkey: [u8; 32],
+        /// Next expected transaction nonce. Starts at 0; incremented by
+        /// one on every successful spend. A transaction is valid only if
+        /// its nonce equals the account's current nonce — this is what
+        /// makes transaction replay impossible.
+        nonce: u64,
     },
     Frozen {
         balance_nanos: u128,
@@ -83,8 +95,10 @@ impl AccountState {
                 code_hash,
                 data_hash,
                 storage_stat,
+                pubkey,
+                nonce,
             } => {
-                let mut bytes = Vec::with_capacity(105);
+                let mut bytes = Vec::with_capacity(141);
                 bytes.push(AccountType::Active.to_u8());
                 bytes.extend_from_slice(&Uint128(*balance_nanos).encode());
                 bytes.extend_from_slice(&Uint64(*last_trans_lt).encode());
@@ -92,6 +106,10 @@ impl AccountState {
                 bytes.extend_from_slice(data_hash);
                 bytes.extend_from_slice(&Uint32(storage_stat.cell_count).encode());
                 bytes.extend_from_slice(&Uint64(storage_stat.byte_count).encode());
+                // Appended at the end (tx-auth upgrade): pubkey then nonce.
+                // 1+16+8+32+32+4+8+32+8 = 141 bytes total.
+                bytes.extend_from_slice(pubkey);
+                bytes.extend_from_slice(&Uint64(*nonce).encode());
                 bytes
             }
             Self::Frozen {
@@ -188,6 +206,20 @@ impl AccountState {
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
                 offset += Uint64::BYTE_LEN;
 
+                if cursor.len() < 40 {
+                    return Err(StateModelError::DeserializationError(
+                        "Truncated Active AccountState pubkey/nonce".to_string(),
+                    ));
+                }
+                let mut pubkey = [0u8; 32];
+                pubkey.copy_from_slice(&cursor[..32]);
+                cursor = &cursor[32..];
+                offset += 32;
+
+                let nonce_val = Uint64::read(&mut cursor)
+                    .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
+                offset += Uint64::BYTE_LEN;
+
                 Ok((
                     Self::Active {
                         balance_nanos: balance_val.0,
@@ -198,6 +230,8 @@ impl AccountState {
                             cell_count: cell_count_val.0,
                             byte_count: byte_count_val.0,
                         },
+                        pubkey,
+                        nonce: nonce_val.0,
                     },
                     offset,
                 ))

@@ -7,6 +7,7 @@
 //! byte-identical output).
 
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
+use onx_primitives::{domain_hash, DomainTag, SecretKey};
 use onx_state_model::{
     derive_account_id, AccountState, GenesisDocument, GenesisValidator, StorageStat,
 };
@@ -16,7 +17,38 @@ use onx_stf::{
 use std::collections::BTreeMap;
 use std::process::Command;
 
-fn active(balance_nanos: u128) -> AccountState {
+/// Domain tag for the phase-3 tests' deterministic signing keys.
+///
+/// Test-only: the preimage is public, so these keys are not secret.
+const TEST_KEY_V1: DomainTag = DomainTag::from_ascii("ONX_TEST3_KEY_V1");
+
+fn test_secret(id: &AccountId) -> SecretKey {
+    let seed = domain_hash(&TEST_KEY_V1, &id.to_bytes());
+    SecretKey::from_seed(&seed).expect("domain hash output is a valid seed")
+}
+
+/// Signs transactions for a test, tracking per-account nonces exactly the
+/// way the STF expects them: the k-th transaction from an account carries
+/// that account's k-th nonce (genesis accounts start at 0).
+#[derive(Default)]
+struct TxSigner {
+    nonces: BTreeMap<AccountId, u64>,
+}
+
+impl TxSigner {
+    fn sign(&mut self, from: AccountId, to: AccountId, amount: u128, fee: u128) -> Transaction {
+        let nonce = self.next_nonce(from);
+        Transaction::new_signed(from, to, amount, fee, nonce, &test_secret(&from))
+    }
+
+    fn next_nonce(&mut self, from: AccountId) -> u64 {
+        let nonce = self.nonces.get(&from).copied().unwrap_or(0);
+        self.nonces.insert(from, nonce + 1);
+        nonce
+    }
+}
+
+fn active(balance_nanos: u128, id: &AccountId) -> AccountState {
     AccountState::Active {
         balance_nanos,
         last_trans_lt: 0,
@@ -26,6 +58,8 @@ fn active(balance_nanos: u128) -> AccountState {
             cell_count: 0,
             byte_count: 0,
         },
+        pubkey: test_secret(id).public_key().encode(),
+        nonce: 0,
     }
 }
 
@@ -40,9 +74,9 @@ fn test_genesis() -> (State, Vec<AccountId>, AccountId) {
     let alice = derive_account_id("test-alice");
     let bob = derive_account_id("test-bob");
     let carol = derive_account_id("test-carol");
-    accounts.insert(alice, active(10_000_000));
-    accounts.insert(bob, active(5_000_000));
-    accounts.insert(carol, active(0));
+    accounts.insert(alice, active(10_000_000, &alice));
+    accounts.insert(bob, active(5_000_000, &bob));
+    accounts.insert(carol, active(0, &carol));
     let collector = derive_account_id("test-collector");
     let doc = GenesisDocument::new(workchain, shard, validators, accounts).unwrap();
     (
@@ -63,12 +97,8 @@ fn stf_happy_path_transfer_with_fee_split() {
 
     // Alice sends Bob 1_000_000 with fee 1_000. Fee split is 50/50 per
     // onx-economics: 500 burned, 500 to the collector.
-    let tx = Transaction {
-        from: alice,
-        to: bob,
-        amount_nanos: 1_000_000,
-        fee_nanos: 1_000,
-    };
+    let mut signer = TxSigner::default();
+    let tx = signer.sign(alice, bob, 1_000_000, 1_000);
     let block = propose_block(&state, vec![tx], 1, collector).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
 
@@ -100,12 +130,8 @@ fn stf_creates_receiver_account_on_first_transfer() {
     let (alice, carol) = (ids[0], ids[2]);
     assert_eq!(balance_of(&state, &carol), 0);
 
-    let tx = Transaction {
-        from: alice,
-        to: carol,
-        amount_nanos: 250_000,
-        fee_nanos: 0,
-    };
+    let mut signer = TxSigner::default();
+    let tx = signer.sign(alice, carol, 250_000, 0);
     let block = propose_block(&state, vec![tx], 1, collector).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     assert_eq!(balance_of(&next, &carol), 250_000);
@@ -117,12 +143,8 @@ fn stf_creates_receiver_account_on_first_transfer() {
 fn stf_self_transfer_nets_to_fee_only() {
     let (state, ids, collector) = test_genesis();
     let alice = ids[0];
-    let tx = Transaction {
-        from: alice,
-        to: alice,
-        amount_nanos: 1_000_000,
-        fee_nanos: 400,
-    };
+    let mut signer = TxSigner::default();
+    let tx = signer.sign(alice, alice, 1_000_000, 400);
     let block = propose_block(&state, vec![tx], 1, collector).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     // Debited amount+fee, credited amount: net -fee.
@@ -181,12 +203,8 @@ fn stf_rejects_lt_regression() {
 #[test]
 fn stf_rejects_tampered_body_and_header() {
     let (state, ids, collector) = test_genesis();
-    let tx = Transaction {
-        from: ids[0],
-        to: ids[1],
-        amount_nanos: 100,
-        fee_nanos: 0,
-    };
+    let mut signer = TxSigner::default();
+    let tx = signer.sign(ids[0], ids[1], 100, 0);
     let block = propose_block(&state, vec![tx], 1, collector).unwrap();
 
     // Mutate the body after proposing: txs_root no longer matches.
@@ -216,36 +234,24 @@ fn stf_rejects_invalid_transactions() {
     let stranger = derive_account_id("test-stranger");
 
     // Zero amount.
-    let bad: Vec<Transaction> = vec![Transaction {
-        from: alice,
-        to: bob,
-        amount_nanos: 0,
-        fee_nanos: 10,
-    }];
+    let mut signer = TxSigner::default();
+    let bad: Vec<Transaction> = vec![signer.sign(alice, bob, 0, 10)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
         Err(StfError::ZeroAmount)
     ));
 
     // Insufficient funds (alice has 10M).
-    let bad = vec![Transaction {
-        from: alice,
-        to: bob,
-        amount_nanos: 9_999_999,
-        fee_nanos: 2,
-    }];
+    let mut bad_signer = TxSigner::default();
+    let bad = vec![bad_signer.sign(alice, bob, 9_999_999, 2)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
         Err(StfError::InsufficientFunds { .. })
     ));
 
     // Unknown sender.
-    let bad = vec![Transaction {
-        from: stranger,
-        to: bob,
-        amount_nanos: 1,
-        fee_nanos: 0,
-    }];
+    let mut bad_signer = TxSigner::default();
+    let bad = vec![bad_signer.sign(stranger, bob, 1, 0)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
         Err(StfError::SenderNotSpendable(_))
@@ -264,25 +270,11 @@ fn stf_rejects_invalid_transactions() {
 fn stf_allows_intra_block_multi_touch() {
     let (state, ids, collector) = test_genesis();
     let (alice, bob) = (ids[0], ids[1]);
+    let mut signer = TxSigner::default();
     let txs = vec![
-        Transaction {
-            from: alice,
-            to: bob,
-            amount_nanos: 1_000_000,
-            fee_nanos: 0,
-        },
-        Transaction {
-            from: alice,
-            to: bob,
-            amount_nanos: 2_000_000,
-            fee_nanos: 0,
-        },
-        Transaction {
-            from: bob,
-            to: alice,
-            amount_nanos: 500_000,
-            fee_nanos: 100,
-        },
+        signer.sign(alice, bob, 1_000_000, 0),
+        signer.sign(alice, bob, 2_000_000, 0),
+        signer.sign(bob, alice, 500_000, 100),
     ];
     let block = propose_block(&state, txs, 1, collector).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
@@ -299,18 +291,10 @@ fn stf_allows_intra_block_multi_touch() {
 fn stf_header_commits_to_ordered_set() {
     // Same transactions in different order => different txs_root.
     let (state, ids, collector) = test_genesis();
-    let tx1 = Transaction {
-        from: ids[0],
-        to: ids[1],
-        amount_nanos: 1,
-        fee_nanos: 0,
-    };
-    let tx2 = Transaction {
-        from: ids[1],
-        to: ids[0],
-        amount_nanos: 1,
-        fee_nanos: 0,
-    };
+    let mut signer = TxSigner::default();
+    let tx1 = signer.sign(ids[0], ids[1], 1, 0);
+    let mut signer = TxSigner::default();
+    let tx2 = signer.sign(ids[1], ids[0], 1, 0);
     let r1 = txs_root(&[tx1, tx2]);
     let r2 = txs_root(&[tx2, tx1]);
     assert_ne!(r1, r2);
@@ -348,6 +332,7 @@ impl XorShift64 {
 fn stf_randomized_sequences_deterministic_in_process() {
     fn run_once() -> (State, Vec<onx_stf::Receipts>) {
         let (genesis_state, ids, collector) = test_genesis();
+        let mut signer = TxSigner::default();
         let mut state = genesis_state;
         let mut all_receipts = Vec::new();
         let mut rng = XorShift64(0xDEAD_BEEF_CAFE_1234);
@@ -374,12 +359,15 @@ fn stf_randomized_sequences_deterministic_in_process() {
                 mirror.insert(from, bal - amount - fee);
                 *mirror.entry(to).or_insert(0) += amount;
                 *mirror.entry(collector).or_insert(0) += val_fee;
-                txs.push(Transaction {
+                let nonce = signer.next_nonce(from);
+                txs.push(Transaction::new_signed(
                     from,
                     to,
-                    amount_nanos: amount,
-                    fee_nanos: fee,
-                });
+                    amount,
+                    fee,
+                    nonce,
+                    &test_secret(&from),
+                ));
             }
             let block = propose_block(&state, txs, b, collector).unwrap();
             let (next, receipts) = apply_block(&state, &block).unwrap();

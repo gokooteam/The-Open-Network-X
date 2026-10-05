@@ -27,6 +27,8 @@ fn test_account_state_serialization_round_trip() {
             cell_count: 5,
             byte_count: 500,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     let active_bytes = active.to_bytes();
     let (active_de, consumed) = AccountState::from_bytes(&active_bytes).unwrap();
@@ -56,6 +58,8 @@ fn test_account_lifecycle_transitions() {
             cell_count: 1,
             byte_count: 100,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
 
     // Uninit -> Active (lt = 10)
@@ -71,6 +75,8 @@ fn test_account_lifecycle_transitions() {
             cell_count: 2,
             byte_count: 150,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     assert!(active_1.validate_transition(&active_2, 15).is_ok());
 
@@ -84,6 +90,8 @@ fn test_account_lifecycle_transitions() {
             cell_count: 2,
             byte_count: 150,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     assert!(matches!(
         active_2.validate_transition(&active_regress, 12),
@@ -108,6 +116,8 @@ fn test_account_lifecycle_transitions() {
             cell_count: 1,
             byte_count: 80,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     assert!(frozen.validate_transition(&active_unfrozen, 25).is_ok());
 
@@ -133,6 +143,8 @@ fn test_balance_underflow_and_transition_with_delta() {
             cell_count: 1,
             byte_count: 100,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
 
     // Valid balance deduction transition (1_000_000 - 300_000 = 700_000)
@@ -145,6 +157,8 @@ fn test_balance_underflow_and_transition_with_delta() {
             cell_count: 1,
             byte_count: 100,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     assert!(active_init
         .validate_transition_with_delta(&active_next_valid, 15, -300_000)
@@ -160,6 +174,8 @@ fn test_balance_underflow_and_transition_with_delta() {
             cell_count: 1,
             byte_count: 100,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
     assert!(matches!(
         active_init.validate_transition_with_delta(&active_next_underflow, 15, -1_500_000),
@@ -260,6 +276,8 @@ fn test_shard_state_tree_and_merkle_proofs() {
             cell_count: 1,
             byte_count: 10,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
 
     let state2 = AccountState::Active {
@@ -271,6 +289,8 @@ fn test_shard_state_tree_and_merkle_proofs() {
             cell_count: 2,
             byte_count: 20,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     };
 
     tree.insert(acc1, state1);

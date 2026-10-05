@@ -350,6 +350,8 @@ mod tests {
                     cell_count: 0,
                     byte_count: 0,
                 },
+                pubkey: [0u8; 32],
+                nonce: 0,
             },
         );
         accounts.insert(
@@ -363,6 +365,8 @@ mod tests {
                     cell_count: 0,
                     byte_count: 0,
                 },
+                pubkey: [0u8; 32],
+                nonce: 0,
             },
         );
         GenesisDocument::new(workchain, shard, validators, accounts).unwrap()

@@ -57,10 +57,33 @@ pub enum StfError {
     MalformedHeader { expected_len: usize, got_len: usize },
     /// Header `tx_count` does not match the number of body transactions.
     TxCountMismatch { header: u32, body: usize },
+    /// Block body holds more transactions than fit in a `u32` tx_count.
+    /// Practically unreachable (a `Vec` that long cannot exist in memory),
+    /// but the checked conversion fails closed instead of truncating.
+    TooManyTransactions { count: usize },
     /// State trie construction failed while computing a root hash
     /// (fail-closed: the error propagates, never a silent constant —
     /// Phase 0 bug 4). Deterministic given the same input state.
     StateTrie(StateModelError),
+    /// Sender account carries no public key (all-zero pubkey). The account
+    /// can receive but never spend. The all-zero encoding is the Ed25519
+    /// identity point, for which a degenerate signature verifies under any
+    /// message — so keylessness is checked explicitly, never left to the
+    /// signature verifier's edge behavior.
+    SenderHasNoKey(AccountId),
+    /// Transaction nonce does not equal the sender account's current nonce.
+    /// Covers both replay (nonce already used) and gaps (nonce skipped):
+    /// neither is ever valid.
+    NonceMismatch { expected: u64, got: u64 },
+    /// Ed25519 signature invalid: wrong key, tampered body, or malformed
+    /// signature bytes. Also covers the unreachable case of a stored
+    /// pubkey that fails point decoding (genesis validates keys, so only
+    /// a corrupt state could produce one — still fail closed).
+    InvalidSignature,
+    /// Account nonce increment overflowed u64 (practically unreachable —
+    /// 2^64 spends — but silent wrapping is never acceptable in consensus
+    /// code).
+    NonceOverflow,
 }
 
 impl fmt::Display for StfError {
@@ -124,7 +147,21 @@ impl fmt::Display for StfError {
                 f,
                 "tx_count mismatch: header says {header}, body has {body} transactions"
             ),
+            Self::TooManyTransactions { count } => {
+                write!(f, "too many transactions: {count} exceeds u32::MAX")
+            }
             Self::StateTrie(e) => write!(f, "state trie construction failed: {e}"),
+            Self::SenderHasNoKey(a) => {
+                write!(f, "sender {a:?} has no public key and cannot spend")
+            }
+            Self::NonceMismatch { expected, got } => {
+                write!(
+                    f,
+                    "nonce mismatch: account expects {expected}, tx carries {got}"
+                )
+            }
+            Self::InvalidSignature => write!(f, "invalid transaction signature"),
+            Self::NonceOverflow => write!(f, "account nonce overflow"),
         }
     }
 }

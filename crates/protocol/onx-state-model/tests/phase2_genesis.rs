@@ -19,6 +19,8 @@ fn value_account(balance_nanos: u128) -> AccountState {
             cell_count: 0,
             byte_count: 0,
         },
+        pubkey: [0u8; 32],
+        nonce: 0,
     }
 }
 

@@ -5,7 +5,6 @@
 //!
 //! | Table           | Key                  | Value                          |
 //! |-----------------|----------------------|--------------------------------|
-//! | `cells`         | cell hash `[u8;32]`  | cell bytes                     |
 //! | `accounts`      | account id `[u8;32]` | `AccountState` bytes           |
 //! | `block_headers` | block hash `[u8;32]` | 148-byte canonical header      |
 //! | `block_bodies`  | block hash `[u8;32]` | `encode_body` bytes            |
@@ -16,6 +15,14 @@
 //! `meta` keys: `b"schema_version"` (u32 BE), `b"genesis_hash"` (32 bytes),
 //! `b"chain_id"` (32 bytes, genesis hash — the chain's identity),
 //! `b"workchain"` (i32 BE), `b"head"` (seqno u32 BE ++ block hash).
+//!
+//! Note: schema v1 had a seventh table, `cells` (cell hash -> cell bytes),
+//! written on every commit but never read by anything. It was dropped in
+//! v2: it caused O(cells) write amplification per block with unbounded
+//! growth and no GC, served no reader, and historical state remains
+//! reconstructible via replay from genesis + persisted block bodies.
+//! v1 databases are rejected (fail-closed `SchemaMismatch`); resync from
+//! genesis — v1 was never released, so no migration is provided.
 //!
 //! Seqno 0 is the genesis pseudo-entry: `seqno_to_hash[0]` and
 //! `state_roots[0]` exist, but there is no block header/body for it.
@@ -28,17 +35,18 @@
 use crate::encoding::{decode_body, encode_body};
 use crate::error::StorageError;
 use onx_data_structures::AccountId;
-use onx_state_model::{AccountState, Cell, GenesisDocument, ShardStateTree};
+use onx_state_model::{AccountState, GenesisDocument, ShardStateTree};
 use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
 use std::path::Path;
 
 /// Current schema version. Bump when the table layout changes; `open`
-/// refuses databases written by a newer version (fail-closed).
-pub const SCHEMA_VERSION: u32 = 1;
+/// refuses databases written by a different version (fail-closed).
+/// v1 -> v2: dropped the write-only `cells` table (see schema docs above).
+/// v1 was never released, so no migration is provided — resync from genesis.
+pub const SCHEMA_VERSION: u32 = 2;
 
-const CELLS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cells");
 const ACCOUNTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("accounts");
 const BLOCK_HEADERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_headers");
 const BLOCK_BODIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_bodies");
@@ -80,7 +88,6 @@ impl ChainStore {
     fn create_tables(&self) -> Result<(), StorageError> {
         let wtxn = self.db.begin_write()?;
         {
-            wtxn.open_table(CELLS)?;
             wtxn.open_table(ACCOUNTS)?;
             wtxn.open_table(BLOCK_HEADERS)?;
             wtxn.open_table(BLOCK_BODIES)?;
@@ -128,9 +135,11 @@ impl ChainStore {
     /// again with the same document is a no-op; a *different* genesis hash
     /// is corruption (the database already has an identity).
     ///
-    /// Writes all genesis accounts, the genesis trie cells, the seqno-0
-    /// pseudo-entry, and the chain-identity meta keys in one transaction,
-    /// and sets the head to `(0, genesis_hash)`.
+    /// Writes all genesis accounts, the seqno-0 pseudo-entry, and the
+    /// chain-identity meta keys in one transaction, and sets the head to
+    /// `(0, genesis_hash)`. Trie cells are NOT persisted: the state root is
+    /// recomputed from accounts on every load (see `load_state`), and no
+    /// reader ever needed the cells table (dropped in schema v2).
     pub fn init_genesis(&self, doc: &GenesisDocument) -> Result<(), StorageError> {
         let genesis_hash = doc.genesis_hash();
         let wtxn = self.db.begin_write()?;
@@ -153,12 +162,6 @@ impl ChainStore {
                 let mut accts = wtxn.open_table(ACCOUNTS)?;
                 for (id, st) in tree.accounts() {
                     accts.insert(id.to_bytes().as_slice(), st.to_bytes().as_slice())?;
-                }
-            }
-            {
-                let mut cells = wtxn.open_table(CELLS)?;
-                for (ch, cell) in tree.trie_cells()? {
-                    insert_cell(&mut cells, &ch, &cell)?;
                 }
             }
 
@@ -184,9 +187,9 @@ impl ChainStore {
     ///
     /// Runs the pure STF first (validating seqno, prev-hash, workchain,
     /// logical time, txs_root, and the claimed post-state root), then
-    /// persists the block body, block header, new trie cells, touched
-    /// accounts, the seqno→hash index entry, the post-state root, and the
-    /// head pointer in **one redb write transaction**.
+    /// persists the block body, block header, touched accounts, the
+    /// seqno→hash index entry, the post-state root, and the head pointer in
+    /// **one redb write transaction**.
     ///
     /// Idempotent: committing the same block twice is a no-op. Committing
     /// a *different* block at an already-committed seqno is
@@ -208,13 +211,14 @@ impl ChainStore {
             let mut seq_tbl = wtxn.open_table(SEQNO_TO_HASH)?;
             let mut bodies_tbl = wtxn.open_table(BLOCK_BODIES)?;
             let mut headers_tbl = wtxn.open_table(BLOCK_HEADERS)?;
-            let mut cells_tbl = wtxn.open_table(CELLS)?;
             let mut accts_tbl = wtxn.open_table(ACCOUNTS)?;
             let mut roots_tbl = wtxn.open_table(STATE_ROOTS)?;
             let mut meta_tbl = wtxn.open_table(META)?;
 
             // Idempotency + fork check inside the txn (single-writer
-            // serialization makes this airtight).
+            // serialization makes this airtight). This runs first so that
+            // re-committing an already-committed block stays a no-op even
+            // though it does not satisfy the continuity check below.
             if let Some(existing) = seq_tbl.get(h.seqno.to_be_bytes().as_slice())? {
                 let existing_hash = hash32_from_value(existing.value(), "seqno_to_hash")?;
                 if existing_hash == block_hash {
@@ -227,14 +231,38 @@ impl ChainStore {
                 });
             }
 
+            // Continuity (gap 1 fix): the block must build directly on the
+            // stored head — (seqno, prev_hash) == (head.seqno + 1,
+            // head.block_hash). The STF above tied the block to the
+            // caller's in-memory state; this ties the caller's state to
+            // the database. Without it, a stale or diverged state could
+            // commit a block that skips seqnos or rebases the chain onto
+            // the wrong base: the seqno-exists check alone cannot see a
+            // wrong base, only a missing or duplicate seqno.
+            let (head_seqno, head_hash) = match meta_tbl.get(b"head".as_slice())? {
+                None => {
+                    return Err(StorageError::Corrupt(
+                        "commit_block with no stored head: init_genesis was never called"
+                            .to_string(),
+                    ))
+                }
+                Some(v) => parse_head_value(v.value())?,
+            };
+            let expected_seqno = head_seqno.checked_add(1).ok_or_else(|| {
+                StorageError::Corrupt("stored head seqno is u32::MAX; cannot advance".to_string())
+            })?;
+            if h.seqno != expected_seqno || h.prev_hash != head_hash {
+                return Err(StorageError::HeadMismatch {
+                    head_seqno,
+                    head_hash,
+                    block_seqno: h.seqno,
+                    block_prev_hash: h.prev_hash,
+                });
+            }
+
             // Block identity and data.
             bodies_tbl.insert(block_hash.as_slice(), encode_body(&block.body).as_slice())?;
             headers_tbl.insert(block_hash.as_slice(), h.to_bytes().as_slice())?;
-
-            // New trie cells (content-addressed: re-insertion is idempotent).
-            for (ch, cell) in new_state.tree.trie_cells()? {
-                insert_cell(&mut cells_tbl, &ch, &cell)?;
-            }
 
             // Touched accounts only — no full-shard rewrite.
             for id in dirty_accounts(block, &receipts) {
@@ -268,19 +296,7 @@ impl ChainStore {
         let meta = rtxn.open_table(META)?;
         match meta.get(b"head".as_slice())? {
             None => Ok(None),
-            Some(v) => {
-                let b = v.value();
-                if b.len() != 36 {
-                    return Err(StorageError::Corrupt(format!(
-                        "head value has {} bytes, expected 36",
-                        b.len()
-                    )));
-                }
-                let seqno = u32::from_be_bytes(b[0..4].try_into().expect("len checked"));
-                let mut hash = [0u8; 32];
-                hash.copy_from_slice(&b[4..36]);
-                Ok(Some((seqno, hash)))
-            }
+            Some(v) => parse_head_value(v.value()).map(Some),
         }
     }
 
@@ -380,6 +396,29 @@ impl ChainStore {
             }
         }
 
+        // Gap 2 fix: verify the rebuilt state hashes to the stored
+        // post-state root for the head seqno. Replaying external blocks
+        // catches corruption at the *next* block — but a self-producing
+        // node would build its next block on top of corrupt state, and
+        // there is no next external block to catch it. Fail closed here
+        // instead of handing a corrupt state to the caller.
+        let rebuilt_root = tree.state_root_hash()?;
+        let roots_tbl = rtxn.open_table(STATE_ROOTS)?;
+        let stored_root = roots_tbl
+            .get(seqno.to_be_bytes().as_slice())?
+            .map(|v| hash32_from_value(v.value(), "state_roots"))
+            .transpose()?
+            .ok_or_else(|| {
+                StorageError::Corrupt(format!("no stored state root for head seqno {seqno}"))
+            })?;
+        if rebuilt_root != stored_root {
+            return Err(StorageError::StateRootMismatch {
+                seqno,
+                stored: stored_root,
+                rebuilt: rebuilt_root,
+            });
+        }
+
         let meta = rtxn.open_table(META)?;
         let workchain = match meta.get(b"workchain".as_slice())? {
             None => {
@@ -442,6 +481,21 @@ fn head_value(seqno: u32, hash: &[u8; 32]) -> Vec<u8> {
     v
 }
 
+/// Parse a `meta[b"head"]` value. Shared by [`ChainStore::head`] and the
+/// continuity check inside `commit_block`'s write transaction.
+fn parse_head_value(b: &[u8]) -> Result<(u32, [u8; 32]), StorageError> {
+    if b.len() != 36 {
+        return Err(StorageError::Corrupt(format!(
+            "head value has {} bytes, expected 36",
+            b.len()
+        )));
+    }
+    let seqno = u32::from_be_bytes(b[0..4].try_into().expect("len checked"));
+    let mut hash = [0u8; 32];
+    hash.copy_from_slice(&b[4..36]);
+    Ok((seqno, hash))
+}
+
 fn hash32_from_value(v: &[u8], what: &str) -> Result<[u8; 32], StorageError> {
     v.try_into().map_err(|_| {
         StorageError::Corrupt(format!("{what} value has {} bytes, expected 32", v.len()))
@@ -455,13 +509,71 @@ fn u32_from_value(v: &[u8], what: &str) -> Result<u32, StorageError> {
     Ok(u32::from_be_bytes(b))
 }
 
-/// Insert a trie cell, content-addressed. Re-insertion of an identical
-/// cell is a no-op write of identical bytes.
-fn insert_cell(
-    tbl: &mut redb::Table<&[u8], &[u8]>,
-    hash: &[u8; 32],
-    cell: &Cell,
-) -> Result<(), StorageError> {
-    tbl.insert(hash.as_slice(), cell.to_bytes().as_slice())?;
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::support::{
+        test_accounts, test_block_lt, test_block_txs, test_fee_collector, test_genesis,
+    };
+    use onx_stf::propose_block;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_db_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("onx-cells-{tag}-{}-{nanos}", std::process::id()))
+    }
+
+    /// Schema v2 dropped the write-only `cells` table (Claude gap 3): it
+    /// was written on every commit but read by nothing — O(cells) write
+    /// amplification per block with unbounded growth and no GC, serving no
+    /// reader. This test proves the table is gone: a full genesis +
+    /// block-commit cycle runs end-to-end without it, and opening `cells`
+    /// in a read transaction fails closed with `TableDoesNotExist`.
+    /// Historical state remains reconstructible via replay from genesis +
+    /// persisted block bodies (the phase5 replay suite covers that path).
+    #[test]
+    fn schema_v2_has_no_cells_table() {
+        let path = temp_db_path("no-cells");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        // A real block commit exercises the store end-to-end with no cells
+        // table anywhere in the path.
+        let accounts = test_accounts();
+        let state = store
+            .load_state()
+            .expect("load_state")
+            .expect("genesis state");
+        let block = propose_block(
+            &state,
+            test_block_txs(7, 1, &accounts),
+            test_block_lt(1),
+            test_fee_collector(),
+        )
+        .expect("propose_block");
+        store.commit_block(&state, &block).expect("commit_block");
+        assert_eq!(store.head().expect("head").expect("head").0, 1);
+
+        // The cells table must not exist.
+        let rtxn = store.db.begin_read().expect("read txn");
+        let err = rtxn
+            .open_table(TableDefinition::<&[u8], &[u8]>::new("cells"))
+            .expect_err("cells table must not exist in schema v2");
+        assert!(
+            matches!(err, redb::TableError::TableDoesNotExist(_)),
+            "expected TableDoesNotExist, got: {err:?}"
+        );
+
+        // And the schema version records the break from v1 (which had it).
+        assert_eq!(SCHEMA_VERSION, 2);
+
+        drop(rtxn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
 }

@@ -2,6 +2,7 @@ use crate::block::{txs_root, Block, Transaction};
 use crate::error::StfError;
 use crate::state::State;
 use onx_data_structures::AccountId;
+use onx_primitives::PublicKey;
 use onx_state_model::{AccountState, ShardStateTree, StorageStat};
 
 /// What happened to one transaction during block application.
@@ -58,7 +59,7 @@ pub fn propose_block(
     apply_txs(&mut scratch, &transactions, lt, &fee_collector)?;
     let state_root = scratch.state_root_hash()?;
 
-    Ok(Block::assemble(
+    Block::assemble(
         seqno,
         state.last_hash,
         lt,
@@ -66,7 +67,7 @@ pub fn propose_block(
         fee_collector,
         transactions,
         state_root,
-    ))
+    )
 }
 
 /// Apply a block to a state: the pure state transition function.
@@ -171,6 +172,12 @@ fn apply_txs(
 
 /// Apply one transaction to the tree.
 ///
+/// Authorization (checked first, fail-closed): the sender must be `Active`,
+/// carry a non-zero Ed25519 pubkey, present the account's current nonce,
+/// and carry a valid signature over `ONX_TX_V2_SIGN || body`. The nonce
+/// increments on every successful spend, so a signed transaction can be
+/// applied exactly once — replay is impossible and gaps are rejected.
+///
 /// Logical-time rule: the touching transaction's block `lt` must satisfy
 /// `lt >= account.last_trans_lt`. Equality is allowed *within* a block
 /// because intra-block ordering is total (transaction index). Cross-block
@@ -205,17 +212,51 @@ fn apply_tx(
         .get(&tx.from)
         .cloned()
         .unwrap_or(AccountState::Uninitialized);
-    let (sender_balance, sender_code_hash, sender_data_hash, sender_storage_stat) =
-        match &sender_state {
-            AccountState::Active {
-                balance_nanos,
-                code_hash,
-                data_hash,
-                storage_stat,
-                ..
-            } => (*balance_nanos, *code_hash, *data_hash, *storage_stat),
-            _ => return Err(StfError::SenderNotSpendable(tx.from)),
-        };
+    let (
+        sender_balance,
+        sender_code_hash,
+        sender_data_hash,
+        sender_storage_stat,
+        sender_pubkey,
+        sender_nonce,
+    ) = match &sender_state {
+        AccountState::Active {
+            balance_nanos,
+            code_hash,
+            data_hash,
+            storage_stat,
+            pubkey,
+            nonce,
+            ..
+        } => (
+            *balance_nanos,
+            *code_hash,
+            *data_hash,
+            *storage_stat,
+            *pubkey,
+            *nonce,
+        ),
+        _ => return Err(StfError::SenderNotSpendable(tx.from)),
+    };
+
+    // --- Authorization: key presence, nonce, signature ---
+    // Explicit zero-pubkey check (not left to the verifier): the all-zero
+    // encoding is the Ed25519 identity point, for which a degenerate
+    // signature verifies under any message.
+    if sender_pubkey == [0u8; 32] {
+        return Err(StfError::SenderHasNoKey(tx.from));
+    }
+    if tx.nonce != sender_nonce {
+        return Err(StfError::NonceMismatch {
+            expected: sender_nonce,
+            got: tx.nonce,
+        });
+    }
+    // Genesis validates that stored pubkeys are real curve points, so a
+    // decode failure here means state corruption — still fail closed.
+    let pubkey = PublicKey::decode_exact(&sender_pubkey).map_err(|_| StfError::InvalidSignature)?;
+    tx.verify_signature(&pubkey)?;
+
     if sender_balance < total_debit {
         return Err(StfError::InsufficientFunds {
             account: tx.from,
@@ -268,6 +309,7 @@ fn apply_tx(
     let sender_after = sender_balance
         .checked_sub(total_debit)
         .ok_or(StfError::BalanceOverflow)?;
+    let sender_nonce_after = sender_nonce.checked_add(1).ok_or(StfError::NonceOverflow)?;
     tree.insert(
         tx.from,
         AccountState::Active {
@@ -276,6 +318,8 @@ fn apply_tx(
             code_hash: sender_code_hash,
             data_hash: sender_data_hash,
             storage_stat: sender_storage_stat,
+            pubkey: sender_pubkey,
+            nonce: sender_nonce_after,
         },
     );
 
@@ -325,6 +369,12 @@ fn check_lt(state: &AccountState, lt: u64, account: AccountId) -> Result<(), Stf
 
 /// Credit `amount` to an account known to be `Active` or `Uninitialized`,
 /// setting its logical time to `lt`. Returns the new balance.
+///
+/// Accounts created by receiving are born *keyless* (`pubkey` all zeros,
+/// `nonce` 0): they can receive but never spend. Key assignment happens
+/// only at genesis; a future transaction type or VM hook can introduce
+/// key rotation. This is a deliberate limitation of the milestone scope,
+/// not an oversight.
 fn credit_account(
     tree: &mut ShardStateTree,
     id: AccountId,
@@ -332,12 +382,14 @@ fn credit_account(
     amount: u128,
     lt: u64,
 ) -> Result<u128, StfError> {
-    let (new_balance, code_hash, data_hash, storage_stat) = match current {
+    let (new_balance, code_hash, data_hash, storage_stat, pubkey, nonce) = match current {
         AccountState::Active {
             balance_nanos,
             code_hash,
             data_hash,
             storage_stat,
+            pubkey,
+            nonce,
             ..
         } => (
             balance_nanos
@@ -346,6 +398,8 @@ fn credit_account(
             *code_hash,
             *data_hash,
             *storage_stat,
+            *pubkey,
+            *nonce,
         ),
         AccountState::Uninitialized => (
             amount,
@@ -355,6 +409,8 @@ fn credit_account(
                 cell_count: 0,
                 byte_count: 0,
             },
+            [0u8; 32],
+            0,
         ),
         // Frozen/Destroyed are rejected by the caller before we get here.
         _ => {
@@ -369,6 +425,8 @@ fn credit_account(
             code_hash,
             data_hash,
             storage_stat,
+            pubkey,
+            nonce,
         },
     );
     Ok(new_balance)

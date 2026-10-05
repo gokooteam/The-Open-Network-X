@@ -8,9 +8,18 @@
 //! committing and resume from the head pointer.
 
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
+use onx_primitives::{domain_hash, DomainTag, SecretKey};
 use onx_state_model::{AccountState, GenesisDocument, GenesisValidator, StorageStat};
 use onx_stf::Transaction;
 use std::collections::BTreeMap;
+
+/// Domain tag for deriving test signing keys from account ids.
+///
+/// TEST-ONLY: the preimage is public, so these keys are not secret. This
+/// exists so `test_block_txs` stays a pure function of `(seed, seqno)` —
+/// no key map needs threading through every call site. Never use this
+/// pattern for real keys.
+pub const ONX_TEST_KEY_V1: DomainTag = DomainTag::from_ascii("ONX_TEST_KEY_V1");
 
 /// Number of funded accounts in the test genesis.
 pub const TEST_ACCOUNT_COUNT: usize = 8;
@@ -24,7 +33,19 @@ pub fn test_fee_collector() -> AccountId {
     AccountId::from_bytes([0xCC; 32])
 }
 
+/// Deterministic signing key for a test account id.
+///
+/// TEST-ONLY (see `ONX_TEST_KEY_V1`): derived from the account id itself
+/// so transaction generation needs no external key state.
+pub fn test_secret_key(id: &AccountId) -> SecretKey {
+    let seed = domain_hash(&ONX_TEST_KEY_V1, &id.to_bytes());
+    SecretKey::from_seed(&seed).expect("domain hash output is a valid seed")
+}
+
 /// Deterministic test genesis: 8 funded accounts on the basic workchain.
+///
+/// Every account carries the pubkey matching [`test_secret_key`], so the
+/// generated transactions actually authorize.
 pub fn test_genesis() -> GenesisDocument {
     let workchain = WorkchainIdent::BASIC;
     let shard = ShardIdent::root(workchain);
@@ -36,8 +57,10 @@ pub fn test_genesis() -> GenesisDocument {
     for i in 0..TEST_ACCOUNT_COUNT as u8 {
         let mut id = [0u8; 32];
         id[0] = i;
+        let id = AccountId::from_bytes(id);
+        let pubkey = test_secret_key(&id).public_key().encode();
         accounts.insert(
-            AccountId::from_bytes(id),
+            id,
             AccountState::Active {
                 balance_nanos: TEST_GENESIS_BALANCE,
                 last_trans_lt: 0,
@@ -47,6 +70,8 @@ pub fn test_genesis() -> GenesisDocument {
                     cell_count: 0,
                     byte_count: 0,
                 },
+                pubkey,
+                nonce: 0,
             },
         );
     }
@@ -60,9 +85,109 @@ pub fn test_accounts() -> Vec<AccountId> {
 
 /// Deterministic transactions for block `seqno`: a pure function of
 /// `(seed, seqno)`. Amounts are tiny relative to genesis balances and fees
-/// are small, so every generated block is always valid against any chain
-/// state that shares this genesis — no state inspection needed.
+/// are small, so every generated block is always valid against the
+/// sequential prefix of this seed's chain — no state inspection needed.
+///
+/// Transactions are signed with [`test_secret_key`], and nonces are
+/// computed by replaying the sender selection of all earlier blocks of the
+/// same seed: block `n`'s k-th transaction from account A carries nonce
+/// `sends(A, blocks 1..n) + k`. This keeps the function pure — the crash
+/// probe and the tests can regenerate exactly the block a killed process
+/// was committing — at the cost of O(n) regeneration per block, which is
+/// irrelevant at test scale.
+///
+/// **Single-seed chains only**: this is correct only when every block
+/// `1..=seqno` was (or will be) built with the same `seed`. Tests that vary
+/// the seed per block (or otherwise break the uniform history) must use
+/// [`TestTxGen`] instead.
 pub fn test_block_txs(seed: u64, seqno: u32, accounts: &[AccountId]) -> Vec<Transaction> {
+    let mut base_nonce: BTreeMap<AccountId, u64> = BTreeMap::new();
+    for b in 1..seqno {
+        for (from, _, _, _) in test_block_transfers(seed, b, accounts) {
+            *base_nonce.entry(from).or_insert(0) += 1;
+        }
+    }
+    test_block_txs_with_nonces(seed, seqno, accounts, &base_nonce)
+}
+
+/// Deterministic transactions for block `seqno` with explicitly supplied
+/// base nonces: the k-th transaction from account A carries nonce
+/// `nonces[A] + k`.
+///
+/// Used by adversarial tests where the state's nonces do not match the
+/// seed's own history (e.g. a diverged in-memory state whose seqno was
+/// tampered with): the transactions must still authorize against the
+/// *actual* state, or `propose_block` fails before the store's continuity
+/// check is even reached.
+pub fn test_block_txs_with_nonces(
+    seed: u64,
+    seqno: u32,
+    accounts: &[AccountId],
+    nonces: &BTreeMap<AccountId, u64>,
+) -> Vec<Transaction> {
+    let mut intra_block: BTreeMap<AccountId, u64> = BTreeMap::new();
+    test_block_transfers(seed, seqno, accounts)
+        .into_iter()
+        .map(|(from, to, amount_nanos, fee_nanos)| {
+            let nonce = nonces.get(&from).copied().unwrap_or(0)
+                + intra_block.get(&from).copied().unwrap_or(0);
+            *intra_block.entry(from).or_insert(0) += 1;
+            Transaction::new_signed(
+                from,
+                to,
+                amount_nanos,
+                fee_nanos,
+                nonce,
+                &test_secret_key(&from),
+            )
+        })
+        .collect()
+}
+
+/// Stateful transaction generator for tests whose chains do not have a
+/// uniform seed history (e.g. alternating the seed per block).
+///
+/// `test_block_txs` computes nonces by replaying one seed's history, which is
+/// wrong when the seed varies per block. `TestTxGen` instead tracks the
+/// nonces it has handed out, so generated transactions always authorize
+/// against a state built by applying its blocks in order from genesis.
+pub struct TestTxGen {
+    nonces: BTreeMap<AccountId, u64>,
+}
+
+impl TestTxGen {
+    pub fn new() -> Self {
+        Self {
+            nonces: BTreeMap::new(),
+        }
+    }
+
+    /// Signed transactions for block `seqno` with transfer selection drawn
+    /// from `seed`. Advances the internal nonce counters by this block's
+    /// sends, so the next call continues where this one left off.
+    pub fn block_txs(&mut self, seed: u64, seqno: u32, accounts: &[AccountId]) -> Vec<Transaction> {
+        let txs = test_block_txs_with_nonces(seed, seqno, accounts, &self.nonces);
+        for (from, _, _, _) in test_block_transfers(seed, seqno, accounts) {
+            *self.nonces.entry(from).or_insert(0) += 1;
+        }
+        txs
+    }
+}
+
+impl Default for TestTxGen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The unsigned transfer selection for block `seqno`: a pure function of
+/// `(seed, seqno)`. Factored out so nonce computation can replay history
+/// without re-signing.
+fn test_block_transfers(
+    seed: u64,
+    seqno: u32,
+    accounts: &[AccountId],
+) -> Vec<(AccountId, AccountId, u128, u128)> {
     let mut rng = XorShift64(seed ^ (seqno as u64).wrapping_mul(0x9E3779B97F4A7C15));
     let n = accounts.len();
     (0..TEST_TXS_PER_BLOCK)
@@ -72,13 +197,13 @@ pub fn test_block_txs(seed: u64, seqno: u32, accounts: &[AccountId]) -> Vec<Tran
             if to == from {
                 to = accounts[(rng.below(n) + 1) % n];
             }
-            Transaction {
+            (
                 from,
                 to,
-                amount_nanos: 1 + (rng.next_u64() % 100) as u128,
+                1 + (rng.next_u64() % 100) as u128,
                 // Sometimes nonzero: exercises the fee-collector path.
-                fee_nanos: (rng.next_u64() % 5) as u128,
-            }
+                (rng.next_u64() % 5) as u128,
+            )
         })
         .collect()
 }
