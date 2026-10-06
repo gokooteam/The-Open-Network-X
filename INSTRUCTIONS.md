@@ -536,7 +536,7 @@ Use Architecture Decision Records where appropriate.
 
 Recommended format:
 
-docs/decisions/ADR-NNNN-title.md
+docs/adr/NNNN-title.md
 
 Each ADR should contain:
 

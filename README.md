@@ -102,10 +102,11 @@ hasn't earned.
 | `onx replay` command | ✅ plan | ✅ | ✅ | ✅ kill -9, corruption, two-process, golden vectors |
 | Canonical encodings (BoC) | ✅ | ✅ | ✅ | ✅ 50× probe, cross-process byte-identical |
 | Genesis (real accounts, chain ID) | ✅ | ✅ | ✅ | ✅ cross-process determinism |
-| STF — Onyx transfers + fees | ✅ | ✅ | ✅ | ✅ randomized sequences, cross-process |
+| STF — message execution (wallet handler + delivery) | ✅ | ✅ | ✅ | ✅ bounce, redelivery, ordering, kill-9, two-process |
 | Merkle proofs | ✅ | ✅ | ✅ | ✅ fabricated/absent-key proofs rejected |
 | Atomic storage + crash recovery | ✅ | ✅ | ✅ | ✅ 100× kill -9, full-or-nothing |
-| VM / TVM execution | ✅ | ❌ scaffold | ❌ | ❌ — frozen until replay passes |
+| `onxd` block-production loop | ✅ | ✅ | ✅ | ✅ spool mempool, demand blocks, replay-to-identical-roots |
+| VM / TVM execution | ✅ | ✅ | ✅ | ❌ — determinism audit clean, but a reviewer-found LDREF child-cell bug is open |
 | Consensus | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
 | Networking (ADNL/DHT) | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
 | Sharding | ✅ | ❌ | ❌ | ❌ — frozen |
@@ -172,4 +173,4 @@ Open Network X is an independent project. ONX, Open Network X, and Onyx should n
 
 ## License
 
-Open Network X is licensed under the [Apache License, Version 2.0](LICENSE), as decided in [ADR-0015](docs/decisions/ADR-0015-project-license.md). Individual reference materials may have their own copyright and licensing requirements — see `WHITEPAPER.md` for the applicable source and attribution information.
+Open Network X is licensed under the [Apache License, Version 2.0](LICENSE), as decided in [ADR-0015](docs/adr/0022-project-license.md). Individual reference materials may have their own copyright and licensing requirements — see `WHITEPAPER.md` for the applicable source and attribution information.

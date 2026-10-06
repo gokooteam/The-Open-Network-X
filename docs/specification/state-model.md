@@ -76,13 +76,18 @@ Active account state record binary layout (`AccountState`), 141 bytes total:
                             all-zero = keyless: can receive, never spend)
 9. nonce         : uint64  (8 bytes, big-endian per-account sequence number)
 ```
-The `pubkey`/`nonce` pair is the transaction-authorization upgrade
-(`ONX_TX_V2`): a transaction is valid only if its signature verifies
-against the sender's `pubkey` and its `nonce` equals the account's
-`nonce`; a successful application bumps the nonce by one, which is what
-makes transaction replay impossible. Nonces start at 0 for genesis
-accounts and for accounts created by receiving their first transfer
-(created accounts are keyless: `pubkey` zero, `nonce` 0).
+The `pubkey`/`nonce` pair is the message-authorization mechanism
+(`ONX_MSG_EXT_V1`, see `docs/adr/0002-message-encoding-and-domain-tags.md`):
+an external message is valid only if its signature verifies against the
+sender's `pubkey`, its `nonce` equals the account's `nonce`, and the
+message binds this chain's ID; successful application bumps the nonce by
+one, which is what makes message replay impossible. Nonces start at 0 for
+genesis accounts. Accounts created by receiving funds derive their
+address from their owner's public key (`ONX_ADDR_V1`,
+`docs/adr/0006-key-derived-addresses.md`), so a new account can receive
+first and spend later by revealing the key that hashes to its address
+(`pubkey` all-zero marks a keyless account that can receive but never
+spend).
 
 ### 4.2 Cell Binary Serialization
 A single Cell binary structure:
@@ -131,7 +136,7 @@ function of the key set: input order does not affect the root.
 **Construction.** `build_trie(items, bit_depth)`, starting at `bit_depth = 0`:
 
 1. **Empty item set** → a cell with data = ASCII `"EMPTY_SUBTREE"`
-   (12 bytes, `0x454D5054595F53554254524545`), zero references. Its cell
+   (13 bytes, `0x454D5054595F53554254524545`), zero references. Its cell
    hash is the empty-subtree hash. Cells are content-addressed, so every
    empty subtree in the trie collapses to this single cell.
 
@@ -167,7 +172,7 @@ hash of the `"EMPTY_SUBTREE"` cell.
 the reference count exactly:
 | Node type     | `d1` (refs) | `d2` (data len) | data         | refs              |
 |---------------|-------------|-----------------|--------------|-------------------|
-| Empty subtree | 0           | 12              | `"EMPTY_SUBTREE"` | —              |
+| Empty subtree | 0           | 13              | `"EMPTY_SUBTREE"` | —              |
 | Leaf          | 1–4         | 32              | account ID   | value-chunk hashes|
 | Branch        | 2           | 0               | —            | [left, right]     |
 
@@ -181,6 +186,16 @@ structurally, never by a type tag:
 - paths deeper than 256 are rejected.
 
 ### 4.6 Transaction Identity and Signature Domains (`ONX_TX_V2`)
+
+> **SUPERSEDED.** The V2 transaction format below was retired with the
+> message-model milestone (PR #5) and replaced by external/internal
+> messages. Do not implement from this section. The current encodings are
+> `ONX_MSG_EXT_V1` / `ONX_MSG_INT_V1`; see
+> `docs/adr/0001-message-based-transaction-model.md`,
+> `docs/adr/0002-message-encoding-and-domain-tags.md`, and the domain-tag
+> registry in `docs/specification/protocol-primitives.md` §4.5. The V2
+> details are preserved here for archaeology (old test vectors, git
+> history).
 
 A V2 transaction's canonical encodings:
 ```

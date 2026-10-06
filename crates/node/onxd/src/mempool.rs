@@ -38,21 +38,30 @@
 //!
 //! ## Validation layers
 //!
-//! 1. **Intake** (`scan_drop_dir`): parse → chain ID matches → sender must
-//!    be an `Active` account → key resolves (stored key, or a reveal that
-//!    derives to the sender's address for key-derived accounts) →
-//!    signature verifies → nonce not stale. Permanently-invalid
-//!    submissions (malformed, wrong chain, bad signature, keyless/unknown
-//!    sender, stale nonce) go to `rejected/`. Future-nonce and
-//!    insufficient-balance submissions are *held*: they may become valid
-//!    later, and dropping them would lose real messages.
-//! 2. **Proposal** (`select_candidates`): re-validated against the fresh
-//!    head, with per-sender nonce chains and a cumulative balance walk, in
-//!    a deterministic global order. Anything that became invalid between
-//!    submission and proposal is dropped to `rejected/`, never crashed on.
+//! 1. **Intake** (`scan_drop_dir`): parse → the shared wallet-mirror check
+//!    (chain ID, kind sanity, key resolution, nonce, balance, fee-collector
+//!    receivability) → signature verifies. Permanently-invalid submissions
+//!    go to `rejected/`. Future-nonce and insufficient-balance submissions
+//!    are *held*: they may become valid later, and dropping them would lose
+//!    real messages.
+//! 2. **Proposal** (`select_candidates`): the same shared check re-run
+//!    against the fresh head, with per-sender nonce chains, key-reveal
+//!    tracking, and a cumulative balance walk, in a deterministic global
+//!    order. Anything that became invalid between submission and proposal
+//!    is dropped to `rejected/`, never crashed on.
 //! 3. **Commit** (`commit_block`): the STF re-validates the whole block
 //!    through `apply_block`. The mempool filter exists for liveness (so a
 //!    bad message can't poison a block); the STF is the final arbiter.
+//!
+//! The shared check ([`WalletMirror`]) mirrors every fail-closed rule of
+//! the STF wallet handler (`onx-stf/src/stf.rs::wallet_receive`), so intake
+//! and proposal can never admit a message `propose_block` would reject.
+//! Previously they could — a correctly signed zero-amount transfer, a
+//! zero-fee contract call, or a second key reveal from one sender passed
+//! the filter and failed the whole block, and after three failures the
+//! producer quarantined the *entire* mempool (a free, repeatable DoS).
+//! That quarantine is gone: only messages the STF actually rejects are
+//! ever dropped.
 //!
 //! ## Deterministic ordering
 //!
@@ -72,7 +81,7 @@
 use onx_data_structures::AccountId;
 use onx_primitives::PublicKey;
 use onx_state_model::AccountState;
-use onx_stf::{derive_address, ExternalMessage};
+use onx_stf::{derive_address, ExternalMessage, MsgKind};
 use onx_storage::ChainStore;
 use std::collections::BTreeMap;
 use std::fs;
@@ -108,17 +117,245 @@ pub struct IntakeStats {
     pub retried: u64,
 }
 
+/// Why a message the mirror resolved is not yet includable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldReason {
+    /// Nonce beyond the expected one — hold; a missing predecessor may
+    /// arrive later.
+    FutureNonce,
+    /// Balance does not cover `amount + fee` yet — hold; the balance may
+    /// improve.
+    InsufficientBalance,
+}
+
+/// Outcome of [`WalletMirror::check`].
+#[derive(Debug, Clone, Copy)]
+pub enum Verdict {
+    /// Valid for inclusion now. Carries the resolved key and total debit.
+    Accept {
+        /// Key the signature must verify against: the stored key, or the
+        /// revealed key for a first spend from a key-derived account.
+        effective_pubkey: [u8; 32],
+        /// Total debit (`amount + fee`); arithmetic overflow already
+        /// excluded.
+        need: u128,
+    },
+    /// Authorization resolved, but the message is not yet includable.
+    /// Intake verifies the signature *before* holding — a bad signature is
+    /// rejected, never held.
+    Hold {
+        effective_pubkey: [u8; 32],
+        reason: HoldReason,
+    },
+    /// Permanently invalid — move to `rejected/`. (Bad signatures are a
+    /// separate intake-only check, not a defect: they are cryptographic,
+    /// not state-dependent.)
+    Reject(&'static str),
+}
+
+/// Per-message inputs to [`WalletMirror::check`].
+pub struct CheckCtx<'a> {
+    /// The sender's current on-chain account (must be `Active`).
+    pub sender: &'a AccountState,
+    /// Nonce the message must carry: the on-chain nonce at intake, the
+    /// walk position at proposal.
+    pub expected_nonce: u64,
+    /// Balance available to this message: the full balance at intake, the
+    /// balance minus already-reserved debits at proposal.
+    pub spendable: u128,
+    /// Key revealed earlier in this proposal walk, when the sender was
+    /// keyless on-chain. Always `None` at intake.
+    pub revealed_key: Option<[u8; 32]>,
+    /// Current fee-collector account (for the validator-fee receivability
+    /// check).
+    pub fee_collector: &'a AccountState,
+    /// Logical time of the block being built, when known (`None` at
+    /// intake — see the `check` docs).
+    pub block_lt: Option<u64>,
+}
+
+/// Mirror of the STF wallet handler's fail-closed checks
+/// (`onx-stf/src/stf.rs::wallet_receive`), shared by mempool intake and
+/// block proposal so the two can never disagree about a message's validity.
+///
+/// A message the filter admits but `propose_block` rejects fails the whole
+/// block; the old code then quarantined the entire mempool after three
+/// such failures — a free, repeatable denial of service. Every rejection
+/// below matches a wallet-handler rejection one-to-one; the STF remains
+/// the final arbiter.
+///
+/// Deliberately NOT mirrored: signature verification. Intake verifies
+/// signatures against the resolved key, message bytes are content-hash
+/// pinned afterwards, and any key change implies a nonce advance (which
+/// the nonce check catches) — re-verifying at proposal would double the
+/// most expensive check for no new information.
+pub struct WalletMirror {
+    chain_id: [u8; 32],
+}
+
+impl WalletMirror {
+    pub fn new(chain_id: [u8; 32]) -> Self {
+        Self { chain_id }
+    }
+
+    /// Validate one message against the wallet handler's rules.
+    ///
+    /// Key resolution (steps 1–4) always runs first and its outcome is
+    /// returned even for held messages, so intake can verify the signature
+    /// *before* deciding to hold — a bad signature is rejected, never held.
+    pub fn check(&self, msg: &ExternalMessage, ctx: &CheckCtx) -> Verdict {
+        // 1. Chain binding (wallet §1).
+        if msg.chain_id != self.chain_id {
+            return Verdict::Reject("message chain ID does not match this chain");
+        }
+
+        // 2. Kind-specific sanity (wallet §2). Static: no state needed, so a
+        // message failing here is invalid at intake too — this is the check
+        // the old filter was missing (zero-amount transfers and zero-fee
+        // calls sailed through to `propose_block`).
+        match msg.kind {
+            MsgKind::Transfer => {
+                if msg.amount_nanos == 0 {
+                    return Verdict::Reject("zero-amount transfer");
+                }
+            }
+            MsgKind::ContractCall => {
+                if msg.fee_nanos == 0 {
+                    return Verdict::Reject("zero-fee contract call");
+                }
+            }
+        }
+        let need = match msg.amount_nanos.checked_add(msg.fee_nanos) {
+            Some(n) => n,
+            None => return Verdict::Reject("amount + fee overflows"),
+        };
+
+        // 3. Sender must be Active (wallet §3).
+        let (stored_pubkey, last_trans_lt) = match ctx.sender {
+            AccountState::Active {
+                pubkey,
+                last_trans_lt,
+                ..
+            } => (*pubkey, *last_trans_lt),
+            _ => return Verdict::Reject("sender is not a spendable account"),
+        };
+
+        // 4. Key resolution (wallet §4).
+        // (a) Keyed on-chain: the message must NOT reveal a key.
+        // (b) Keyless on-chain, nothing revealed yet this walk: the message
+        //     MUST reveal a pubkey deriving to the sender's address.
+        // (c) Keyless on-chain, revealed earlier this walk: the account is
+        //     already keyed — a second reveal is permanently invalid. This
+        //     is the case the old proposal filter missed.
+        let effective_pubkey = if stored_pubkey == [0u8; 32] {
+            match ctx.revealed_key {
+                Some(k) => {
+                    if msg.pubkey != [0u8; 32] {
+                        return Verdict::Reject(
+                            "unexpected pubkey reveal: account already keyed by an earlier message",
+                        );
+                    }
+                    k
+                }
+                None => {
+                    if msg.pubkey == [0u8; 32] {
+                        return Verdict::Reject("sender account is keyless and revealed no key");
+                    }
+                    if derive_address(&msg.pubkey) != msg.from {
+                        return Verdict::Reject(
+                            "revealed pubkey does not derive to sender address",
+                        );
+                    }
+                    msg.pubkey
+                }
+            }
+        } else {
+            if msg.pubkey != [0u8; 32] {
+                return Verdict::Reject("sender already has a key; unexpected reveal");
+            }
+            stored_pubkey
+        };
+        // Belt-and-braces, mirroring the wallet: the all-zero pubkey is the
+        // Ed25519 identity point and must never authorize anything.
+        if effective_pubkey == [0u8; 32] {
+            return Verdict::Reject("effective pubkey is all zeros");
+        }
+        // Genesis validates stored pubkeys and intake verifies revealed
+        // ones; this fails closed on a corrupt account record.
+        if PublicKey::decode_exact(&effective_pubkey).is_err() {
+            return Verdict::Reject("effective pubkey does not decode");
+        }
+
+        // 5. Nonce (wallet §5).
+        if msg.nonce < ctx.expected_nonce {
+            return Verdict::Reject("stale nonce");
+        }
+        if msg.nonce > ctx.expected_nonce {
+            return Verdict::Hold {
+                effective_pubkey,
+                reason: HoldReason::FutureNonce,
+            };
+        }
+
+        // 6. Balance covers amount + fee (wallet §5).
+        if need > ctx.spendable {
+            return Verdict::Hold {
+                effective_pubkey,
+                reason: HoldReason::InsufficientBalance,
+            };
+        }
+
+        // 7. Logical time (wallet §5, `check_lt`). Vacuous for
+        // honestly-produced blocks — the producer uses
+        // `lt = head.last_lt + 1`, which exceeds every account's
+        // `last_trans_lt` — but the invariant is checked anyway so a
+        // future change in lt assignment cannot silently admit bad blocks.
+        // At intake the block lt is unknowable, hence `None` (the same
+        // monotonicity argument applies to any future lt).
+        if let Some(lt) = ctx.block_lt {
+            if lt < last_trans_lt {
+                return Verdict::Reject("account time regression");
+            }
+        }
+
+        // 8. Fee collector must be receivable when there is a validator fee
+        // (wallet §6). With the 50/50 fee split the validator share is
+        // non-zero exactly when `fee_nanos > 0`
+        // (`validator = fee - floor(fee*50/100)`), so no economics crate is
+        // needed here.
+        if msg.fee_nanos > 0 {
+            match ctx.fee_collector {
+                AccountState::Frozen { .. } | AccountState::Destroyed => {
+                    return Verdict::Reject("fee collector is not receivable")
+                }
+                AccountState::Active { .. } | AccountState::Uninitialized => {}
+            }
+        }
+
+        Verdict::Accept {
+            effective_pubkey,
+            need,
+        }
+    }
+}
+
 pub struct Mempool {
     pending: BTreeMap<[u8; 32], PendingMsg>,
     max_txs: usize,
     chain_id: [u8; 32],
+    fee_collector: AccountId,
     intake_retries: BTreeMap<PathBuf, u8>,
     pending_dir: PathBuf,
     rejected_dir: PathBuf,
 }
 
 impl Mempool {
-    pub fn new(tx_pool_dir: &Path, max_txs: usize, chain_id: [u8; 32]) -> Result<Self, String> {
+    pub fn new(
+        tx_pool_dir: &Path,
+        max_txs: usize,
+        chain_id: [u8; 32],
+        fee_collector: AccountId,
+    ) -> Result<Self, String> {
         let pending_dir = tx_pool_dir.join("pending");
         let rejected_dir = tx_pool_dir.join("rejected");
         fs::create_dir_all(&pending_dir)
@@ -129,6 +366,7 @@ impl Mempool {
             pending: BTreeMap::new(),
             max_txs,
             chain_id,
+            fee_collector,
             intake_retries: BTreeMap::new(),
             pending_dir,
             rejected_dir,
@@ -248,28 +486,17 @@ impl Mempool {
         }
     }
 
-    /// Move currently-pending messages to `rejected/`. Used only as a
-    /// circuit breaker when block proposal keeps failing on a candidate set
-    /// the filter believed was valid — fail-closed rather than wedging the
-    /// node forever.
-    pub fn quarantine_all(&mut self, reason: &str) -> usize {
-        let hashes: Vec<[u8; 32]> = self.pending.keys().copied().collect();
-        let mut count = 0;
-        for hash in hashes {
-            if let Some(pending) = self.pending.remove(&hash) {
-                let name = pending
-                    .file
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| format!("{}.msg", hex::encode(hash)));
-                let dest = self.rejected_dir.join(&name);
-                if fs::rename(&pending.file, &dest).is_ok() {
-                    count += 1;
-                }
-                eprintln!("mempool: quarantined {name}: {reason}");
-            }
+    /// Move one pending message to `rejected/` with a reason. Returns true
+    /// if it was pending. This is the only way messages leave the mempool
+    /// as invalid — there is no bulk quarantine: a poisoned message must
+    /// never take honest messages down with it.
+    pub fn reject_candidate(&mut self, hash: &[u8; 32], reason: &str) -> bool {
+        if let Some(pending) = self.pending.remove(hash) {
+            self.reject_file(&pending.file, reason);
+            true
+        } else {
+            false
         }
-        count
     }
 
     // ----- internals -----
@@ -317,15 +544,6 @@ impl Mempool {
         };
         self.intake_retries.remove(path);
 
-        // Chain binding at the door: a message signed for another chain is
-        // permanently invalid here.
-        if msg.chain_id != self.chain_id {
-            self.reject_file(path, "message chain ID does not match this chain");
-            return Ok(IntakeOutcome::Rejected {
-                reason: "wrong chain id".to_string(),
-            });
-        }
-
         let hash = msg.hash();
         if self.pending.contains_key(&hash) {
             // Duplicate submission: drop the file, keep the original.
@@ -333,65 +551,72 @@ impl Mempool {
             return Ok(IntakeOutcome::Duplicate);
         }
 
-        // --- validation against the current tip (reject garbage at the door) ---
-        let account = store
+        // Shared wallet-mirror validation: everything the STF would reject
+        // at block time is rejected here, so intake and block execution
+        // cannot disagree (previously zero-amount transfers and zero-fee
+        // calls passed this filter and failed `propose_block`).
+        let sender = store
             .get_account(&msg.from)
-            .map_err(|e| format!("mempool: account lookup failed: {e}"))?;
-        let (stored_pubkey, balance, nonce) = match account {
-            Some(AccountState::Active {
-                pubkey,
-                balance_nanos,
+            .map_err(|e| format!("mempool: account lookup failed: {e}"))?
+            .unwrap_or(AccountState::Uninitialized);
+        let collector = store
+            .get_account(&self.fee_collector)
+            .map_err(|e| format!("mempool: fee collector lookup failed: {e}"))?
+            .unwrap_or(AccountState::Uninitialized);
+        let (expected_nonce, spendable) = match &sender {
+            AccountState::Active {
                 nonce,
+                balance_nanos,
                 ..
-            }) => (pubkey, balance_nanos, nonce),
-            _ => {
-                // Unknown, uninitialized, frozen, or destroyed senders can
-                // never authorize: reject now, not at proposal time.
-                self.reject_file(path, "sender is not a spendable account");
+            } => (*nonce, *balance_nanos),
+            // Non-active: the mirror reports it as permanently invalid.
+            _ => (0, 0),
+        };
+        let mirror = WalletMirror::new(self.chain_id);
+        let ctx = CheckCtx {
+            sender: &sender,
+            expected_nonce,
+            spendable,
+            revealed_key: None,
+            fee_collector: &collector,
+            // The block lt is unknowable at intake; the check is vacuous
+            // for producer-built blocks (see WalletMirror::check).
+            block_lt: None,
+        };
+        // The mirror resolves authorization (steps 1–4) and classifies
+        // temporal validity (5–8) in one shared function. Signature
+        // verification runs against the mirror-resolved key BEFORE the
+        // hold/accept decision — a bad signature is rejected even for a
+        // future-nonce message, never held.
+        let (effective_pubkey, held_kind) = match mirror.check(&msg, &ctx) {
+            Verdict::Accept {
+                effective_pubkey, ..
+            } => (effective_pubkey, None),
+            Verdict::Hold {
+                effective_pubkey,
+                reason,
+            } => (
+                effective_pubkey,
+                Some(match reason {
+                    HoldReason::FutureNonce => IntakeOutcome::HeldFutureNonce,
+                    HoldReason::InsufficientBalance => IntakeOutcome::HeldInsufficientBalance,
+                }),
+            ),
+            Verdict::Reject(reason) => {
+                self.reject_file(path, reason);
                 return Ok(IntakeOutcome::Rejected {
-                    reason: "sender not spendable".to_string(),
+                    reason: reason.to_string(),
                 });
             }
         };
-        // Key resolution mirrors the wallet handler: a keyed account must
-        // not reveal a key; a keyless account must reveal one that derives
-        // to its address (ADR-0006).
-        let effective_pubkey = if stored_pubkey == [0u8; 32] {
-            if msg.pubkey == [0u8; 32] {
-                self.reject_file(path, "sender account is keyless and revealed no key");
-                return Ok(IntakeOutcome::Rejected {
-                    reason: "keyless sender".to_string(),
-                });
-            }
-            if derive_address(&msg.pubkey) != msg.from {
-                self.reject_file(path, "revealed pubkey does not derive to sender address");
-                return Ok(IntakeOutcome::Rejected {
-                    reason: "address/key mismatch".to_string(),
-                });
-            }
-            msg.pubkey
-        } else {
-            if msg.pubkey != [0u8; 32] {
-                self.reject_file(path, "sender already has a key; unexpected reveal");
-                return Ok(IntakeOutcome::Rejected {
-                    reason: "unexpected pubkey reveal".to_string(),
-                });
-            }
-            stored_pubkey
-        };
+        // The mirror already established the key decodes (and, for reveals,
+        // derives correctly); this cannot fail.
         let pubkey = PublicKey::decode_exact(&effective_pubkey)
-            .map_err(|e| format!("mempool: sender pubkey undecodable (corrupt account?): {e}"))?;
+            .map_err(|e| format!("mempool: effective pubkey undecodable: {e}"))?;
         if msg.verify_signature(&pubkey).is_err() {
             self.reject_file(path, "signature verification failed");
             return Ok(IntakeOutcome::Rejected {
                 reason: "bad signature".to_string(),
-            });
-        }
-        if msg.nonce < nonce {
-            // Stale: this nonce was already consumed. Can never become valid.
-            self.reject_file(path, &format!("stale nonce {} < {}", msg.nonce, nonce));
-            return Ok(IntakeOutcome::Rejected {
-                reason: "stale nonce".to_string(),
             });
         }
 
@@ -412,17 +637,9 @@ impl Mempool {
                 path.display()
             ));
         }
-        let held = if msg.nonce > nonce {
-            IntakeOutcome::HeldFutureNonce
-        } else if msg
-            .amount_nanos
-            .checked_add(msg.fee_nanos)
-            .is_some_and(|need| need > balance)
-        {
-            IntakeOutcome::HeldInsufficientBalance
-        } else {
-            IntakeOutcome::Accepted
-        };
+        // The mirror already classified this message: clean accept, or held
+        // for a future nonce / better balance.
+        let held = held_kind.unwrap_or(IntakeOutcome::Accepted);
         self.pending.insert(hash, PendingMsg { msg, file: dest });
         Ok(held)
     }
@@ -459,61 +676,94 @@ impl Mempool {
             msgs.sort_by_key(|msg| msg.nonce);
         }
 
+        let mirror = WalletMirror::new(self.chain_id);
+        // The producer builds the block at `lt = state.last_lt + 1`; run the
+        // mirror against that same logical time so the two cannot disagree.
+        let block_lt = state
+            .last_lt
+            .checked_add(1)
+            .ok_or_else(|| "mempool: logical time overflow selecting candidates".to_string())?;
+        let collector_state = state
+            .tree
+            .get(&self.fee_collector)
+            .cloned()
+            .unwrap_or(AccountState::Uninitialized);
+
         // Per-sender contiguous chains from the account's current nonce,
-        // with a cumulative balance walk. Anything stale or unaffordable
-        // *this round* is handled: stale → rejected (can never be valid);
-        // future-nonce gaps and insufficient balance → held for a later
-        // block (may become valid).
+        // each message run through the shared wallet mirror. Key reveals
+        // are tracked along the walk: the account becomes keyed the moment
+        // the first reveal executes, so a second reveal in the same block
+        // is permanently invalid (the old filter missed this and fed it to
+        // `propose_block`, failing the whole block).
         let mut candidates: Vec<ExternalMessage> = Vec::new();
-        let mut reserved: BTreeMap<AccountId, u128> = BTreeMap::new();
-        let mut to_reject: Vec<[u8; 32]> = Vec::new();
+        let mut to_reject: Vec<([u8; 32], &'static str)> = Vec::new();
 
         for (sender, msgs) in &by_sender {
-            let (balance, mut expected_nonce) = match state.tree.get(sender) {
-                Some(AccountState::Active {
+            let sender_state = state
+                .tree
+                .get(sender)
+                .cloned()
+                .unwrap_or(AccountState::Uninitialized);
+            let (mut expected_nonce, mut spendable, mut revealed_key) = match &sender_state {
+                AccountState::Active {
                     balance_nanos,
                     nonce,
                     ..
-                }) => (*balance_nanos, *nonce),
+                } => (*nonce, *balance_nanos, None),
+                // Sender stopped being spendable since intake (frozen?
+                // destroyed?). Its messages can never authorize: reject.
                 _ => {
-                    // Sender stopped being spendable since intake (frozen?
-                    // destroyed?). Its messages can never authorize: reject.
                     for msg in msgs.iter() {
-                        to_reject.push(msg.hash());
+                        to_reject.push((msg.hash(), "sender is not a spendable account"));
                     }
                     continue;
                 }
             };
             for msg in msgs.iter() {
-                if msg.nonce < expected_nonce {
-                    to_reject.push(msg.hash()); // stale
-                    continue;
-                }
-                if msg.nonce > expected_nonce {
-                    break; // gap: hold this and everything after for later
-                }
-                let need = match msg.amount_nanos.checked_add(msg.fee_nanos) {
-                    Some(n) => n,
-                    None => {
-                        to_reject.push(msg.hash()); // arithmetic overflow: never valid
-                        expected_nonce += 1;
-                        continue;
-                    }
+                let ctx = CheckCtx {
+                    sender: &sender_state,
+                    expected_nonce,
+                    spendable,
+                    revealed_key,
+                    fee_collector: &collector_state,
+                    block_lt: Some(block_lt),
                 };
-                let already = reserved.get(sender).copied().unwrap_or(0);
-                if need > balance.saturating_sub(already) {
-                    break; // can't afford this round; hold (balance may improve)
+                match mirror.check(msg, &ctx) {
+                    Verdict::Accept {
+                        effective_pubkey: _,
+                        need,
+                    } => {
+                        // Track the reveal: from here on the sender is keyed.
+                        if revealed_key.is_none() && msg.pubkey != [0u8; 32] {
+                            revealed_key = Some(msg.pubkey);
+                        }
+                        spendable = spendable.saturating_sub(need);
+                        expected_nonce = expected_nonce.saturating_add(1);
+                        candidates.push((*msg).clone());
+                    }
+                    Verdict::Reject(reason) => {
+                        if msg.nonce < expected_nonce {
+                            // Stale: reject, but keep walking — a later
+                            // message may still hit the expected nonce.
+                            to_reject.push((msg.hash(), reason));
+                            continue;
+                        }
+                        // At the expected nonce but permanently invalid:
+                        // reject it and stop the walk. Later nonces are
+                        // gapped until the sender resubmits the missing
+                        // nonce, so they are held, not rejected.
+                        to_reject.push((msg.hash(), reason));
+                        break;
+                    }
+                    // Future-nonce gap or insufficient balance this round:
+                    // hold for a later block (may become valid).
+                    Verdict::Hold { .. } => break,
                 }
-                reserved.insert(*sender, already + need);
-                candidates.push((*msg).clone());
-                expected_nonce += 1;
             }
         }
 
-        for hash in to_reject {
-            if let Some(pending) = self.pending.remove(&hash) {
-                self.reject_file(&pending.file, "became invalid before proposal");
-            }
+        for (hash, reason) in to_reject {
+            self.reject_candidate(&hash, reason);
         }
 
         // Global deterministic order.

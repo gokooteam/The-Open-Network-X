@@ -14,7 +14,7 @@
 - `INSTRUCTIONS.md`, §12, §14, §15, §21, §23: Serialization, dynamic sharding invariants, masterchain/workchain/shardchain boundaries, and protocol testability.
 - `docs/specification/architecture.md`: Architectural baseline requirements and open questions ONX-ARCH-002 and ONX-ARCH-003.
 - `docs/specification/blocks.md` §3.2, §4.2: Merge-block second parent reference and split/merge header flags, which `BlockHeader`'s `prev_ref_hash_2` field and `MERGE_RESULT` flag (§4.4 below) exist to support.
-- `docs/decisions/ADR-0016-merge-block-second-parent-reference.md`: Resolves **ONX-ARCH-013** and records why `prev_ref_hash_2` is a fixed field rather than a variable-length trailer.
+- `docs/adr/0023-merge-block-second-parent-reference.md`: Resolves **ONX-ARCH-013** and records why `prev_ref_hash_2` is a fixed field rather than a variable-length trailer.
 
 ---
 

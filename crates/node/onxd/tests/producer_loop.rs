@@ -7,7 +7,7 @@
 
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
-use onx_stf::{propose_block, ExternalMessage, MsgKind, State};
+use onx_stf::{derive_address, propose_block, ExternalMessage, MsgKind, State};
 use onx_storage::ChainStore;
 use onxd::mempool::Mempool;
 use onxd::producer::{run_producer_loop, ProducerConfig};
@@ -74,6 +74,33 @@ fn sign_msg(
         Vec::new(),
         [0u8; 32],
         &test_secret(from_byte),
+    )
+}
+
+/// Sign from an arbitrary address with an explicit revealed pubkey —
+/// the shape of a first spend from a keyless (key-derived) account.
+#[allow(clippy::too_many_arguments)] // test helper mirroring new_signed's shape
+fn sign_msg_from(
+    chain_id: [u8; 32],
+    from: AccountId,
+    to: AccountId,
+    amount: u128,
+    fee: u128,
+    nonce: u64,
+    pubkey: [u8; 32],
+    secret: &SecretKey,
+) -> ExternalMessage {
+    ExternalMessage::new_signed(
+        chain_id,
+        MsgKind::Transfer,
+        from,
+        nonce,
+        to,
+        amount,
+        fee,
+        Vec::new(),
+        pubkey,
+        secret,
     )
 }
 
@@ -183,7 +210,6 @@ impl Harness {
             poll_interval: Duration::from_millis(25),
             tx_pool_dir: self.tx_pool_dir.clone(),
             blocks_dir: self.dir.join("data").join("blocks"),
-            consecutive_failure_limit: 3,
             telemetry: None,
         }
     }
@@ -207,10 +233,11 @@ impl Harness {
         let pool_dir = self.tx_pool_dir.clone();
         let blocks_dir = self.blocks_dir();
         let chain_id = self.chain_id;
+        let fee_collector = self.fee_collector;
         let shutdown = Arc::new(AtomicBool::new(false));
         let flag = shutdown.clone();
         let handle = std::thread::spawn(move || {
-            let mempool = Mempool::new(&pool_dir, mempool_max, chain_id).unwrap();
+            let mempool = Mempool::new(&pool_dir, mempool_max, chain_id, fee_collector).unwrap();
             run_producer_loop(store, mempool, cfg, flag)
         });
         let start = Instant::now();
@@ -266,7 +293,7 @@ fn account_nonce(store: &ChainStore, byte: u8) -> u64 {
 fn mempool_accepts_valid_rejects_bad_signature() {
     let h = Harness::new("intake");
     let mut wallet = TestWallet::new(h.chain_id);
-    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id).unwrap();
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id, h.fee_collector).unwrap();
 
     // Valid signed message → pending/.
     let good = wallet.sign(0xaa, 0xab, 1000, 10);
@@ -295,7 +322,7 @@ fn mempool_accepts_valid_rejects_bad_signature() {
 fn mempool_rejects_stale_nonce_and_dedupes() {
     let h = Harness::new("stale");
     let mut wallet = TestWallet::new(h.chain_id);
-    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id).unwrap();
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id, h.fee_collector).unwrap();
 
     let msg0 = wallet.sign(0xaa, 0xab, 1000, 10);
     h.drop_msg(&msg0);
@@ -328,7 +355,7 @@ fn mempool_rejects_stale_nonce_and_dedupes() {
 #[test]
 fn mempool_holds_future_nonce_until_gap_fills() {
     let h = Harness::new("gapfill");
-    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id).unwrap();
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id, h.fee_collector).unwrap();
 
     // Submit nonce 1 before nonce 0: held, not rejected.
     let msg1 = sign_msg(h.chain_id, 0xaa, 0xab, 1000, 10, 1);
@@ -359,7 +386,7 @@ fn mempool_holds_future_nonce_until_gap_fills() {
 fn mempool_rejects_when_full() {
     let h = Harness::new("full");
     let mut wallet = TestWallet::new(h.chain_id);
-    let mut mempool = Mempool::new(&h.tx_pool_dir, 2, h.chain_id).unwrap();
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 2, h.chain_id, h.fee_collector).unwrap();
 
     for _ in 0..2 {
         let msg = wallet.sign(0xaa, 0xab, 10, 1);
@@ -373,6 +400,53 @@ fn mempool_rejects_when_full() {
     let stats = mempool.scan_drop_dir(&h.tx_pool_dir, h.store()).unwrap();
     assert_eq!(stats.rejected, 1, "full mempool rejects new submissions");
     assert_eq!(mempool.len(), 2, "valid pending messages are never evicted");
+}
+
+#[test]
+fn mempool_rejects_zero_amount_transfer_and_zero_fee_call() {
+    // The two message shapes from the audit: correctly signed, so the old
+    // signature-only filter accepted them, but `propose_block` rejects
+    // them. Intake must now reject them too — and the honest message queued
+    // alongside must survive.
+    let h = Harness::new("zeroval");
+    let mut wallet = TestWallet::new(h.chain_id);
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id, h.fee_collector).unwrap();
+
+    let good = wallet.sign(0xaa, 0xab, 1000, 10);
+    h.drop_msg(&good);
+
+    // Zero-amount transfer (nonce 1: the wallet already handed out 0).
+    let zero_amt = sign_msg(h.chain_id, 0xaa, 0xab, 0, 10, 1);
+    std::fs::write(h.tx_pool_dir.join("zero_amt.msg"), zero_amt.to_bytes()).unwrap();
+
+    // Zero-fee contract call (nonce 2).
+    let zero_fee_call = ExternalMessage::new_signed(
+        h.chain_id,
+        MsgKind::ContractCall,
+        account_id(0xaa),
+        2,
+        account_id(0xab),
+        0,
+        0,
+        Vec::new(),
+        [0u8; 32],
+        &test_secret(0xaa),
+    );
+    std::fs::write(h.tx_pool_dir.join("zero_fee.msg"), zero_fee_call.to_bytes()).unwrap();
+
+    let stats = mempool.scan_drop_dir(&h.tx_pool_dir, h.store()).unwrap();
+    assert_eq!(stats.accepted, 1, "only the honest message is accepted");
+    assert_eq!(
+        stats.rejected, 2,
+        "both defective messages rejected at intake"
+    );
+    assert_eq!(mempool.len(), 1, "honest message survives in pending/");
+
+    // The survivor is still a valid block candidate.
+    let state: State = h.store().load_state().unwrap().unwrap();
+    let candidates = mempool.select_candidates(&state).unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].hash(), good.hash());
 }
 
 // ---------- loop tests ----------
@@ -488,7 +562,7 @@ fn select_candidates_drops_became_stale_without_crashing() {
     // select_candidates moves it to rejected/ instead of crashing.
     let h = Harness::new("selectstale");
     let mut wallet = TestWallet::new(h.chain_id);
-    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id).unwrap();
+    let mut mempool = Mempool::new(&h.tx_pool_dir, 10_000, h.chain_id, h.fee_collector).unwrap();
 
     let msg = wallet.sign(0xaa, 0xab, 1000, 10); // nonce 0, valid now
     h.drop_msg(&msg);
@@ -509,6 +583,235 @@ fn select_candidates_drops_became_stale_without_crashing() {
     assert_eq!(
         h.tx_pool_dir.join("rejected").read_dir().unwrap().count(),
         1
+    );
+}
+
+#[test]
+fn loop_double_key_reveal_drops_only_second_reveal() {
+    // The third audit shape: a fresh key-derived account reveals its key in
+    // TWO queued messages. The first reveal is valid; the second is
+    // permanently invalid (the account is keyed after the first). The old
+    // code fed both to `propose_block`, failed the whole block three times,
+    // then quarantined the entire mempool. Now only the second reveal is
+    // dropped and blocks keep flowing.
+    use onx_state_model::AccountState;
+
+    let mut h = Harness::new("reveal");
+    let mut wallet = TestWallet::new(h.chain_id);
+
+    // Fresh keypair → address that has never appeared on chain.
+    let secret = test_secret(0x99);
+    let pubkey = secret.public_key().encode();
+    let addr = derive_address(&pubkey);
+
+    // Fund it out-of-band: a transfer landing on a fresh address creates a
+    // keyless Active account (this is the only way to become keyless).
+    let state: State = h.store().load_state().unwrap().unwrap();
+    let fund = sign_msg_from(
+        h.chain_id,
+        account_id(0xaa),
+        addr,
+        1_000_000,
+        10,
+        0,
+        [0u8; 32],
+        &test_secret(0xaa),
+    );
+    let block = propose_block(&state, vec![fund], state.last_lt + 1, h.fee_collector).unwrap();
+    h.store().commit_block(&state, &block).unwrap();
+
+    // Confirm the test's premise: funded but keyless.
+    match h.store().get_account(&addr).unwrap() {
+        Some(AccountState::Active { pubkey: k, .. }) => {
+            assert_eq!(k, [0u8; 32], "freshly funded account is keyless")
+        }
+        other => panic!("expected keyless active account, got {other:?}"),
+    }
+
+    // Two reveals from the fresh account + one honest message from 0xab.
+    let reveal1 = sign_msg_from(
+        h.chain_id,
+        addr,
+        account_id(0xab),
+        500,
+        5,
+        0,
+        pubkey,
+        &secret,
+    );
+    let reveal2 = sign_msg_from(
+        h.chain_id,
+        addr,
+        account_id(0xab),
+        500,
+        5,
+        1,
+        pubkey,
+        &secret,
+    );
+    let honest = wallet.sign(0xab, 0xac, 100, 1);
+    h.drop_msg(&reveal1);
+    h.drop_msg(&reveal2);
+    h.drop_msg(&honest);
+
+    let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    let stats = handle
+        .join()
+        .expect("producer thread")
+        .expect("producer ok");
+    assert!(stats.blocks_produced >= 1);
+
+    // Only the second reveal was dropped; the first reveal and the honest
+    // message committed, and the loop did not quarantine anything.
+    assert_eq!(
+        h.tx_pool_dir.join("rejected").read_dir().unwrap().count(),
+        1,
+        "exactly the second reveal lands in rejected/"
+    );
+    assert_eq!(
+        h.tx_pool_dir.join("pending").read_dir().unwrap().count(),
+        0,
+        "nothing left stranded in pending/"
+    );
+    h.reopen();
+    let state: State = h.store().load_state().unwrap().unwrap();
+    match h.store().get_account(&addr).unwrap() {
+        Some(AccountState::Active {
+            nonce, pubkey: k, ..
+        }) => {
+            assert_eq!(nonce, 1, "only the first reveal committed");
+            assert_eq!(k, pubkey, "account is keyed after the first reveal");
+        }
+        other => panic!("expected active account, got {other:?}"),
+    }
+    assert_eq!(
+        account_nonce(h.store(), 0xab),
+        1,
+        "honest message committed"
+    );
+    drop(state);
+
+    // Blocks keep flowing afterwards: one more honest message → block 3.
+    // (0xaa's on-chain nonce is 1 after the funding commit. Note the target
+    // is 3 files: block 2 from phase 1 plus the regenerated block 1 already
+    // exist.)
+    let more = sign_msg(h.chain_id, 0xaa, 0xac, 50, 1, 1);
+    h.drop_msg(&more);
+    let (handle, shutdown) = h.run_until(10_000, 3, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    handle
+        .join()
+        .expect("producer thread")
+        .expect("producer ok");
+    h.reopen();
+    assert_eq!(account_nonce(h.store(), 0xaa), 2);
+}
+
+#[test]
+fn startup_regenerates_block_file_missing_after_crash() {
+    // The gap the audit found by reading: the producer used to write the
+    // block file AFTER the DB commit, non-atomically. A kill in between
+    // left the block committed but `blocks/` missing its file, forever.
+    // Simulate exactly that, restart the producer, and require the file to
+    // come back byte-correct.
+    use onx_stf::block::BLOCK_HEADER_BYTE_LEN;
+    use onx_stf::BlockHeader;
+
+    const BLK_MAGIC: &[u8; 8] = b"ONXBLK04";
+
+    let mut h = Harness::new("regen");
+    let mut wallet = TestWallet::new(h.chain_id);
+    h.drop_msg(&wallet.sign(0xaa, 0xab, 1000, 10));
+
+    // One block through the normal path.
+    let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    handle
+        .join()
+        .expect("producer thread")
+        .expect("producer ok");
+    let blk1 = h.blocks_dir().join("block-00000001.blk");
+    assert!(blk1.is_file());
+
+    // The crash: commit block 2 to the DB directly, never writing its file.
+    h.reopen();
+    let state: State = h.store().load_state().unwrap().unwrap();
+    let msg = wallet.sign(0xaa, 0xab, 500, 5);
+    let block = propose_block(&state, vec![msg], state.last_lt + 1, h.fee_collector).unwrap();
+    assert_eq!(block.header.seqno, 2);
+    h.store().commit_block(&state, &block).unwrap();
+    let blk2 = h.blocks_dir().join("block-00000002.blk");
+    assert!(
+        !blk2.is_file(),
+        "crash simulation: no file for committed block 2"
+    );
+
+    // Restart the producer (run_until takes the reopened store).
+    // Startup regeneration must fill the gap before the loop even starts
+    // producing.
+    let (handle, shutdown) = h.run_until(10_000, 2, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    handle
+        .join()
+        .expect("producer thread")
+        .expect("producer ok");
+
+    // The missing file is back, with no gap in the sequence.
+    assert!(blk1.is_file());
+    assert!(blk2.is_file(), "startup regenerated the missing block file");
+
+    // Byte-correct: the regenerated file's header matches the committed
+    // block in the DB exactly.
+    let bytes = std::fs::read(&blk2).unwrap();
+    assert_eq!(&bytes[..8], BLK_MAGIC, "magic intact");
+    let file_header =
+        BlockHeader::from_bytes(&bytes[8..8 + BLOCK_HEADER_BYTE_LEN]).expect("header parses");
+    h.reopen();
+    let block_hash = h
+        .store()
+        .block_hash_for_seqno(2)
+        .unwrap()
+        .expect("block 2 hash in DB");
+    let db_header = h
+        .store()
+        .get_block_header(&block_hash)
+        .unwrap()
+        .expect("block 2 in DB");
+    assert_eq!(file_header.seqno, db_header.seqno);
+    assert_eq!(file_header.prev_hash, db_header.prev_hash);
+    assert_eq!(file_header.msgs_root, db_header.msgs_root);
+    assert_eq!(file_header.state_root, db_header.state_root);
+
+    // And it replays: the regenerated file is a first-class block file.
+    let daemon_root = h.final_root_hex();
+    let replay_data = h.dir.join("replay-data");
+    let out = Command::new(onx_binary())
+        .args([
+            "replay",
+            "--genesis",
+            h.genesis_toml.to_str().unwrap(),
+            "--blocks",
+            h.blocks_dir().to_str().unwrap(),
+            "--data-dir",
+            replay_data.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run onx replay");
+    assert!(
+        out.status.success(),
+        "onx replay failed on regenerated file: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let replay_root = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("final_state_root="))
+        .expect("replay printed final_state_root")
+        .trim();
+    assert_eq!(
+        replay_root, daemon_root,
+        "replay through the regenerated file reproduces the daemon root"
     );
 }
 
