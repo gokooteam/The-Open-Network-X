@@ -10,6 +10,7 @@
 //! | `block_bodies`  | block hash `[u8;32]` | `encode_body` bytes            |
 //! | `seqno_to_hash` | seqno `u32` BE       | block hash `[u8;32]`           |
 //! | `state_roots`   | seqno `u32` BE       | state root `[u8;32]`           |
+//! | `contract_cells`| account id `[u8;32]` | `ContractCellDags` bytes       |
 //! | `meta`          | static key bytes     | bytes                          |
 //!
 //! `meta` keys: `b"schema_version"` (u32 BE), `b"genesis_hash"` (32 bytes),
@@ -35,7 +36,7 @@
 use crate::encoding::{decode_body, encode_body};
 use crate::error::StorageError;
 use onx_data_structures::AccountId;
-use onx_state_model::{AccountState, GenesisDocument, ShardStateTree};
+use onx_state_model::{AccountState, ContractCellDags, GenesisDocument, ShardStateTree};
 use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
@@ -45,7 +46,12 @@ use std::path::{Path, PathBuf};
 /// refuses databases written by a different version (fail-closed).
 /// v1 -> v2: dropped the write-only `cells` table (see schema docs above).
 /// v1 was never released, so no migration is provided — resync from genesis.
-pub const SCHEMA_VERSION: u32 = 2;
+/// v2 -> v3: added the `contract_cells` table (account id -> contract cell
+/// DAGs). The table is additive and auto-created by `create_tables`, so the
+/// migration only bumps the version; no data moves. Unlike the v1 `cells`
+/// table, this one has a reader: the STF seeds the TVM interpreter's cell
+/// store from it on contract load.
+pub const SCHEMA_VERSION: u32 = 3;
 
 const ACCOUNTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("accounts");
 const BLOCK_HEADERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_headers");
@@ -53,6 +59,13 @@ const BLOCK_BODIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_
 const SEQNO_TO_HASH: TableDefinition<&[u8], &[u8]> = TableDefinition::new("seqno_to_hash");
 const STATE_ROOTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("state_roots");
 const META: TableDefinition<&[u8], &[u8]> = TableDefinition::new("meta");
+/// Contract cell DAGs: account id `[u8;32]` -> `ContractCellDags` bytes
+/// (code BoC + data BoC). Written on every contract execution (the
+/// account's DAGs are rebuilt from the interpreter's drained cell store);
+/// read on contract load to seed the interpreter. Overwritten in place —
+/// each account has exactly one entry, so growth is bounded by the number
+/// of contract accounts, not by history.
+const CONTRACT_CELLS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("contract_cells");
 
 /// Atomic chain store.
 ///
@@ -144,6 +157,7 @@ impl ChainStore {
             wtxn.open_table(BLOCK_BODIES)?;
             wtxn.open_table(SEQNO_TO_HASH)?;
             wtxn.open_table(STATE_ROOTS)?;
+            wtxn.open_table(CONTRACT_CELLS)?;
             wtxn.open_table(META)?;
         }
         wtxn.commit()?;
@@ -151,18 +165,27 @@ impl ChainStore {
     }
 
     /// Write the schema version on first open; refuse newer versions.
+    /// v2 -> v3 is a supported migration: the `contract_cells` table is
+    /// purely additive (auto-created by `create_tables` above), so the
+    /// migration only bumps the version key. Anything else mismatched is
+    /// fail-closed `SchemaMismatch`.
     fn ensure_schema_version(&self) -> Result<(), StorageError> {
         let rtxn = self.db.begin_read()?;
         let meta = rtxn.open_table(META)?;
         if let Some(v) = meta.get(b"schema_version".as_slice())? {
             let found = u32_from_value(v.value(), "schema_version")?;
-            if found != SCHEMA_VERSION {
-                return Err(StorageError::SchemaMismatch {
-                    found,
-                    supported: SCHEMA_VERSION,
-                });
+            if found == SCHEMA_VERSION {
+                return Ok(());
             }
-            return Ok(());
+            if found == 2 && SCHEMA_VERSION == 3 {
+                drop(meta);
+                drop(rtxn);
+                return self.migrate_v2_to_v3();
+            }
+            return Err(StorageError::SchemaMismatch {
+                found,
+                supported: SCHEMA_VERSION,
+            });
         }
         drop(meta);
         drop(rtxn);
@@ -176,6 +199,51 @@ impl ChainStore {
                     b"schema_version".as_slice(),
                     SCHEMA_VERSION.to_be_bytes().as_slice(),
                 )?;
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
+    /// Migrate a v2 database to v3: the `contract_cells` table was already
+    /// created by `create_tables`; there is no data to move (contract cell
+    /// DAGs are rebuilt from execution going forward, and historical DAGs
+    /// are reconstructible via replay). Just bump the version key,
+    /// re-checking inside the write transaction in case another opener
+    /// raced us.
+    fn migrate_v2_to_v3(&self) -> Result<(), StorageError> {
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut meta = wtxn.open_table(META)?;
+            // Read the version first (ending the immutable borrow) before
+            // taking the mutable borrow for the bump.
+            let found = match meta.get(b"schema_version".as_slice())? {
+                Some(v) => Some(u32_from_value(v.value(), "schema_version")?),
+                None => None,
+            };
+            match found {
+                Some(2) => {
+                    meta.insert(
+                        b"schema_version".as_slice(),
+                        SCHEMA_VERSION.to_be_bytes().as_slice(),
+                    )?;
+                }
+                Some(found) if found != SCHEMA_VERSION => {
+                    return Err(StorageError::SchemaMismatch {
+                        found,
+                        supported: SCHEMA_VERSION,
+                    });
+                }
+                // `None`: the version key vanished between the read and
+                // write txns — claim it fresh (same as the first-open
+                // path). `Some(SCHEMA_VERSION)`: a racing opener already
+                // migrated; re-writing the same value is a no-op.
+                _ => {
+                    meta.insert(
+                        b"schema_version".as_slice(),
+                        SCHEMA_VERSION.to_be_bytes().as_slice(),
+                    )?;
+                }
             }
         }
         wtxn.commit()?;
@@ -325,6 +393,22 @@ impl ChainStore {
                 // to persist.
             }
 
+            // Contract cell DAGs rebuilt by this block's executions.
+            // Only changed DAGs are written (the map is carried over
+            // unchanged for contracts that did not execute).
+            {
+                let mut cells_tbl = wtxn.open_table(CONTRACT_CELLS)?;
+                for (id, dags) in new_state.tree.all_contract_cells() {
+                    let changed = match state.tree.contract_cells(id) {
+                        Some(old) => old != dags,
+                        None => true,
+                    };
+                    if changed {
+                        cells_tbl.insert(id.to_bytes().as_slice(), dags.to_bytes().as_slice())?;
+                    }
+                }
+            }
+
             // Index, post-state root, and head advance together. The head
             // pointer can therefore only ever reference a fully committed
             // block: there is no observable torn state.
@@ -455,7 +539,24 @@ impl ChainStore {
                         "trailing bytes in stored account record".to_string(),
                     ));
                 }
-                tree.insert(id, st);
+                tree.insert(id, st)?;
+            }
+        }
+
+        // Contract cell DAGs: auxiliary execution state (not part of the
+        // state root). Loaded here so the next contract invocation's
+        // interpreter can be seeded with the full code/data DAGs.
+        {
+            let cells_tbl = rtxn.open_table(CONTRACT_CELLS)?;
+            for entry in cells_tbl.iter()? {
+                let (k, v) = entry?;
+                let id = AccountId::from_bytes(hash32_from_value(k.value(), "contract_cells key")?);
+                let dags = ContractCellDags::from_bytes(v.value()).map_err(|e| {
+                    StorageError::Corrupt(format!(
+                        "stored contract cell DAGs for account {id:?} undecodable: {e}"
+                    ))
+                })?;
+                tree.set_contract_cells(id, dags);
             }
         }
 
@@ -612,7 +713,7 @@ mod tests {
     /// Historical state remains reconstructible via replay from genesis +
     /// persisted block bodies (the phase5 replay suite covers that path).
     #[test]
-    fn schema_v2_has_no_cells_table() {
+    fn schema_v3_has_no_legacy_cells_table() {
         let path = temp_db_path("no-cells");
         let _ = std::fs::remove_file(&path);
         let store = ChainStore::open(&path).expect("open");
@@ -635,18 +736,56 @@ mod tests {
         store.commit_block(&state, &block).expect("commit_block");
         assert_eq!(store.head().expect("head").expect("head").0, 1);
 
-        // The cells table must not exist.
+        // The legacy v1 `cells` table must not exist.
         let rtxn = store.db.begin_read().expect("read txn");
         let err = rtxn
             .open_table(TableDefinition::<&[u8], &[u8]>::new("cells"))
-            .expect_err("cells table must not exist in schema v2");
+            .expect_err("cells table must not exist in schema v3");
         assert!(
             matches!(err, redb::TableError::TableDoesNotExist(_)),
             "expected TableDoesNotExist, got: {err:?}"
         );
 
-        // And the schema version records the break from v1 (which had it).
-        assert_eq!(SCHEMA_VERSION, 2);
+        // And the schema version records the break from v1 (which had it):
+        // v3 added the `contract_cells` table.
+        assert_eq!(SCHEMA_VERSION, 3);
+
+        drop(rtxn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_v2_to_v3_bumps_version() {
+        let path = temp_db_path("v2-migrate");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        // Simulate a v2 database by rolling the version key back to 2.
+        {
+            let wtxn = store.db.begin_write().expect("write txn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.insert(b"schema_version".as_slice(), 2u32.to_be_bytes().as_slice())
+                    .expect("rollback version");
+            }
+            wtxn.commit().expect("commit");
+        }
+        drop(store);
+
+        // Re-opening must migrate v2 -> v3 (not fail closed).
+        let store = ChainStore::open(&path).expect("re-open migrates");
+        let rtxn = store.db.begin_read().expect("read txn");
+        let meta = rtxn.open_table(META).expect("meta");
+        let v = meta
+            .get(b"schema_version".as_slice())
+            .expect("get")
+            .expect("version present");
+        assert_eq!(u32_from_value(v.value(), "schema_version").expect("u32"), 3);
+        // The `contract_cells` table is available after migration.
+        rtxn.open_table(CONTRACT_CELLS)
+            .expect("contract_cells exists");
 
         drop(rtxn);
         drop(store);

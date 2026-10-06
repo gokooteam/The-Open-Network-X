@@ -42,7 +42,17 @@ pub fn decode_body(bytes: &[u8]) -> Result<BlockBody, StorageError> {
         )));
     }
     let count = u32::from_be_bytes(bytes[0..4].try_into().expect("slice len checked")) as usize;
-    let mut messages = Vec::with_capacity(count);
+    // Root fix (wave-2): `count` is untrusted input and must not drive the
+    // upfront allocation. A forged count (u32::MAX in a 160-byte body) made
+    // the old code reserve ~1.2 TB up front and abort the process instead
+    // of returning an error. Bound the reservation by what the input can
+    // actually hold: every message costs at least its 4-byte length prefix,
+    // so no valid body claims more than `max_messages` messages. A forged
+    // count is clamped here and then rejected with a clean error by the
+    // loop's truncation checks below. (The wave-1 guard in
+    // `decode_block_file` remains as defense-in-depth at the file layer.)
+    let max_messages = (bytes.len() - BODY_COUNT_LEN) / MSG_LEN_PREFIX;
+    let mut messages = Vec::with_capacity(count.min(max_messages));
     let mut off = BODY_COUNT_LEN;
     for i in 0..count {
         if bytes.len() < off + MSG_LEN_PREFIX {
@@ -134,5 +144,32 @@ mod tests {
         let mut enc = encode_body(&body);
         enc.push(0);
         assert!(decode_body(&enc).is_err());
+    }
+
+    #[test]
+    fn forged_message_count_returns_error_without_allocation() {
+        // Root-cause regression test for the review's 160-byte crash file:
+        // a u32::MAX message count with no bodies behind it. This feeds
+        // `decode_body` DIRECTLY, bypassing the wave-1 `decode_block_file`
+        // boundary guard, so it exercises the root fix: the old code
+        // attempted a ~1.2 TB reservation here and aborted the process;
+        // the fixed code clamps the reservation and returns a clean error.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u32::MAX.to_be_bytes());
+        bytes.extend_from_slice(&[0u8; 156]);
+        assert_eq!(bytes.len(), 160);
+        assert!(
+            matches!(decode_body(&bytes), Err(StorageError::Corrupt(_))),
+            "forged count must be a clean decode error, not an abort"
+        );
+
+        // A merely-implausible count is rejected the same way.
+        let mut bytes2 = Vec::new();
+        bytes2.extend_from_slice(&1_000_000u32.to_be_bytes());
+        bytes2.extend_from_slice(&[0u8; 156]);
+        assert!(matches!(
+            decode_body(&bytes2),
+            Err(StorageError::Corrupt(_))
+        ));
     }
 }

@@ -32,8 +32,10 @@ use crate::state::State;
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
 use onx_execution::{ExecutionContext, ExecutionResult, Interpreter, StackValue};
 use onx_primitives::{domain_hash, DomainTag, PublicKey};
-use onx_state_model::{AccountState, Cell, ShardStateTree, StorageStat};
-use std::collections::{BTreeSet, VecDeque};
+use onx_state_model::{
+    AccountState, BagOfCells, Cell, ContractCellDags, ShardStateTree, StorageStat,
+};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Gas purchased per nano-Onyx of declared message fee, for contract calls.
 /// The fee still splits 50/50 burn/validator via the normal fee model —
@@ -452,7 +454,7 @@ fn wallet_receive(
             pubkey: effective_pubkey,
             nonce: nonce_after,
         },
-    );
+    )?;
 
     // --- 8. Collector credit (re-read post-debit for from == collector) ---
     if validator_fee > 0 {
@@ -553,7 +555,15 @@ fn deliver(
             data,
             ..
         } if !msg.payload.is_empty() => {
-            match try_execute_contract(code, data.as_ref(), &msg, lt, workchain) {
+            match try_execute_contract(
+                code,
+                data.as_ref(),
+                &msg,
+                lt,
+                workchain,
+                msg.dest,
+                tree.contract_cells_mut(),
+            ) {
                 Some(out) => {
                     gas_used = out.gas_used;
                     new_data = Some(out.new_data);
@@ -671,7 +681,7 @@ fn credit_account(
             pubkey,
             nonce,
         },
-    );
+    )?;
     Ok(new_balance)
 }
 
@@ -684,16 +694,23 @@ struct ContractExecOutput {
 
 /// Execute a contract call against the recipient's code and data.
 ///
-/// Pure: reads only the already-fetched code/data, never touches the tree.
-/// Returns `None` when the delivery must bounce: a TVM exception
-/// (including out-of-gas) or an out-message egress attempt (deliberately
-/// unwired this milestone — the message would otherwise be silently
-/// dropped, so the value bounces instead).
+/// Pure: reads only the already-fetched code/data and the tree's persisted
+/// contract cell DAGs, never touches the tree's accounts. Returns `None`
+/// when the delivery must bounce: a TVM exception (including out-of-gas)
+/// or an out-message egress attempt (deliberately unwired this milestone —
+/// the message would otherwise be silently dropped, so the value bounces
+/// instead).
 ///
 /// Calling convention (documented, deterministic):
 /// - The contract's persistent data cell is pushed on the operand stack at
 ///   entry. (The interpreter has no c4-push opcode yet; the STF seeds the
 ///   stack instead.)
+/// - The interpreter's cell store is seeded with the account's persisted
+///   code/data DAGs, so `CTOS`/`LDREF` resolve to the actual stored
+///   children (wave-2 VM contract). After execution the drained store is
+///   rebuilt into fresh DAGs and written back to `contract_cells`.
+/// - `interp.message_body` is set from the internal message's payload, so
+///   the `MSGBODY` (0x82) opcode exposes the real inbound body.
 /// - `SETDATA` (0x4D) installs the new persistent data cell; on halt, the
 ///   interpreter's data is the contract's new state.
 /// - `ExecutionContext.gen_utime` is derived from the block lt — the VM
@@ -706,6 +723,8 @@ fn try_execute_contract(
     msg: &InternalMessage,
     lt: u64,
     workchain: i32,
+    account_id: AccountId,
+    contract_cells: &mut BTreeMap<AccountId, ContractCellDags>,
 ) -> Option<ContractExecOutput> {
     let data_cell = data
         .cloned()
@@ -726,6 +745,18 @@ fn try_execute_contract(
     let message = inbound_message(msg, lt, workchain);
 
     let mut interp = Interpreter::new(code.clone(), data_cell.clone(), message, context);
+    // Seed the interpreter's cell store with the account's persisted
+    // code/data DAGs. The constructor only seeds the two roots; without
+    // the rest of the DAGs, `LDREF` on their children would fail closed
+    // with `AbsentNode` even though the content exists.
+    if let Some(dags) = contract_cells.get(&account_id) {
+        for (hash, cell) in dags.code.cells().iter().chain(dags.data.cells().iter()) {
+            interp.cell_store.insert(*hash, cell.clone());
+        }
+    }
+    // The `Message` only commits to `body_cell_hash`; the host holds the
+    // actual payload and sets it here so `MSGBODY` exposes real data.
+    interp.message_body = msg.payload.clone();
     interp.stack.push(StackValue::Cell(data_cell));
     match interp.run() {
         ExecutionResult::Success {
@@ -734,6 +765,20 @@ fn try_execute_contract(
             gas_used,
         } => {
             if out_messages.is_empty() {
+                // Persist the drained cell store: rebuild the account's
+                // code and data DAGs (full DAG *content*, not just root
+                // hashes) as Bags-of-Cells, collected by reachability from
+                // the roots through the drained store.
+                let drained = std::mem::take(&mut interp.cell_store);
+                let code_boc = dag_boc(&drained, code.hash())?;
+                let data_boc = dag_boc(&drained, new_data.hash())?;
+                contract_cells.insert(
+                    account_id,
+                    ContractCellDags {
+                        code: code_boc,
+                        data: data_boc,
+                    },
+                );
                 Some(ContractExecOutput { new_data, gas_used })
             } else {
                 None
@@ -741,6 +786,33 @@ fn try_execute_contract(
         }
         ExecutionResult::Exception { .. } => None,
     }
+}
+
+/// Collect the DAG reachable from `root` through `store` into a
+/// [`BagOfCells`]. The root itself must be present (it was just seeded or
+/// materialized — a missing root is an internal invariant violation and
+/// fails closed). Child references whose content is absent are skipped:
+/// the interpreter already failed closed on any it actually needed, and
+/// `BagOfCells` tolerates dangling references (the wave-1 Merkle-proof
+/// carve-out).
+fn dag_boc(store: &BTreeMap<[u8; 32], Cell>, root: [u8; 32]) -> Option<BagOfCells> {
+    if !store.contains_key(&root) {
+        return None;
+    }
+    let mut cells = BTreeMap::new();
+    let mut stack = vec![root];
+    while let Some(hash) = stack.pop() {
+        if cells.contains_key(&hash) {
+            continue;
+        }
+        if let Some(cell) = store.get(&hash) {
+            for child in cell.cell_refs() {
+                stack.push(*child);
+            }
+            cells.insert(hash, cell.clone());
+        }
+    }
+    BagOfCells::new(root, cells).ok()
 }
 
 /// Build the inbound `Message` delivered to the contract. The interpreter
@@ -792,7 +864,7 @@ fn update_contract_data(
                     pubkey,
                     nonce,
                 },
-            );
+            )?;
             Ok(())
         }
         // The caller only invokes this on the process path, where the
@@ -940,7 +1012,8 @@ mod tests {
                 last_trans_lt: 0,
                 storage_hash: [0u8; 32],
             },
-        );
+        )
+        .unwrap();
 
         let ext = ExternalMessage::new_signed(
             state.chain_id,

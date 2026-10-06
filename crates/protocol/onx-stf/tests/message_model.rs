@@ -112,14 +112,17 @@ fn apply_msgs(
 fn bounce_to_frozen_refunds_sender_minus_fees() {
     let (mut state, alice, _bob, _carol, collector) = genesis();
     let frozen = derive_account_id("model-frozen");
-    state.tree.insert(
-        frozen,
-        AccountState::Frozen {
-            balance_nanos: 5_000,
-            last_trans_lt: 0,
-            storage_hash: [0u8; 32],
-        },
-    );
+    state
+        .tree
+        .insert(
+            frozen,
+            AccountState::Frozen {
+                balance_nanos: 5_000,
+                last_trans_lt: 0,
+                storage_hash: [0u8; 32],
+            },
+        )
+        .unwrap();
 
     let alice_key = secret(&format!("{alice:?}"));
     // Fee 100 -> 50 burned, 50 to the collector.
