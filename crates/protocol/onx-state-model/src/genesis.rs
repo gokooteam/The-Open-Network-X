@@ -42,7 +42,7 @@
 
 use crate::account::AccountState;
 use crate::error::StateModelError;
-use crate::tree::ShardStateTree;
+use crate::tree::{ShardStateTree, MAX_TRIE_VALUE_BYTES};
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
 use onx_primitives::{domain_hash, DomainTag, Uint32, Uint64};
 use std::collections::BTreeMap;
@@ -114,6 +114,19 @@ impl GenesisDocument {
                 return Err(StateModelError::InvalidGenesis(
                     "duplicate validator public key in genesis".to_string(),
                 ));
+            }
+        }
+        // Every genesis account must be committable to the state trie
+        // (spec §4.5: values over MAX_TRIE_VALUE_BYTES cannot be hashed
+        // into the trie). Reject here — at the trust root — rather than
+        // failing later at the first `state_root_hash()`.
+        for (id, state) in &accounts {
+            let len = state.to_bytes().len();
+            if len > MAX_TRIE_VALUE_BYTES {
+                return Err(StateModelError::InvalidGenesis(format!(
+                    "genesis account {:x?} too large for state trie: {len} bytes (max {MAX_TRIE_VALUE_BYTES})",
+                    &id.to_bytes()[..8],
+                )));
             }
         }
         Ok(Self {
@@ -249,7 +262,10 @@ impl GenesisDocument {
     pub fn state_tree(&self) -> ShardStateTree {
         let mut tree = ShardStateTree::new();
         for (id, state) in &self.accounts {
-            tree.insert(*id, state.clone());
+            // Validated at construction (`GenesisDocument::new` rejects
+            // accounts over MAX_TRIE_VALUE_BYTES), so this cannot fail.
+            tree.insert(*id, state.clone())
+                .expect("genesis accounts are trie-committable by construction");
         }
         tree
     }

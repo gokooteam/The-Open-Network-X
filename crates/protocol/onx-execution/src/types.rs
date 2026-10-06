@@ -47,25 +47,31 @@ pub struct ExecutionContext {
 }
 
 /// A read cursor over a Cell's data bytes and child cell references.
+///
+/// `child_cells` is positional: entry `i` corresponds to `cell.cell_refs()[i]`.
+/// `Some(cell)` means the host provided the referenced child's content (via
+/// the interpreter's cell store); `None` means the content is absent and
+/// `LDREF` must fail closed (`AbsentNode`) rather than invent data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slice {
     pub cell: Cell,
     pub bit_offset: usize,
     pub ref_offset: usize,
-    pub child_cells: Vec<Cell>,
+    pub child_cells: Vec<Option<Cell>>,
 }
 
 impl Slice {
     pub fn new(cell: Cell) -> Self {
+        let refs = cell.cell_refs().len();
         Self {
             cell,
             bit_offset: 0,
             ref_offset: 0,
-            child_cells: Vec::new(),
+            child_cells: vec![None; refs],
         }
     }
 
-    pub fn new_with_children(cell: Cell, child_cells: Vec<Cell>) -> Self {
+    pub fn new_with_children(cell: Cell, child_cells: Vec<Option<Cell>>) -> Self {
         Self {
             cell,
             bit_offset: 0,

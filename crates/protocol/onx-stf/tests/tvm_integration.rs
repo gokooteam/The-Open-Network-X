@@ -100,7 +100,8 @@ fn contract_genesis() -> (State, AccountId, AccountId, AccountId, SecretKey) {
             pubkey: secret.public_key().encode(),
             nonce: 0,
         },
-    );
+    )
+    .unwrap();
     tree.insert(
         contract,
         AccountState::Active {
@@ -117,7 +118,8 @@ fn contract_genesis() -> (State, AccountId, AccountId, AccountId, SecretKey) {
             pubkey: [0u8; 32],
             nonce: 0,
         },
-    );
+    )
+    .unwrap();
     let state = State {
         tree,
         workchain: 0,
@@ -381,21 +383,24 @@ fn tvm_vm_exception_bounces() {
     let thrower = AccountId::from_bytes([0xD0; 32]);
     // Code: THROW IntegerOverflow (0x77 0x00).
     let throw_code = Cell::new(vec![0x77, 0x00], vec![]).unwrap();
-    state.tree.insert(
-        thrower,
-        AccountState::Active {
-            balance_nanos: 0,
-            last_trans_lt: 0,
-            code: Some(throw_code),
-            data: Some(Cell::new(vec![], vec![]).unwrap()),
-            storage_stat: StorageStat {
-                cell_count: 2,
-                byte_count: 0,
+    state
+        .tree
+        .insert(
+            thrower,
+            AccountState::Active {
+                balance_nanos: 0,
+                last_trans_lt: 0,
+                code: Some(throw_code),
+                data: Some(Cell::new(vec![], vec![]).unwrap()),
+                storage_stat: StorageStat {
+                    cell_count: 2,
+                    byte_count: 0,
+                },
+                pubkey: [0u8; 32],
+                nonce: 0,
             },
-            pubkey: [0u8; 32],
-            nonce: 0,
-        },
-    );
+        )
+        .unwrap();
     let msg = call_msg(
         state.chain_id,
         sender,

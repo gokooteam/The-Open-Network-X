@@ -293,8 +293,8 @@ fn test_shard_state_tree_and_merkle_proofs() {
         nonce: 0,
     };
 
-    tree.insert(acc1, state1);
-    tree.insert(acc2, state2);
+    tree.insert(acc1, state1).unwrap();
+    tree.insert(acc2, state2).unwrap();
 
     let root_hash = tree.state_root_hash().unwrap();
     assert_ne!(root_hash, [0u8; 32]);

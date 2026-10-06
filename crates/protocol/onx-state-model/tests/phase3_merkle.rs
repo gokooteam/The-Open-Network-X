@@ -23,7 +23,7 @@ fn tree_with(n: u8) -> (ShardStateTree, Vec<AccountId>) {
     let mut ids = Vec::new();
     for i in 0..n {
         let id = account_id(i);
-        tree.insert(id, AccountState::Uninitialized);
+        tree.insert(id, AccountState::Uninitialized).unwrap();
         ids.push(id);
     }
     (tree, ids)
@@ -53,9 +53,11 @@ fn fabricated_tree_proof_fails_against_trusted_root() {
 
     let mut tree_b = ShardStateTree::new();
     let evil_id = account_id(0xE0);
-    tree_b.insert(evil_id, AccountState::Uninitialized);
+    tree_b.insert(evil_id, AccountState::Uninitialized).unwrap();
     for i in 100..164u8 {
-        tree_b.insert(account_id(i), AccountState::Uninitialized);
+        tree_b
+            .insert(account_id(i), AccountState::Uninitialized)
+            .unwrap();
     }
     assert_ne!(tree_b.state_root_hash().unwrap(), trusted_root);
 
@@ -141,7 +143,7 @@ fn single_account_tree_proof_round_trips() {
     // Degenerate case: the root IS the leaf.
     let mut tree = ShardStateTree::new();
     let id = account_id(0x01);
-    tree.insert(id, AccountState::Uninitialized);
+    tree.insert(id, AccountState::Uninitialized).unwrap();
     let trusted_root = tree.state_root_hash().unwrap();
 
     let proof = tree.generate_proof(id).unwrap();

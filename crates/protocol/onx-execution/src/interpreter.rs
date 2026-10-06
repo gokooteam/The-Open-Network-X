@@ -7,6 +7,7 @@ use onx_primitives::{
     PublicKey, Signature,
 };
 use onx_state_model::Cell;
+use std::collections::BTreeMap;
 const MAX_STACK_DEPTH: usize = 1023;
 
 pub struct Interpreter {
@@ -22,10 +23,42 @@ pub struct Interpreter {
     pub code_refs: Vec<Cell>,
     /// TVM continuation control registers c0 (return), c1 (alternative), c2 (exception).
     pub control_registers: ControlRegisters,
+    /// The inbound message that triggered this invocation. Readable by
+    /// contract code via the `0x80` message opcodes (`MSGSENDER`,
+    /// `MSGVALUE`, `MSGBODY`).
+    pub message: Message,
+    /// Raw inbound message body bytes. `Message` only commits to
+    /// `body_cell_hash`; the host holds the actual payload (e.g. the STF's
+    /// `InternalMessage.payload`) and sets it here so `MSGBODY` can expose
+    /// it. Empty when the host did not provide a body.
+    pub message_body: Vec<u8>,
+    /// Content-addressed cell store (`cell hash -> Cell`).
+    ///
+    /// Calling convention for cell persistence across invocations:
+    /// - Before execution, the host seeds this map with every cell in the
+    ///   DAGs of `code` and `data` (the constructor only seeds the two
+    ///   roots; the host must provide the rest, e.g. from the persisted
+    ///   `BagOfCells` of the contract's data).
+    /// - `CTOS` resolves each child reference through this map; resolved
+    ///   children are what `LDREF` returns.
+    /// - `ENDC` registers every materialized cell here automatically, so
+    ///   after execution the host can persist the full output DAG (any
+    ///   entries it does not already have) and the next invocation's
+    ///   `LDREF`s resolve to the actual stored children.
+    /// - A child reference whose content is absent fails closed at `LDREF`
+    ///   with `AbsentNode` — it is never answered with invented data.
+    pub cell_store: BTreeMap<[u8; 32], Cell>,
 }
 
 impl Interpreter {
-    pub fn new(code: Cell, data: Cell, _message: Message, context: ExecutionContext) -> Self {
+    pub fn new(code: Cell, data: Cell, message: Message, context: ExecutionContext) -> Self {
+        // Seed the cell store with the two roots. The host must additionally
+        // seed it with the rest of the code/data DAGs (see the `cell_store`
+        // calling-convention docs) or `LDREF` on their children fails
+        // closed with `AbsentNode`.
+        let mut cell_store = BTreeMap::new();
+        cell_store.insert(code.hash(), code.clone());
+        cell_store.insert(data.hash(), data.clone());
         Self {
             stack: Vec::new(),
             call_stack: Vec::new(),
@@ -38,6 +71,9 @@ impl Interpreter {
             context,
             code_refs: Vec::new(),
             control_registers: ControlRegisters::default(),
+            message,
+            message_body: Vec::new(),
+            cell_store,
         }
     }
 
@@ -122,6 +158,19 @@ impl Interpreter {
             StackValue::Builder(builder) => Ok(builder),
             _ => Err(ExceptionKind::TypeMismatch),
         }
+    }
+
+    /// Builds a `Slice` over `cell`, resolving each child reference through
+    /// the cell store. Children the host did not provide are recorded as
+    /// `None`; they fail closed at `LDREF` (`AbsentNode`) instead of being
+    /// answered with invented placeholder data.
+    fn resolve_slice(&self, cell: Cell) -> Slice {
+        let child_cells = cell
+            .cell_refs()
+            .iter()
+            .map(|hash| self.cell_store.get(hash).cloned())
+            .collect();
+        Slice::new_with_children(cell, child_cells)
     }
 
     pub fn read_uint8(&mut self) -> Result<u8, ExceptionKind> {
@@ -485,6 +534,10 @@ impl Interpreter {
                 let cell_refs = builder.references.iter().map(|c| c.hash()).collect();
                 let cell = Cell::new(builder.data_bytes, cell_refs)
                     .map_err(|_| ExceptionKind::MalformedCell)?;
+                // Register the materialized cell so the host can persist
+                // the full DAG after execution and so later LDREFs resolve
+                // to the actual stored child.
+                self.cell_store.insert(cell.hash(), cell.clone());
                 self.push(StackValue::Cell(cell))?;
             }
             0x42 => {
@@ -526,7 +579,8 @@ impl Interpreter {
                 if cell.is_special() {
                     return Err(ExceptionKind::AbsentNode);
                 }
-                self.push(StackValue::Slice(Slice::new(cell)))?;
+                let slice = self.resolve_slice(cell);
+                self.push(StackValue::Slice(slice))?;
             }
             0x46 => {
                 // LDU width
@@ -553,11 +607,13 @@ impl Interpreter {
                 if slice.remaining_refs() == 0 {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let ref_cell = if slice.ref_offset < slice.child_cells.len() {
-                    slice.child_cells[slice.ref_offset].clone()
-                } else {
-                    let ref_hash = slice.cell.cell_refs()[slice.ref_offset];
-                    Cell::new(vec![], vec![ref_hash]).unwrap()
+                // Return the actual stored child cell. A reference whose
+                // content the host did not provide fails closed here
+                // (AbsentNode) — it must never be answered with an invented
+                // placeholder cell.
+                let ref_cell = match slice.child_cells.get(slice.ref_offset) {
+                    Some(Some(child)) => child.clone(),
+                    _ => return Err(ExceptionKind::AbsentNode),
                 };
                 slice.ref_offset += 1;
                 self.push(StackValue::Slice(slice))?;
@@ -738,6 +794,33 @@ impl Interpreter {
                         .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
+            }
+            // Inbound-message access 0x80-0x82. These expose the `message`
+            // the host passed to `Interpreter::new`, so contract code can
+            // inspect what triggered its invocation.
+            0x80 => {
+                // MSGSENDER: () -> (Bytes). 36-byte sender address:
+                // workchain id (i32be) || account id (32 bytes).
+                self.consume_gas(4)?;
+                let sender = self.message.src_address.to_bytes();
+                self.push(StackValue::Bytes(sender.to_vec()))?;
+            }
+            0x81 => {
+                // MSGVALUE: () -> (Integer). Inbound value in nanos,
+                // as a 256-bit big-endian integer.
+                self.consume_gas(4)?;
+                let nanos: u128 = self.message.amount_nanos.into();
+                let mut bytes = [0u8; 32];
+                bytes[16..32].copy_from_slice(&nanos.to_be_bytes());
+                self.push(StackValue::Integer(bytes))?;
+            }
+            0x82 => {
+                // MSGBODY: () -> (Bytes). Raw inbound message body bytes.
+                // Empty when the host did not provide a body: `Message`
+                // only commits to `body_cell_hash`, so the host sets
+                // `interpreter.message_body` from its own payload copy.
+                self.consume_gas(4)?;
+                self.push(StackValue::Bytes(self.message_body.clone()))?;
             }
             _ => return Err(ExceptionKind::MalformedCell),
         }
