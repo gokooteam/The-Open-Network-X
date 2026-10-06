@@ -81,11 +81,12 @@ impl Dictionary {
 }
 
 fn key_bits(key: &[u8], width: usize) -> Result<Vec<bool>, DictionaryError> {
-    if key.len() * 8 < width || key.len() * 8 >= width + 8 {
+    if key.len().saturating_mul(8) < width || key.len().saturating_mul(8) >= width.saturating_add(8)
+    {
         return Err(DictionaryError::InvalidKey);
     }
     Ok((0..width)
-        .map(|i| key[i / 8] & (1 << (7 - i % 8)) != 0)
+        .map(|i| key[i / 8] & (1 << 7usize.saturating_sub(i % 8)) != 0)
         .collect())
 }
 fn common(a: &[bool], b: &[bool]) -> usize {
@@ -99,7 +100,7 @@ fn get<'a>(node: &'a Node, bits: &[bool]) -> Option<&'a Cell> {
         {
             get(
                 if bits[prefix.len()] { one } else { zero },
-                &bits[prefix.len() + 1..],
+                &bits[prefix.len().saturating_add(1)..],
             )
         }
         _ => None,
@@ -123,11 +124,11 @@ fn insert(node: Option<Box<Node>>, bits: &[bool], value: Cell, old: &mut Option<
                 }
                 let old_bit = suffix[n];
                 let old_leaf = Node::Leaf {
-                    suffix: suffix[n + 1..].to_vec(),
+                    suffix: suffix[n.saturating_add(1)..].to_vec(),
                     value: prior,
                 };
                 let new_leaf = Node::Leaf {
-                    suffix: bits[n + 1..].to_vec(),
+                    suffix: bits[n.saturating_add(1)..].to_vec(),
                     value,
                 };
                 if old_bit {
@@ -149,12 +150,12 @@ fn insert(node: Option<Box<Node>>, bits: &[bool], value: Cell, old: &mut Option<
                 if n < prefix.len() {
                     let old_bit = prefix[n];
                     let old = Node::Branch {
-                        prefix: prefix[n + 1..].to_vec(),
+                        prefix: prefix[n.saturating_add(1)..].to_vec(),
                         zero,
                         one,
                     };
                     let new = Node::Leaf {
-                        suffix: bits[n + 1..].to_vec(),
+                        suffix: bits[n.saturating_add(1)..].to_vec(),
                         value,
                     };
                     if old_bit {
@@ -176,12 +177,22 @@ fn insert(node: Option<Box<Node>>, bits: &[bool], value: Cell, old: &mut Option<
                         Node::Branch {
                             prefix,
                             zero,
-                            one: Box::new(insert(Some(one), &bits[index + 1..], value, old)),
+                            one: Box::new(insert(
+                                Some(one),
+                                &bits[index.saturating_add(1)..],
+                                value,
+                                old,
+                            )),
                         }
                     } else {
                         Node::Branch {
                             prefix,
-                            zero: Box::new(insert(Some(zero), &bits[index + 1..], value, old)),
+                            zero: Box::new(insert(
+                                Some(zero),
+                                &bits[index.saturating_add(1)..],
+                                value,
+                                old,
+                            )),
                             one,
                         }
                     }
@@ -207,7 +218,7 @@ fn remove(node: Option<Box<Node>>, bits: &[bool], old: &mut Option<Cell>) -> Opt
             }
             let i = prefix.len();
             if bits[i] {
-                match remove(Some(one), &bits[i + 1..], old) {
+                match remove(Some(one), &bits[i.saturating_add(1)..], old) {
                     Some(child) => Some(Box::new(Node::Branch {
                         prefix,
                         zero,
@@ -216,7 +227,7 @@ fn remove(node: Option<Box<Node>>, bits: &[bool], old: &mut Option<Cell>) -> Opt
                     None => Some(Box::new(prepend(prefix, false, *zero))),
                 }
             } else {
-                match remove(Some(zero), &bits[i + 1..], old) {
+                match remove(Some(zero), &bits[i.saturating_add(1)..], old) {
                     Some(child) => Some(Box::new(Node::Branch {
                         prefix,
                         zero: child,
@@ -285,7 +296,7 @@ fn pack(bits: &[bool]) -> Vec<u8> {
     let mut out = vec![0; bits.len().div_ceil(8)];
     for (i, bit) in bits.iter().enumerate() {
         if *bit {
-            out[i / 8] |= 1 << (7 - i % 8);
+            out[i / 8] |= 1 << 7usize.saturating_sub(i % 8);
         }
     }
     out

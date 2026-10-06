@@ -47,6 +47,20 @@ pub enum StorageError {
     State(StateModelError),
     /// The STF rejected the block being committed.
     Stf(StfError),
+    /// A committed contract code/data root has no complete cell DAG in the
+    /// `contract_cells` table: the entry is missing, undecodable, rooted at
+    /// the wrong hash, or contains a dangling reference. Node-fatal by
+    /// design (ADR-0029): executing `LDREF` against an incomplete DAG
+    /// bounces where a genesis-replayed node executes, silently splitting
+    /// the state root. Refusing to start is strictly safer than starting
+    /// wrong. Recovery: replay from genesis or restore from a backup.
+    /// This is local node-fault behavior — never an "invalid block" and
+    /// never a bounce.
+    IncompleteContractCellDag {
+        account: [u8; 32],
+        root: [u8; 32],
+        detail: String,
+    },
 }
 
 impl fmt::Display for StorageError {
@@ -92,6 +106,18 @@ impl fmt::Display for StorageError {
             ),
             Self::State(e) => write!(f, "state error: {e}"),
             Self::Stf(e) => write!(f, "block rejected by STF: {e}"),
+            Self::IncompleteContractCellDag {
+                account,
+                root,
+                detail,
+            } => write!(
+                f,
+                "incomplete contract cell DAG for account {} (committed root {}): {detail}; \
+                 the node cannot safely execute against this state — replay from genesis or \
+                 restore from a backup; refusing to start",
+                hex_full(account),
+                hex_full(root),
+            ),
         }
     }
 }
@@ -144,4 +170,10 @@ impl From<StfError> for StorageError {
 
 fn hex16(h: &[u8; 32]) -> String {
     h.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Full 64-char hex of a hash, for errors that must name the exact root
+/// (e.g. [`StorageError::IncompleteContractCellDag`]).
+fn hex_full(h: &[u8; 32]) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
 }
