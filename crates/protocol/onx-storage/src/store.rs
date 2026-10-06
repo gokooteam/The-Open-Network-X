@@ -36,7 +36,9 @@
 use crate::encoding::{decode_body, encode_body};
 use crate::error::StorageError;
 use onx_data_structures::AccountId;
-use onx_state_model::{AccountState, ContractCellDags, GenesisDocument, ShardStateTree};
+use onx_state_model::{
+    AccountState, BagOfCells, ContractCellDags, GenesisDocument, ShardStateTree,
+};
 use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
@@ -84,6 +86,71 @@ fn init_tmp_path(path: &Path) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(".init-tmp");
     PathBuf::from(s)
+}
+
+/// Decode persisted [`ContractCellDags`] bytes under the *persisted* BoC
+/// profile (ADR-0029).
+///
+/// Two BoC profiles exist in this codebase and must not be confused:
+///
+/// - **Proof profile** (`BagOfCells::from_bytes`, shared with
+///   `MerkleProof::from_bytes`): dangling references are *allowed* — a
+///   Merkle proof legitimately commits sibling subtree hashes without
+///   including the sibling cells.
+/// - **Persisted profile** (this function): every reference must resolve
+///   to a cell in the bag. The TVM's `LDREF` needs the actual child
+///   *content*: a dangling ref here fails closed at `LDREF`
+///   (`AbsentNode`) and the delivery bounces — while a node holding the
+///   full DAG executes. That is a silent state-root divergence, so a
+///   dangling ref in persisted content is a LOCAL FAULT, failed loudly
+///   here: never a bounce, never "invalid", never silent.
+///
+/// This is local node-fault behavior, not consensus: it changes nothing
+/// about block validity, only what this node refuses to run on.
+fn decode_contract_dags_persisted(bytes: &[u8]) -> Result<ContractCellDags, String> {
+    let dags = ContractCellDags::from_bytes(bytes).map_err(|e| e.to_string())?;
+    for (label, boc) in [("code", &dags.code), ("data", &dags.data)] {
+        for cell in boc.cells().values() {
+            for r in cell.cell_refs() {
+                if !boc.cells().contains_key(r) {
+                    return Err(format!(
+                        "persisted {label} DAG has a dangling reference to missing cell {} \
+                         (persisted DAGs must be complete; the proof profile used by Merkle \
+                         proofs is the one that tolerates dangling refs)",
+                        hex32(r),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(dags)
+}
+
+/// Full 64-char hex of a hash, for messages that must name the exact root.
+fn hex32(h: &[u8; 32]) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// TEST-ONLY: when set, [`ChainStore::commit_block`] panics immediately
+/// after the STF's `apply_block` returns, simulating an internal
+/// interpreter/STF panic during real block application. Lets tests assert
+/// the panic policy (ADR-0029): the panic unwinds out of `commit_block` —
+/// never caught, never converted to a `StorageError` ("invalid block") —
+/// and the uncommitted write transaction is dropped, so nothing partial
+/// persists.
+#[cfg(test)]
+static INJECT_COMMIT_PANIC: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// TEST-ONLY. Arms/disarms [`INJECT_COMMIT_PANIC`].
+#[cfg(test)]
+pub(crate) fn test_set_inject_commit_panic(v: bool) {
+    INJECT_COMMIT_PANIC.store(v, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn inject_commit_panic() -> bool {
+    INJECT_COMMIT_PANIC.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Map a `Database::create` failure on open. redb surfaces a torn or
@@ -143,6 +210,14 @@ impl ChainStore {
         let store = Self { db };
         store.create_tables()?;
         store.ensure_schema_version()?;
+        // ADR-0029 startup invariant: after any migration, every committed
+        // code/data root must have a COMPLETE DAG in `contract_cells`. A
+        // database migrated from v2 has an empty table while a
+        // genesis-replayed database has full DAGs — the first LDREF into
+        // a child cell would then DIVERGE (one node bounces, the other
+        // executes). Node-fatal by design: replay from genesis or restore
+        // from a backup.
+        store.verify_contract_cell_dag_completeness()?;
         Ok(store)
     }
 
@@ -250,6 +325,98 @@ impl ChainStore {
         Ok(())
     }
 
+    /// Startup invariant (ADR-0029): every committed code/data root must
+    /// have a COMPLETE DAG in `contract_cells`.
+    ///
+    /// Background: schema v3 added the `contract_cells` table, but the
+    /// v2→v3 migration only bumped the version key. A database migrated
+    /// from v2 therefore has an EMPTY `contract_cells` table while a
+    /// database replayed from genesis has full DAGs — and the first
+    /// `LDREF` into a child cell DIVERGES: the migrated node fails closed
+    /// (`AbsentNode`) and bounces the delivery, the replayed node executes
+    /// it. Different receipts, different state roots, no error anywhere:
+    /// a silent consensus split.
+    ///
+    /// So on every open (after any migration has run), this walks every
+    /// account and requires: for each `Active` account with a committed
+    /// code or data root, a `contract_cells` entry exists, decodes under
+    /// the persisted (strict) BoC profile, and is rooted at exactly the
+    /// account's committed root hash. Anything less is node-fatal
+    /// [`StorageError::IncompleteContractCellDag`], naming the account and
+    /// the offending root hash.
+    ///
+    /// This is deliberately NEVER silent and NEVER a later divergence: a
+    /// node that cannot prove its DAGs complete refuses to start. It is
+    /// also never consensus and never block validity — purely local
+    /// node-fault behavior, never mapped to "invalid block" or a bounce.
+    /// Recovery is explicit: replay from genesis or restore from a backup.
+    fn verify_contract_cell_dag_completeness(&self) -> Result<(), StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let accts = rtxn.open_table(ACCOUNTS)?;
+        let cells_tbl = rtxn.open_table(CONTRACT_CELLS)?;
+        for entry in accts.iter()? {
+            let (k, v) = entry?;
+            let id = AccountId::from_bytes(hash32_from_value(k.value(), "accounts key")?);
+            let (st, used) = AccountState::from_bytes(v.value())?;
+            if used != v.value().len() {
+                return Err(StorageError::Corrupt(
+                    "trailing bytes in stored account record".to_string(),
+                ));
+            }
+            let (code, data) = match &st {
+                AccountState::Active { code, data, .. } => (code.as_ref(), data.as_ref()),
+                _ => continue,
+            };
+            // The committed roots that must have complete DAGs.
+            let mut roots: Vec<(&str, [u8; 32])> = Vec::new();
+            if let Some(c) = code {
+                roots.push(("code", c.hash()));
+            }
+            if let Some(d) = data {
+                roots.push(("data", d.hash()));
+            }
+            if roots.is_empty() {
+                continue;
+            }
+            let raw = cells_tbl.get(id.to_bytes().as_slice())?.ok_or_else(|| {
+                StorageError::IncompleteContractCellDag {
+                    account: id.to_bytes(),
+                    root: roots[0].1,
+                    detail: format!(
+                        "no contract_cells entry for an account with a committed {} root \
+                         (v2→v3 migration leaves this table empty)",
+                        roots[0].0,
+                    ),
+                }
+            })?;
+            let dags = decode_contract_dags_persisted(raw.value()).map_err(|detail| {
+                StorageError::IncompleteContractCellDag {
+                    account: id.to_bytes(),
+                    root: roots[0].1,
+                    detail,
+                }
+            })?;
+            for (label, root) in &roots {
+                let boc = if *label == "code" {
+                    &dags.code
+                } else {
+                    &dags.data
+                };
+                if boc.root_hash() != root {
+                    return Err(StorageError::IncompleteContractCellDag {
+                        account: id.to_bytes(),
+                        root: *root,
+                        detail: format!(
+                            "persisted {label} DAG is rooted at {}, not at the account's committed {label} root",
+                            hex32(boc.root_hash()),
+                        ),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Initialize the chain from a genesis document. Idempotent: calling it
     /// again with the same document is a no-op; a *different* genesis hash
     /// is corruption (the database already has an identity).
@@ -259,6 +426,10 @@ impl ChainStore {
     /// `(0, genesis_hash)`. Trie cells are NOT persisted: the state root is
     /// recomputed from accounts on every load (see `load_state`), and no
     /// reader ever needed the cells table (dropped in schema v2).
+    /// Contract cell DAGs for genesis-installed contracts ARE persisted
+    /// (single-root bags built from the account record's embedded root
+    /// cells), so the ADR-0029 startup invariant holds on a fresh
+    /// database.
     pub fn init_genesis(&self, doc: &GenesisDocument) -> Result<(), StorageError> {
         let genesis_hash = doc.genesis_hash();
         let wtxn = self.db.begin_write()?;
@@ -281,6 +452,41 @@ impl ChainStore {
                 let mut accts = wtxn.open_table(ACCOUNTS)?;
                 for (id, st) in tree.accounts() {
                     accts.insert(id.to_bytes().as_slice(), st.to_bytes().as_slice())?;
+                }
+            }
+
+            // Contract cell DAGs for genesis-installed contracts: the
+            // account record embeds the code/data *root cells*, so the
+            // DAGs start as single-root bags. (Genesis carries root cells
+            // only — a code cell with child refs has no child content
+            // anywhere; the startup invariant fails loudly on such a
+            // genesis instead of running an unexecutable contract. See
+            // ADR-0029.) Without these entries the startup invariant
+            // would refuse to open a database whose only contract
+            // activity predates any execution.
+            {
+                let mut cells_tbl = wtxn.open_table(CONTRACT_CELLS)?;
+                for (id, st) in tree.accounts() {
+                    if let AccountState::Active {
+                        code: Some(code),
+                        data,
+                        ..
+                    } = st
+                    {
+                        let code_boc = BagOfCells::from_root(code.clone())?;
+                        // No persistent data yet: the STF seeds execution
+                        // with an empty cell in that case, so persist the
+                        // same default.
+                        let data_cell = data.clone().unwrap_or_else(|| {
+                            onx_state_model::Cell::new(vec![], vec![]).expect("empty cell is valid")
+                        });
+                        let data_boc = BagOfCells::from_root(data_cell)?;
+                        let dags = ContractCellDags {
+                            code: code_boc,
+                            data: data_boc,
+                        };
+                        cells_tbl.insert(id.to_bytes().as_slice(), dags.to_bytes().as_slice())?;
+                    }
                 }
             }
 
@@ -320,7 +526,28 @@ impl ChainStore {
         let block_hash = h.hash();
 
         // 1. Pure STF: fail-closed validation of the whole block.
+        //
+        // PANIC POLICY (ADR-0029): a panic inside `apply_block` above —
+        // real block application, not the producer dry-run — is NEVER
+        // caught here. It unwinds through this function, aborting the
+        // not-yet-opened write transaction (nothing partial is ever
+        // persisted), and halts the node. That is the correct outcome: a
+        // panic means this node's own execution is broken, and mapping it
+        // to "invalid block" or bouncing the message would let a broken
+        // node keep running and silently diverge from honest nodes. Panic
+        // containment lives in the producer dry-run (`propose_block` in
+        // onxd); this path must not have it.
         let (new_state, receipts) = apply_block(state, block)?;
+
+        // TEST-ONLY: simulate a panic inside real block application (see
+        // ADR-0029). This must unwind out of `commit_block` — never
+        // caught, never mapped to a `StorageError`.
+        #[cfg(test)]
+        if inject_commit_panic() {
+            panic!(
+                "injected test panic: simulated panic during apply_block (real block application)"
+            );
+        }
 
         // 2. One atomic write transaction for everything below. Each table
         // is opened exactly once: redb rejects opening the same table
@@ -546,14 +773,18 @@ impl ChainStore {
         // Contract cell DAGs: auxiliary execution state (not part of the
         // state root). Loaded here so the next contract invocation's
         // interpreter can be seeded with the full code/data DAGs.
+        // Decoded under the persisted (strict) BoC profile (ADR-0029): a
+        // dangling reference in persisted content is a local fault, failed
+        // loudly — never a bounce. (The proof profile, which tolerates
+        // dangling refs, belongs to Merkle proofs, not to this table.)
         {
             let cells_tbl = rtxn.open_table(CONTRACT_CELLS)?;
             for entry in cells_tbl.iter()? {
                 let (k, v) = entry?;
                 let id = AccountId::from_bytes(hash32_from_value(k.value(), "contract_cells key")?);
-                let dags = ContractCellDags::from_bytes(v.value()).map_err(|e| {
+                let dags = decode_contract_dags_persisted(v.value()).map_err(|detail| {
                     StorageError::Corrupt(format!(
-                        "stored contract cell DAGs for account {id:?} undecodable: {e}"
+                        "stored contract cell DAGs for account {id:?} fail the persisted (strict) BoC profile: {detail}"
                     ))
                 })?;
                 tree.set_contract_cells(id, dags);
@@ -788,6 +1019,365 @@ mod tests {
             .expect("contract_cells exists");
 
         drop(rtxn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ----- ADR-0029: migration startup invariant + panic policy -----
+
+    use onx_state_model::{Cell, StorageStat};
+    use std::collections::BTreeMap;
+
+    fn contract_account(code: Option<Cell>, data: Option<Cell>) -> AccountState {
+        AccountState::Active {
+            balance_nanos: 1_000_000,
+            last_trans_lt: 0,
+            code,
+            data,
+            storage_stat: StorageStat {
+                cell_count: 0,
+                byte_count: 0,
+            },
+            pubkey: [0u8; 32],
+            nonce: 0,
+        }
+    }
+
+    /// A complete code/data DAG pair: the code root references one child
+    /// whose content is present; the data root is childless.
+    fn complete_dags() -> (Cell, Cell, ContractCellDags) {
+        let child = Cell::new(vec![0xAA], vec![]).unwrap();
+        let code_root = Cell::new(vec![0xC0], vec![child.hash()]).unwrap();
+        let data_root = Cell::new(vec![0xDA], vec![]).unwrap();
+        let mut code_cells = BTreeMap::new();
+        code_cells.insert(child.hash(), child);
+        code_cells.insert(code_root.hash(), code_root.clone());
+        let mut data_cells = BTreeMap::new();
+        data_cells.insert(data_root.hash(), data_root.clone());
+        let dags = ContractCellDags {
+            code: BagOfCells::new(code_root.hash(), code_cells).unwrap(),
+            data: BagOfCells::new(data_root.hash(), data_cells).unwrap(),
+        };
+        (code_root, data_root, dags)
+    }
+
+    /// Directly write an account record and (optionally) its
+    /// `contract_cells` entry, simulating what `commit_block` persists.
+    fn write_account_raw(
+        store: &ChainStore,
+        id: &AccountId,
+        st: &AccountState,
+        dags: Option<&ContractCellDags>,
+    ) {
+        let wtxn = store.db.begin_write().expect("write txn");
+        {
+            let mut accts = wtxn.open_table(ACCOUNTS).expect("accounts");
+            accts
+                .insert(id.to_bytes().as_slice(), st.to_bytes().as_slice())
+                .expect("insert account");
+            if let Some(d) = dags {
+                let mut cells = wtxn.open_table(CONTRACT_CELLS).expect("contract_cells");
+                cells
+                    .insert(id.to_bytes().as_slice(), d.to_bytes().as_slice())
+                    .expect("insert dags");
+            }
+        }
+        wtxn.commit().expect("commit");
+    }
+
+    /// Roll the schema version key back to 2, simulating a pre-wave-3
+    /// database about to be migrated on next open.
+    fn rollback_schema_to_v2(store: &ChainStore) {
+        let wtxn = store.db.begin_write().expect("write txn");
+        {
+            let mut meta = wtxn.open_table(META).expect("meta");
+            meta.insert(b"schema_version".as_slice(), 2u32.to_be_bytes().as_slice())
+                .expect("rollback version");
+        }
+        wtxn.commit().expect("commit");
+    }
+
+    /// v2 store → migrate → startup check PASSES when the DAGs are
+    /// complete: the migrated node can prove it will execute LDREF
+    /// exactly like a genesis-replayed node.
+    #[test]
+    fn migrate_v2_to_v3_startup_invariant_passes_with_complete_dags() {
+        let path = temp_db_path("v2-invariant-ok");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        let id = AccountId::from_bytes([0xC0; 32]);
+        let (code_root, data_root, dags) = complete_dags();
+        write_account_raw(
+            &store,
+            &id,
+            &contract_account(Some(code_root), Some(data_root)),
+            Some(&dags),
+        );
+        rollback_schema_to_v2(&store);
+        drop(store);
+
+        // Re-open: migration runs, then the startup invariant verifies the
+        // complete DAGs and the open succeeds. (No load_state here: the
+        // account was written raw, bypassing the trie, so the stored
+        // state root legitimately doesn't cover it — the invariant is
+        // what this test exercises.)
+        let store =
+            ChainStore::open(&path).expect("re-open after v2->v3 migration with complete DAGs");
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A committed code root with NO `contract_cells` entry — exactly what
+    /// the v2→v3 migration leaves behind — fails startup LOUDLY, naming
+    /// the offending root hash and the recovery path.
+    #[test]
+    fn startup_invariant_fails_loudly_on_missing_contract_cells_entry() {
+        let path = temp_db_path("v2-invariant-missing");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        let id = AccountId::from_bytes([0xC0; 32]);
+        let code_root = Cell::new(vec![0xC0], vec![]).unwrap();
+        write_account_raw(
+            &store,
+            &id,
+            &contract_account(Some(code_root.clone()), None),
+            None, // no DAG entry: the v2-migration gap
+        );
+        rollback_schema_to_v2(&store);
+        drop(store);
+
+        let err = match ChainStore::open(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("open must fail: committed code root with no DAG entry"),
+        };
+        match &err {
+            StorageError::IncompleteContractCellDag {
+                account,
+                root,
+                detail,
+            } => {
+                assert_eq!(*account, id.to_bytes());
+                assert_eq!(*root, code_root.hash());
+                assert!(
+                    detail.contains("no contract_cells entry"),
+                    "detail names the problem: {detail}"
+                );
+            }
+            other => panic!("expected IncompleteContractCellDag, got {other:?}"),
+        }
+        // The operator-facing message names the exact root hash and the
+        // recovery instruction.
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&super::hex32(&code_root.hash())),
+            "message names the offending root hash: {msg}"
+        );
+        assert!(
+            msg.contains("replay from genesis"),
+            "message instructs the operator: {msg}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A persisted DAG with a dangling reference fails startup loudly.
+    /// The non-strict (proof-profile) decode accepts this input — that
+    /// path's behavior is intentionally unchanged — but the persisted
+    /// profile must not.
+    #[test]
+    fn startup_invariant_fails_loudly_on_dangling_reference() {
+        let path = temp_db_path("v2-invariant-dangling");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        let missing_child = [0x55; 32];
+        let code_root = Cell::new(vec![0xC0], vec![missing_child]).unwrap();
+        let mut code_cells = BTreeMap::new();
+        code_cells.insert(code_root.hash(), code_root.clone());
+        // Dangling refs are tolerated at construction (proof carve-out).
+        let code_boc = BagOfCells::new(code_root.hash(), code_cells).unwrap();
+        let data_root = Cell::new(vec![], vec![]).unwrap();
+        let data_boc = BagOfCells::from_root(data_root).unwrap();
+        let dags = ContractCellDags {
+            code: code_boc,
+            data: data_boc,
+        };
+        // Sanity: the proof-profile decode still accepts the dangling ref
+        // (that path's behavior is unchanged by this work).
+        let rt = ContractCellDags::from_bytes(&dags.to_bytes()).expect("non-strict decode accepts");
+        assert_eq!(rt, dags);
+
+        let id = AccountId::from_bytes([0xC0; 32]);
+        write_account_raw(
+            &store,
+            &id,
+            &contract_account(Some(code_root.clone()), None),
+            Some(&dags),
+        );
+        rollback_schema_to_v2(&store);
+        drop(store);
+
+        let err = match ChainStore::open(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("open must fail: DAG with dangling reference"),
+        };
+        match &err {
+            StorageError::IncompleteContractCellDag { root, detail, .. } => {
+                assert_eq!(*root, code_root.hash());
+                assert!(
+                    detail.contains("dangling reference"),
+                    "detail names the problem: {detail}"
+                );
+            }
+            other => panic!("expected IncompleteContractCellDag, got {other:?}"),
+        }
+        assert!(
+            err.to_string().contains(&super::hex32(&code_root.hash())),
+            "message names the offending root hash"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Persisted DAGs rooted at a DIFFERENT hash than the account's
+    /// committed code root fail startup: stale/wrong content would seed
+    /// the interpreter with the wrong cells.
+    #[test]
+    fn startup_invariant_fails_loudly_on_root_mismatch() {
+        let path = temp_db_path("v2-invariant-mismatch");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        let (code_root, data_root, mut dags) = complete_dags();
+        let wrong_root = Cell::new(vec![0xFF], vec![]).unwrap();
+        dags.code = BagOfCells::from_root(wrong_root).unwrap();
+        let id = AccountId::from_bytes([0xC0; 32]);
+        write_account_raw(
+            &store,
+            &id,
+            &contract_account(Some(code_root.clone()), Some(data_root)),
+            Some(&dags),
+        );
+        rollback_schema_to_v2(&store);
+        drop(store);
+
+        let err = match ChainStore::open(&path) {
+            Err(e) => e,
+            Ok(_) => panic!("open must fail: DAG root mismatch"),
+        };
+        match &err {
+            StorageError::IncompleteContractCellDag { root, detail, .. } => {
+                assert_eq!(*root, code_root.hash());
+                assert!(
+                    detail.contains("not at the account's committed code root"),
+                    "detail names the problem: {detail}"
+                );
+            }
+            other => panic!("expected IncompleteContractCellDag, got {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `init_genesis` persists single-root DAGs for genesis-installed
+    /// contracts, so a fresh database passes the startup invariant on
+    /// re-open (this is the `onx replay` + tvm_replay.rs path).
+    #[test]
+    fn init_genesis_writes_single_root_dags_for_genesis_contracts() {
+        use onx_data_structures::{ShardIdent, WorkchainIdent};
+        use onx_state_model::{GenesisDocument, GenesisValidator};
+
+        let path = temp_db_path("genesis-contract");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        let contract_id = AccountId::from_bytes([0xC0; 32]);
+        let code = Cell::new(vec![0xC0], vec![]).unwrap(); // childless
+        let mut accounts = BTreeMap::new();
+        accounts.insert(contract_id, contract_account(Some(code.clone()), None));
+        let doc = GenesisDocument::new(
+            WorkchainIdent::new(0),
+            ShardIdent::root(WorkchainIdent::new(0)),
+            vec![GenesisValidator {
+                pubkey: [0xA5; 32],
+                stake: 1_000,
+            }],
+            accounts,
+        )
+        .expect("genesis with contract account");
+        store.init_genesis(&doc).expect("init_genesis");
+        drop(store);
+
+        let store = ChainStore::open(&path).expect("re-open passes with genesis-written DAGs");
+        let state = store.load_state().expect("load_state").expect("state");
+        let dags = state
+            .tree
+            .contract_cells(&contract_id)
+            .expect("genesis DAGs present");
+        assert_eq!(*dags.code.root_hash(), code.hash());
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Panic policy (ADR-0029), apply_block side: a panic during REAL
+    /// block application propagates out of `commit_block` — it is never
+    /// caught and never mapped to a `StorageError` ("invalid block").
+    /// The uncommitted write transaction is dropped, so nothing partial
+    /// persists, and the same block commits cleanly afterwards (proving
+    /// the panic was never an invalid-block verdict).
+    #[test]
+    fn commit_block_panic_propagates_and_halts() {
+        let path = temp_db_path("commit-panic");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+        let accounts = test_accounts();
+        let state = store
+            .load_state()
+            .expect("load_state")
+            .expect("genesis state");
+        let block = propose_block(
+            &state,
+            test_block_txs(7, 1, &accounts, state.chain_id),
+            test_block_lt(1),
+            test_fee_collector(),
+        )
+        .expect("propose_block");
+
+        // Simulate an interpreter/STF panic during real block application.
+        // (The test harness catches the unwind to observe it; the node
+        // itself has no handler on this path — the process dies.)
+        test_set_inject_commit_panic(true);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.commit_block(&state, &block)
+        }));
+        test_set_inject_commit_panic(false);
+        assert!(
+            outcome.is_err(),
+            "a panic in apply_block must propagate out of commit_block — never caught, never mapped to a StorageError"
+        );
+
+        // Atomicity: the panic landed before the write transaction opened
+        // — the head is untouched and nothing partial was persisted.
+        assert_eq!(
+            store.head().expect("head").expect("head present").0,
+            0,
+            "panicked commit must not advance the head"
+        );
+
+        // The panic was never an "invalid block": the same block commits
+        // cleanly once the injection is disarmed.
+        store
+            .commit_block(&state, &block)
+            .expect("commit_block after disarmed panic injection");
+        assert_eq!(
+            store.head().expect("head").expect("head present").0,
+            1,
+            "block commits normally after the panic"
+        );
+
         drop(store);
         let _ = std::fs::remove_file(&path);
     }

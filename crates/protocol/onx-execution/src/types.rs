@@ -81,7 +81,7 @@ impl Slice {
     }
 
     pub fn remaining_bits(&self) -> usize {
-        let total_bits = self.cell.data_bytes().len() * 8;
+        let total_bits = self.cell.data_bytes().len().saturating_mul(8);
         total_bits.saturating_sub(self.bit_offset)
     }
 
@@ -99,21 +99,27 @@ impl Slice {
         let data = self.cell.data_bytes();
 
         for i in 0..width_bits {
-            let src_bit_idx = self.bit_offset + i;
-            let src_byte_idx = src_bit_idx / 8;
-            let src_bit_in_byte = 7 - (src_bit_idx % 8);
+            // Every index below is in-range: the guard above keeps
+            // `bit_offset + i` inside the cell's data bits and
+            // `dest_bit_idx` inside the 32-byte buffer, so the
+            // `saturating_*`/`wrapping_*` forms below are exact, not
+            // silent clamps. They exist to name the overflow behavior
+            // explicitly per the crate's `arithmetic_side_effects` policy.
+            let src_bit_idx = self.bit_offset.saturating_add(i);
+            let src_byte_idx = src_bit_idx.wrapping_div(8);
+            let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (data[src_byte_idx] >> src_bit_in_byte) & 1;
 
-            let dest_bit_idx = (256 - width_bits) + i;
-            let dest_byte_idx = dest_bit_idx / 8;
-            let dest_bit_in_byte = 7 - (dest_bit_idx % 8);
+            let dest_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            let dest_byte_idx = dest_bit_idx.wrapping_div(8);
+            let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx.wrapping_rem(8));
 
             if bit_val == 1 {
                 res[dest_byte_idx] |= 1 << dest_bit_in_byte;
             }
         }
 
-        self.bit_offset += width_bits;
+        self.bit_offset = self.bit_offset.saturating_add(width_bits);
         Ok(res)
     }
 }
@@ -136,20 +142,22 @@ impl Builder {
         if width_bits > 256 {
             return Err(ExceptionKind::MalformedCell);
         }
-        let target_total_bits = self.current_bit_len + width_bits;
-        if target_total_bits > 128 * 8 {
+        let target_total_bits = self.current_bit_len.saturating_add(width_bits);
+        if target_total_bits > 128usize.saturating_mul(8) {
             return Err(ExceptionKind::MalformedCell);
         }
 
         for i in 0..width_bits {
-            let src_bit_idx = (256 - width_bits) + i;
-            let src_byte_idx = src_bit_idx / 8;
-            let src_bit_in_byte = 7 - (src_bit_idx % 8);
+            // In-range by the same argument as `read_bits`: the guard above
+            // keeps every index exact, so the explicit forms are not clamps.
+            let src_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            let src_byte_idx = src_bit_idx.wrapping_div(8);
+            let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (val_bytes[src_byte_idx] >> src_bit_in_byte) & 1;
 
-            let dest_bit_idx = self.current_bit_len + i;
-            let dest_byte_idx = dest_bit_idx / 8;
-            let dest_bit_in_byte = 7 - (dest_bit_idx % 8);
+            let dest_bit_idx = self.current_bit_len.saturating_add(i);
+            let dest_byte_idx = dest_bit_idx.wrapping_div(8);
+            let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx.wrapping_rem(8));
 
             if dest_byte_idx >= self.data_bytes.len() {
                 self.data_bytes.push(0);

@@ -51,10 +51,23 @@
 //!   then retries; a second failure is logged loudly and the tick is
 //!   skipped with the mempool intact. There is no bulk quarantine: one bad
 //!   message must never take honest messages down with it.
+//! - A PANIC during the dry-run proposal (e.g. an interpreter bug on a
+//!   hostile message) is contained per message (ADR-0029): the panicking
+//!   message is isolated by prefix search, dropped as a LOCAL event with
+//!   a loud log (message hash, sender, nonce, panic payload, stack trace
+//!   via the panic hook), and block production continues. This is what
+//!   breaks the systemd restart loop: the poison message is gone from the
+//!   drop dir's pending set instead of killing the process on every tick.
 //! - `commit_block` errors (e.g. `HeadMismatch`, `ForkDetected`) are fatal
 //!   to the tick but not the loop: they indicate state moved under us,
 //!   which on a single writer means a bug. Logged loudly; the next tick
 //!   reloads state fresh.
+//! - A PANIC during `commit_block` (real block application) is NEVER
+//!   contained: it propagates and halts the node (ADR-0029). A panic
+//!   there means this node's own execution is broken — mapping it to
+//!   "invalid block" or bouncing the message would let a broken node keep
+//!   running and silently diverge. Panics are never "invalid block" and
+//!   never silently bounced, on either path.
 //!
 //! ## Block files
 //!
@@ -67,10 +80,12 @@ use crate::mempool::Mempool;
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_stf::block::Block;
-use onx_stf::{propose_block, ExternalMessage, State};
+use onx_stf::{propose_block, ExternalMessage, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
+use std::any::Any;
 use std::fs;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -94,6 +109,100 @@ pub struct ProducerStats {
     pub ticks_idle: u64,
 }
 
+/// Install the producer panic hook exactly once: on any panic, log the
+/// payload and a full stack trace LOUDLY to stderr, then run the default
+/// hook. `force_capture` (not `capture`) so the trace is recorded even
+/// when `RUST_BACKTRACE` is unset — panics are rare, the cost is fine.
+fn install_panic_backtrace_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            eprintln!(
+                "onxd PANIC: {info}\nstack backtrace:\n{:?}",
+                std::backtrace::Backtrace::force_capture()
+            );
+            default(info);
+        }));
+    });
+}
+
+/// TEST-ONLY hook: when armed with a message hash, [`propose_block_caught`]
+/// panics on any probe whose message set contains that hash — simulating
+/// an interpreter/STF panic during the producer dry-run. Production builds
+/// have no hook here.
+#[cfg(test)]
+static PANIC_ON_MSG_HASH: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// TEST-ONLY: arm the dry-run panic injection for one message hash.
+#[cfg(test)]
+pub(crate) fn test_arm_propose_panic_on(msg_hash: [u8; 32]) {
+    *PANIC_ON_MSG_HASH.lock().unwrap() = Some(msg_hash);
+}
+
+/// TEST-ONLY: disarm the dry-run panic injection.
+#[cfg(test)]
+pub(crate) fn test_disarm_propose_panic() {
+    *PANIC_ON_MSG_HASH.lock().unwrap() = None;
+}
+
+#[cfg(test)]
+fn maybe_inject_propose_panic(messages: &[ExternalMessage]) {
+    // Copy the target out and DROP the guard before any panic: panicking
+    // while holding a std Mutex guard would poison the mutex and turn the
+    // next probe's lock() into a second, unrelated panic.
+    let target: Option<[u8; 32]> = *PANIC_ON_MSG_HASH.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(hash) = target {
+        if messages.iter().any(|m| m.hash() == hash) {
+            panic!(
+                "injected test panic: dry-run execution panicked on message {}",
+                hex::encode(hash)
+            );
+        }
+    }
+}
+
+/// A dry-run proposal that may have panicked: `Ok(inner)` is the normal
+/// `propose_block` result; `Err(payload)` is a captured panic.
+///
+/// PANIC POLICY (ADR-0029): the producer dry-run runs INSIDE
+/// `catch_unwind`. A panic here is a LOCAL event — the offending message
+/// is isolated and dropped, the panic is logged loudly, and block
+/// production continues. `propose_block` takes `&State` and clones
+/// internally, so a caught panic cannot leave the caller's state half
+/// mutated; `AssertUnwindSafe` documents that the closure's inputs carry
+/// no unwind-sensitive interior state across the boundary.
+///
+/// This containment is deliberately NOT applied to real block
+/// application: `commit_block` (which runs the STF's `apply_block`) is
+/// never wrapped, so a panic there propagates and halts the node. A panic
+/// is never an "invalid block", never a bounce, and never silent.
+fn propose_block_caught(
+    state: &State,
+    messages: Vec<ExternalMessage>,
+    lt: u64,
+    fee_collector: AccountId,
+) -> Result<Result<Block, StfError>, Box<dyn Any + Send>> {
+    catch_unwind(AssertUnwindSafe(|| {
+        // TEST-ONLY: simulates an interpreter/STF panic DURING the
+        // dry-run, i.e. inside the containment boundary.
+        #[cfg(test)]
+        maybe_inject_propose_panic(&messages);
+        propose_block(state, messages, lt, fee_collector)
+    }))
+}
+
+/// One-line summary of a captured panic payload for loud logging.
+fn panic_summary(payload: &Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
+}
+
 /// Run the block-production loop until `shutdown` is set.
 ///
 /// Blocking: callers should run this on a dedicated thread (e.g.
@@ -105,6 +214,12 @@ pub fn run_producer_loop(
     cfg: ProducerConfig,
     shutdown: Arc<AtomicBool>,
 ) -> Result<ProducerStats, String> {
+    // Panic hook first: any panic anywhere in this process gets its
+    // payload and a full stack trace logged loudly to stderr before the
+    // default handler runs. This is what makes contained dry-run panics
+    // diagnosable after the fact, and apply_block panics diagnosable
+    // before the halt.
+    install_panic_backtrace_hook();
     fs::create_dir_all(&cfg.blocks_dir)
         .map_err(|e| format!("producer: cannot create blocks dir: {e}"))?;
     // Crash recovery for the block-file gap: a kill between the atomic DB
@@ -151,6 +266,7 @@ pub fn run_producer_loop(
     Ok(stats)
 }
 
+#[derive(Debug)]
 enum TickError {
     /// Stop the loop: corrupt store, missing genesis, lt overflow.
     Fatal(String),
@@ -202,6 +318,13 @@ fn run_tick(
     };
 
     // 6. Atomic commit: STF re-validation + state/body/index/head in one txn.
+    //
+    // PANIC POLICY (ADR-0029): this call is deliberately NOT wrapped in
+    // catch_unwind. A panic inside commit_block/apply_block — real block
+    // application — means this node's own execution is broken; it
+    // propagates and halts the node. Mapping it to "invalid block" or
+    // bouncing the message would let a broken node keep running and
+    // silently diverge from honest nodes.
     store
         .commit_block(&state, &block)
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
@@ -232,7 +355,8 @@ fn run_tick(
     Ok(true)
 }
 
-/// Build a block from candidates, dropping ONLY messages the STF rejects.
+/// Build a block from candidates, dropping ONLY messages the STF rejects
+/// or that panic the dry-run.
 ///
 /// Fast path: `propose_block` on the whole set. The mempool filter already
 /// mirrors the wallet handler via the shared [`WalletMirror`](crate::mempool::WalletMirror)
@@ -245,6 +369,12 @@ fn run_tick(
 /// later block (their nonces are gapped until the sender resubmits the
 /// missing nonce), never rejected: they did nothing wrong.
 ///
+/// Panic path (ADR-0029): if the dry-run PANICS, the panicking message is
+/// isolated the same way and dropped as a LOCAL event — loud log, message
+/// removed, production continues. This is what breaks the kill-restart
+/// loop: without containment, the poison message sits in the drop dir and
+/// kills the process on every tick.
+///
 /// A second full failure after isolation is a genuine STF bug: loud log,
 /// skip the tick, mempool intact. There is deliberately no bulk quarantine.
 fn propose_robust(
@@ -255,48 +385,120 @@ fn propose_robust(
     mempool: &mut Mempool,
     stats: &mut ProducerStats,
 ) -> Result<Option<Block>, TickError> {
-    match propose_block(state, candidates.clone(), lt, fee_collector) {
-        Ok(block) => return Ok(Some(block)),
-        Err(e) => eprintln!(
-            "producer: propose_block rejected filtered candidates ({e}); isolating offending message(s)"
-        ),
-    }
     let mut candidates = candidates;
     loop {
         if candidates.is_empty() {
             return Ok(None);
         }
-        let k = find_first_bad_prefix(state, &candidates, lt, fee_collector).ok_or_else(|| {
-            TickError::Retryable(
-                "propose_block failed but no bad prefix found (STF bug?); mempool left intact"
-                    .to_string(),
-            )
-        })?;
-        let culprit = candidates.remove(k);
-        eprintln!(
-            "producer: dropping message {} from sender {}: rejected by block proposal",
-            hex::encode(culprit.hash()),
-            hex::encode(culprit.from.to_bytes())
-        );
-        mempool.reject_candidate(&culprit.hash(), "propose_block rejected this message");
-        stats.txs_rejected += 1;
-        // Hold the culprit's same-sender successors for a later block:
-        // their nonces are gapped until the sender resubmits the missing
-        // one. They stay in `pending/` — only this block's working set
-        // shrinks.
-        let (sender, nonce) = (culprit.from, culprit.nonce);
-        candidates.retain(|m| m.from != sender || m.nonce < nonce);
-        match propose_block(state, candidates.clone(), lt, fee_collector) {
-            Ok(block) => return Ok(Some(block)),
-            Err(e) => eprintln!(
-                "producer: still failing after dropping culprit ({e}); continuing isolation"
-            ),
+        match propose_block_caught(state, candidates.clone(), lt, fee_collector) {
+            Ok(Ok(block)) => return Ok(Some(block)),
+            Ok(Err(e)) => {
+                eprintln!(
+                    "producer: propose_block rejected filtered candidates ({e}); isolating offending message(s)"
+                );
+                match find_first_bad_prefix(state, &candidates, lt, fee_collector) {
+                    Err(()) => {
+                        // A bisection probe panicked: this is not a
+                        // rejection — switch to panic isolation for the
+                        // same candidate set rather than misreading the
+                        // panic as a verdict.
+                        eprintln!(
+                            "producer: bisection probe panicked during rejection isolation; switching to panic isolation"
+                        );
+                        drop_panicking_message(
+                            state,
+                            &mut candidates,
+                            lt,
+                            fee_collector,
+                            mempool,
+                            stats,
+                        )?;
+                    }
+                    Ok(None) => {
+                        return Err(TickError::Retryable(
+                            "propose_block failed but no bad prefix found (STF bug?); mempool left intact"
+                                .to_string(),
+                        ));
+                    }
+                    Ok(Some(k)) => {
+                        let culprit = candidates.remove(k);
+                        eprintln!(
+                            "producer: dropping message {} from sender {}: rejected by block proposal",
+                            hex::encode(culprit.hash()),
+                            hex::encode(culprit.from.to_bytes())
+                        );
+                        mempool.reject_candidate(
+                            &culprit.hash(),
+                            "propose_block rejected this message",
+                        );
+                        stats.txs_rejected += 1;
+                        // Hold the culprit's same-sender successors for a later block:
+                        // their nonces are gapped until the sender resubmits the missing
+                        // one. They stay in `pending/` — only this block's working set
+                        // shrinks.
+                        let (sender, nonce) = (culprit.from, culprit.nonce);
+                        candidates.retain(|m| m.from != sender || m.nonce < nonce);
+                    }
+                }
+            }
+            Err(panic) => {
+                eprintln!(
+                    "producer: PANIC during dry-run block proposal: {}",
+                    panic_summary(&panic)
+                );
+                drop_panicking_message(state, &mut candidates, lt, fee_collector, mempool, stats)?;
+            }
         }
     }
 }
 
+/// Isolate the message whose dry-run execution panics and drop it as a
+/// LOCAL event: the message is removed from the candidate set, moved to
+/// the mempool's rejected dir with a loud log (message hash, sender,
+/// nonce — the stack trace comes from the panic hook installed at
+/// producer startup), and its same-sender successors are held for a later
+/// block, exactly like the rejection path. A panicking message must not
+/// take honest messages down with it either.
+///
+/// Returns `Err(TickError::Retryable)` when no panicking message can be
+/// isolated (the panic is not message-caused): the tick is skipped with
+/// the mempool intact — never blame a message for a panic it did not
+/// cause.
+fn drop_panicking_message(
+    state: &State,
+    candidates: &mut Vec<ExternalMessage>,
+    lt: u64,
+    fee_collector: AccountId,
+    mempool: &mut Mempool,
+    stats: &mut ProducerStats,
+) -> Result<(), TickError> {
+    let k = find_first_panicking_prefix(state, candidates, lt, fee_collector).ok_or_else(|| {
+        TickError::Retryable(
+            "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
+                .to_string(),
+        )
+    })?;
+    let culprit = candidates.remove(k);
+    eprintln!(
+        "producer: PANIC CONTAINED — dropping message {} from sender {} nonce {}: \
+         dry-run execution panicked. Local event only: message moved to rejected/, \
+         block production continues. This is NOT an invalid block and NOT a bounce.",
+        hex::encode(culprit.hash()),
+        hex::encode(culprit.from.to_bytes()),
+        culprit.nonce,
+    );
+    mempool.reject_candidate(
+        &culprit.hash(),
+        "dry-run execution panicked (local fault, not a bounce)",
+    );
+    stats.txs_rejected += 1;
+    let (sender, nonce) = (culprit.from, culprit.nonce);
+    candidates.retain(|m| m.from != sender || m.nonce < nonce);
+    Ok(())
+}
+
 /// Binary search for the smallest `k` such that
-/// `propose_block(candidates[..=k])` fails. Returns `None` only if the full
+/// `propose_block(candidates[..=k])` fails. Returns `Ok(None)` only if the full
 /// set proposes cleanly (the caller already saw it fail, so this is
 /// defensive).
 ///
@@ -304,12 +506,16 @@ fn propose_robust(
 /// wallet-handler rejection (balance only decreases through a block, and
 /// every other phase-1 check is per-message). Prefixes preserve per-sender
 /// nonce contiguity, so every probe is meaningful.
+///
+/// Probes run inside [`propose_block_caught`]: if a probe PANICS, `Err(())`
+/// is returned and the caller switches to panic isolation — a panicking
+/// probe is not a rejection and must never be misread as one.
 fn find_first_bad_prefix(
     state: &State,
     candidates: &[ExternalMessage],
     lt: u64,
     fee_collector: AccountId,
-) -> Option<usize> {
+) -> Result<Option<usize>, ()> {
     // Invariant: propose(candidates[..lo]) succeeds, propose(candidates[..hi]) fails.
     // lo = 0 holds because the empty prefix has no messages to reject;
     // hi = len holds because the caller saw the full set fail.
@@ -317,13 +523,57 @@ fn find_first_bad_prefix(
     let mut hi = candidates.len();
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
-        if propose_block(state, candidates[..mid].to_vec(), lt, fee_collector).is_ok() {
-            lo = mid;
-        } else {
-            hi = mid;
+        match propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector) {
+            Ok(Ok(_)) => lo = mid,
+            Ok(Err(_)) => hi = mid,
+            Err(_) => return Err(()),
         }
     }
     // propose(..lo) ok, propose(..lo+1) fails → culprit is index lo.
+    if lo < candidates.len() {
+        Ok(Some(lo))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Binary search for the smallest `k` such that the dry-run proposal of
+/// `candidates[..=k]` PANICS. Returns `None` when no prefix panics — in
+/// particular when the EMPTY prefix already panics, which means the panic
+/// is not message-caused (bad state/config) and no message may be blamed
+/// for it.
+///
+/// Monotonicity caveat: unlike rejections, panics are not provably
+/// monotonic in the prefix (a panic can depend on accumulated dry-run
+/// state). The STF dry-run is deterministic, so in practice the bisection
+/// still isolates the message whose addition first triggers the panic; a
+/// non-deterministic panic is an STF bug and is logged loudly rather than
+/// silently absorbed. The outer loop re-evaluates after every drop, so a
+/// mis-isolation costs one message, not the tick.
+fn find_first_panicking_prefix(
+    state: &State,
+    candidates: &[ExternalMessage],
+    lt: u64,
+    fee_collector: AccountId,
+) -> Option<usize> {
+    // Empty-prefix probe: panicking here means the panic is not
+    // message-caused. Never blame a message for it.
+    if propose_block_caught(state, Vec::new(), lt, fee_collector).is_err() {
+        return None;
+    }
+    // Invariant: propose(..lo) does not panic, propose(..hi) panics.
+    // hi = len holds because the caller observed the full set panic.
+    let mut lo = 0usize;
+    let mut hi = candidates.len();
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        if propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector).is_err() {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    // propose(..lo) clean, propose(..lo+1) panics → culprit is index lo.
     if lo < candidates.len() {
         Some(lo)
     } else {
@@ -430,4 +680,92 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
         eprintln!("producer: regenerated block file for seqno {seqno}");
     }
     Ok(regenerated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use onx_stf::{ExternalMessage, MsgKind, State};
+    use onx_storage::support::{test_fee_collector, test_genesis, test_secret_key};
+
+    /// RAII guard: disarms the dry-run panic injection on drop, so a
+    /// failing assertion cannot leak an armed hook into other tests.
+    struct PanicArmGuard;
+    impl PanicArmGuard {
+        fn arm(msg_hash: [u8; 32]) -> Self {
+            test_arm_propose_panic_on(msg_hash);
+            Self
+        }
+    }
+    impl Drop for PanicArmGuard {
+        fn drop(&mut self) {
+            test_disarm_propose_panic();
+        }
+    }
+
+    fn test_account(idx: u8) -> AccountId {
+        let mut b = [0u8; 32];
+        b[0] = idx;
+        AccountId::from_bytes(b)
+    }
+
+    fn signed_transfer(state: &State, from_idx: u8, nonce: u64) -> ExternalMessage {
+        let from = test_account(from_idx);
+        let secret = test_secret_key(&from);
+        ExternalMessage::new_signed(
+            state.chain_id,
+            MsgKind::Transfer,
+            from,
+            nonce,
+            test_account(0x99),
+            1_000,
+            10,
+            Vec::new(),
+            [0u8; 32],
+            &secret,
+        )
+    }
+
+    /// ADR-0029 dry-run panic containment: a message whose dry-run
+    /// execution panics is a LOCAL event — it is isolated by prefix
+    /// search, dropped loudly, and block production continues with the
+    /// remaining messages. The node must not die, wedge, or quarantine
+    /// the mempool.
+    #[test]
+    fn dry_run_panic_is_contained_per_message() {
+        let state = State::from_genesis(&test_genesis());
+        let fee_collector = test_fee_collector();
+        let poison = signed_transfer(&state, 0, 0);
+        let honest = signed_transfer(&state, 1, 0);
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("onxd-panic-test-{}-{nanos}", std::process::id()));
+        let mut mempool = Mempool::new(&dir, 1000, state.chain_id, fee_collector).expect("mempool");
+        let mut stats = ProducerStats::default();
+
+        let _guard = PanicArmGuard::arm(poison.hash());
+        let block = propose_robust(
+            &state,
+            vec![poison.clone(), honest.clone()],
+            state.last_lt + 1,
+            fee_collector,
+            &mut mempool,
+            &mut stats,
+        )
+        .expect("propose_robust must not fail on a contained panic")
+        .expect("a block is still produced from the surviving message");
+
+        // The panicking message is gone; the honest one is committed.
+        assert_eq!(block.body.messages.len(), 1);
+        assert_eq!(block.body.messages[0].hash(), honest.hash());
+        assert_eq!(
+            stats.txs_rejected, 1,
+            "exactly the panicking message is dropped"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

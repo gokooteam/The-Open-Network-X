@@ -8,7 +8,9 @@ use onx_primitives::{
 };
 use onx_state_model::Cell;
 use std::collections::BTreeMap;
-const MAX_STACK_DEPTH: usize = 1023;
+/// `pub(crate)` so the wave-3 fuzz scaffold (`fuzz.rs`) can assert the cap
+/// from a single source of truth instead of a magic number.
+pub(crate) const MAX_STACK_DEPTH: usize = 1023;
 
 pub struct Interpreter {
     pub stack: Vec<StackValue>,
@@ -174,8 +176,8 @@ impl Interpreter {
     }
 
     pub fn read_uint8(&mut self) -> Result<u8, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len() * 8;
-        if self.pc_bits + 8 > total_bits {
+        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
+        if self.pc_bits.saturating_add(8) > total_bits {
             return Err(ExceptionKind::MalformedCell);
         }
         let byte_idx = self.pc_bits / 8;
@@ -185,10 +187,10 @@ impl Interpreter {
             data[byte_idx]
         } else {
             let b1 = data[byte_idx];
-            let b2 = data.get(byte_idx + 1).copied().unwrap_or(0);
-            (b1 << bit_rem) | (b2 >> (8 - bit_rem))
+            let b2 = data.get(byte_idx.saturating_add(1)).copied().unwrap_or(0);
+            (b1 << bit_rem) | (b2 >> 8usize.saturating_sub(bit_rem))
         };
-        self.pc_bits += 8;
+        self.pc_bits = self.pc_bits.saturating_add(8);
         Ok(val)
     }
 
@@ -207,7 +209,7 @@ impl Interpreter {
     }
 
     pub fn step(&mut self) -> Result<bool, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len() * 8;
+        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
         if self.pc_bits >= total_bits {
             if let Some((prev_code, prev_pc)) = self.call_stack.pop() {
                 self.current_code = prev_code;
@@ -254,7 +256,7 @@ impl Interpreter {
                 if len < 2 {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let second = self.stack[len - 2].clone();
+                let second = self.stack[len.saturating_sub(2)].clone();
                 self.push(second)?;
             }
             // 0x05: ROT
@@ -275,7 +277,9 @@ impl Interpreter {
                 if depth >= len {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let item = self.stack[len - 1 - depth].clone();
+                // Exact: the guard gives `depth <= len - 1`, so the chained
+                // saturating subtraction computes `len - 1 - depth`.
+                let item = self.stack[len.saturating_sub(1).saturating_sub(depth)].clone();
                 self.push(item)?;
             }
             // 0x07: ROLL depth
@@ -286,7 +290,10 @@ impl Interpreter {
                 if depth >= len {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let item = self.stack.remove(len - 1 - depth);
+                // Exact by the same guard argument as PICK above.
+                let item = self
+                    .stack
+                    .remove(len.saturating_sub(1).saturating_sub(depth));
                 self.push(item)?;
             }
             // 0x08: PUSHINT signed, value[32]
@@ -301,7 +308,7 @@ impl Interpreter {
             // 0x09: PUSHBYTES len[uint16], bytes
             0x09 => {
                 let len = self.read_uint16()? as usize;
-                let gas_cost = 1 + len.div_ceil(32);
+                let gas_cost = len.div_ceil(32).saturating_add(1);
                 self.consume_gas(gas_cost as u64)?;
                 let bytes = self.read_bytes_exact(len)?;
                 self.push(StackValue::Bytes(bytes))?;
@@ -339,7 +346,8 @@ impl Interpreter {
                 if left == 0 || right == 0 || self.stack.len() < count {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let start = self.stack.len() - count;
+                // Exact: the guard gives `count <= stack.len()`.
+                let start = self.stack.len().saturating_sub(count);
                 self.stack[start..].rotate_left(left);
             }
             // Arithmetic 0x10-0x15
@@ -385,14 +393,25 @@ impl Interpreter {
                         ))?;
                     }
                     0x14 => {
-                        // DIVMOD
+                        // DIVMOD — floored per spec §4.2: (a, b) -> (a div b, a mod b)
+                        // with a = q*b + r and 0 <= r < |b|. `checked_div_euclid`
+                        // coincides with floored division for every positive
+                        // divisor; for negative divisors the spec's "floored"
+                        // is pinned to the non-negative-remainder invariant
+                        // (see ADR-0028). The MIN/-1 pair overflows i128, so
+                        // `checked_*` maps it to IntegerOverflow instead of
+                        // panicking (which would halt the producer).
                         let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        let q = a / b;
-                        let r = a % b;
+                        let q = a
+                            .checked_div_euclid(b)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        let r = a
+                            .checked_rem_euclid(b)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
                         self.push(StackValue::from_i128(q))?;
                         self.push(StackValue::from_i128(r))?;
                     }
@@ -432,11 +451,14 @@ impl Interpreter {
                 let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
                 let result = match opcode {
                     // DIV returns only the quotient; DIVMOD remains available at 0x14.
+                    // Uses the same floored (Euclidean) division as DIVMOD so
+                    // the two opcodes agree on the quotient.
                     0x17 => {
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a.checked_div(b).ok_or(ExceptionKind::IntegerOverflow)?
+                        a.checked_div_euclid(b)
+                            .ok_or(ExceptionKind::IntegerOverflow)?
                     }
                     0x18 => {
                         if b < 0 || b >= width as i128 {
@@ -454,7 +476,7 @@ impl Interpreter {
                     _ => unreachable!(),
                 };
                 let limit = 1i128
-                    .checked_shl(width as u32 - 1)
+                    .checked_shl((width as u32).saturating_sub(1))
                     .ok_or(ExceptionKind::IntegerOverflow)?;
                 let fits = match flavor {
                     0 => {
@@ -462,7 +484,8 @@ impl Interpreter {
                             && result
                                 < limit.checked_mul(2).ok_or(ExceptionKind::IntegerOverflow)?
                     }
-                    1 => result >= -limit && result < limit,
+                    // `limit` is a positive power of two, so the negation is exact.
+                    1 => result >= limit.wrapping_neg() && result < limit,
                     2 => true,
                     _ => unreachable!(),
                 };
@@ -496,8 +519,8 @@ impl Interpreter {
                 // CONCAT
                 let b = self.pop_bytes()?;
                 let a = self.pop_bytes()?;
-                let total_len = a.len() + b.len();
-                self.consume_gas(4 + total_len.div_ceil(32) as u64)?;
+                let total_len = a.len().saturating_add(b.len());
+                self.consume_gas(4u64.saturating_add(total_len.div_ceil(32) as u64))?;
                 let mut res = a;
                 res.extend(b);
                 self.push(StackValue::Bytes(res))?;
@@ -508,17 +531,23 @@ impl Interpreter {
                 let len = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
                 let offset = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
                 let bytes = self.pop_bytes()?;
-                if offset + len > bytes.len() {
+                // `offset`/`len` arrive as i128 and wrap to huge `usize`
+                // values when negative; `checked_add` keeps an adversarial
+                // pair from panicking the producer via usize overflow.
+                let end = offset
+                    .checked_add(len)
+                    .ok_or(ExceptionKind::MalformedCell)?;
+                if end > bytes.len() {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                self.push(StackValue::Bytes(bytes[offset..offset + len].to_vec()))?;
+                self.push(StackValue::Bytes(bytes[offset..end].to_vec()))?;
             }
             0x33 => {
                 // BYTEEQ
                 let b = self.pop_bytes()?;
                 let a = self.pop_bytes()?;
                 let min_len = a.len().min(b.len());
-                self.consume_gas(1 + min_len.div_ceil(32) as u64)?;
+                self.consume_gas(1u64.saturating_add(min_len.div_ceil(32) as u64))?;
                 self.push(StackValue::from_i128(if a == b { 1 } else { 0 }))?;
             }
             // Cell access 0x40-0x4C
@@ -564,9 +593,9 @@ impl Interpreter {
             0x44 => {
                 // STBYTES
                 let bytes = self.pop_bytes()?;
-                self.consume_gas(10 + bytes.len().div_ceil(32) as u64)?;
+                self.consume_gas(10u64.saturating_add(bytes.len().div_ceil(32) as u64))?;
                 let mut builder = self.pop_builder()?;
-                if builder.data_bytes.len() + bytes.len() > 128 {
+                if builder.data_bytes.len().saturating_add(bytes.len()) > 128 {
                     return Err(ExceptionKind::MalformedCell);
                 }
                 builder.data_bytes.extend(bytes);
@@ -615,7 +644,7 @@ impl Interpreter {
                     Some(Some(child)) => child.clone(),
                     _ => return Err(ExceptionKind::AbsentNode),
                 };
-                slice.ref_offset += 1;
+                slice.ref_offset = slice.ref_offset.saturating_add(1);
                 self.push(StackValue::Slice(slice))?;
                 self.push(StackValue::Cell(ref_cell))?;
             }
@@ -750,8 +779,8 @@ impl Interpreter {
                 let offset = if condition { true_offset } else { false_offset };
                 self.pc_bits = self
                     .pc_bits
-                    .checked_add_signed((offset as isize) * 8)
-                    .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                    .checked_add_signed((offset as isize).saturating_mul(8))
+                    .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                     .ok_or(ExceptionKind::MalformedCell)?;
             }
             // 0x79: IFRET. Return from the current continuation if the condition is nonzero.
@@ -778,8 +807,8 @@ impl Interpreter {
                 if count > 0 {
                     self.pc_bits = self
                         .pc_bits
-                        .checked_add_signed((offset as isize) * 8)
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                        .checked_add_signed((offset as isize).saturating_mul(8))
+                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
             }
@@ -790,8 +819,8 @@ impl Interpreter {
                 if StackValue::Integer(self.pop_integer()?).to_i128()? == 0 {
                     self.pc_bits = self
                         .pc_bits
-                        .checked_add_signed((offset as isize) * 8)
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                        .checked_add_signed((offset as isize).saturating_mul(8))
+                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
             }
