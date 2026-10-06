@@ -1,0 +1,1976 @@
+<title>ONX Explorer</title>
+<style>
+/* Layout: one reading column. Instrument bar, network band, data controls,
+   chain overview, tabbed lists, a detail sheet, then the method notes. */
+:root {
+  --bg: #f2f4f6;
+  --panel: #ffffff;
+  --sunk: #e9edf1;
+  --ink: #0f161d;
+  --ink-2: #47525e;
+  --ink-3: #66717e;
+  --rule: #d9dfe5;
+  --rule-2: #bcc5cf;
+  --focus: #2457c5;
+  --onyx: #10171e;
+  --onyx-band: #7d8a98;
+  --testnet: #6a32b0;
+  --testnet-wash: #f0e8fa;
+  --mainnet: #08697a;
+  --mainnet-wash: #e1f1f4;
+  --on-net: #ffffff;
+  --pass: #1b7a3d;
+  --pass-wash: #e2f3e7;
+  --fail: #b42318;
+  --fail-wash: #fce7e5;
+  --warn: #875600;
+  --warn-wash: #fbefd6;
+  --skip: #59636f;
+  --skip-wash: #e7ebef;
+  --seg-1: #d3dae2;
+  --seg-2: #b4bfcb;
+  --seg-3: #96a3b3;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --fs-label: 11px;
+  --fs-small: 12.5px;
+  --fs-data: 12.5px;
+  --fs-body: 15px;
+  --fs-title: 19px;
+  --r: 8px;
+  --net: var(--testnet);
+  --net-wash: var(--testnet-wash);
+}
+:root[data-net="mainnet"] { --net: var(--mainnet); --net-wash: var(--mainnet-wash); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c1015; --panel: #131a21; --sunk: #19212a; --ink: #e3e9ef; --ink-2: #a9b4c0; --ink-3: #8592a1;
+    --rule: #232d38; --rule-2: #364352; --focus: #7ea6ff; --onyx: #020406; --onyx-band: #5d6b7a;
+    --testnet: #b590f2; --testnet-wash: #211a30; --mainnet: #55c4d4; --mainnet-wash: #10272c; --on-net: #0c1015;
+    --pass: #5cc580; --pass-wash: #13281b; --fail: #ff8174; --fail-wash: #2f1714; --warn: #e6b452; --warn-wash: #2b2212;
+    --skip: #9aa6b3; --skip-wash: #1d252e; --seg-1: #2b3643; --seg-2: #3b4959; --seg-3: #4f5f71;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c1015; --panel: #131a21; --sunk: #19212a; --ink: #e3e9ef; --ink-2: #a9b4c0; --ink-3: #8592a1;
+  --rule: #232d38; --rule-2: #364352; --focus: #7ea6ff; --onyx: #020406; --onyx-band: #5d6b7a;
+  --testnet: #b590f2; --testnet-wash: #211a30; --mainnet: #55c4d4; --mainnet-wash: #10272c; --on-net: #0c1015;
+  --pass: #5cc580; --pass-wash: #13281b; --fail: #ff8174; --fail-wash: #2f1714; --warn: #e6b452; --warn-wash: #2b2212;
+  --skip: #9aa6b3; --skip-wash: #1d252e; --seg-1: #2b3643; --seg-2: #3b4959; --seg-3: #4f5f71;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 400 var(--fs-body)/1.5 var(--font-ui);
+  padding-inline: 16px;
+  padding-block: 0 56px;
+  -webkit-text-size-adjust: 100%;
+}
+.app { max-width: 1080px; margin-inline: auto; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+p { margin: 0; }
+code, .mono { font-family: var(--font-mono); font-size: var(--fs-data); }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.muted { color: var(--ink-3); }
+.label {
+  font: 600 var(--fs-label)/1.3 var(--font-ui);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* Instrument bar */
+.top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-block: 16px 12px; }
+.brand { display: flex; align-items: center; gap: 11px; }
+.mark {
+  width: 30px; height: 30px; border-radius: 7px; flex: none;
+  border: 1px solid var(--rule-2);
+  background:
+    repeating-linear-gradient(162deg, var(--onyx) 0 5px, var(--onyx-band) 5px 6px, var(--onyx) 6px 9px, var(--onyx-band) 9px 9.6px);
+}
+.brand h1 { font: 700 16px/1.1 var(--font-mono); letter-spacing: .06em; }
+.brand h1 span { font-family: var(--font-ui); font-weight: 600; letter-spacing: 0; }
+.brand small { display: block; color: var(--ink-3); font-size: 12px; line-height: 1.3; }
+.netswitch { display: inline-flex; padding: 3px; border-radius: 999px; border: 1px solid var(--rule-2); background: var(--panel); }
+.netswitch button {
+  font: 600 13px/1 var(--font-ui); padding: 8px 15px; border-radius: 999px; border: 0;
+  background: transparent; color: var(--ink-2); cursor: pointer; min-width: 84px;
+}
+.netswitch button[aria-pressed="true"] { background: var(--net); color: var(--on-net); }
+
+/* Network band: hatched for Testnet, solid for Mainnet. It shows the wiring. */
+.band {
+  border-radius: var(--r);
+  border: 1px solid color-mix(in srgb, var(--net) 40%, transparent);
+  background-color: var(--net-wash);
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.band[data-kind="testnet"] {
+  background-image: repeating-linear-gradient(135deg, transparent 0 11px, color-mix(in srgb, var(--net) 9%, transparent) 11px 22px);
+}
+.band-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.band .netname { font: 700 12px/1.4 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--net); }
+.band .state { font-weight: 600; font-size: 14px; color: var(--ink); }
+.slots { display: grid; grid-template-columns: max-content max-content minmax(0, 1fr); gap: 4px 14px; font-size: 13.5px; align-items: baseline; }
+.slots code { color: var(--ink); }
+.slots .mono { word-break: break-all; }
+.slots .unset { color: var(--ink-3); }
+.slots .help { color: var(--ink-3); font-size: 12.5px; }
+@media (max-width: 520px) {
+  .slots { grid-template-columns: max-content minmax(0, 1fr); }
+  .slots .help { grid-column: 2; margin-top: -3px; }
+}
+.band-hint, .band .attrib { font-size: 13.5px; color: var(--ink-2); }
+.band .attrib .chip { margin-right: 4px; }
+
+.main { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
+.panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); }
+
+/* Data controls */
+.data { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.data-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.data-head p { color: var(--ink-2); font-size: 14px; min-width: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: 600 13px/1 var(--font-ui); padding: 9px 12px; border-radius: 6px;
+  border: 1px solid var(--rule-2); background: var(--panel); color: var(--ink); cursor: pointer;
+}
+.btn:hover { border-color: var(--ink-3); }
+.btn.quiet { background: transparent; border-color: transparent; color: var(--ink-2); }
+.btn.quiet:hover { border-color: var(--rule-2); }
+.btn[disabled] { opacity: .5; cursor: default; }
+.btn[hidden] { display: none; }
+input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.replay-box { display: flex; flex-direction: column; gap: 6px; }
+.replay-box[hidden] { display: none; }
+.replay-box label { font-size: 13px; color: var(--ink-2); }
+textarea {
+  width: 100%; min-height: 96px; resize: vertical; padding: 10px;
+  font: 400 12px/1.5 var(--font-mono); color: var(--ink);
+  background: var(--sunk); border: 1px solid var(--rule); border-radius: 6px;
+}
+.hint { font-size: 13px; color: var(--ink-3); }
+.filelist { display: flex; flex-direction: column; gap: 6px; }
+.fileerr { display: flex; gap: 8px; align-items: baseline; font-size: 13px; flex-wrap: wrap; }
+.fileerr b { font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-data); word-break: break-all; }
+
+/* Overview ledger */
+.overview { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+.overview-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 18px; margin: 0; }
+.kv dt { color: var(--ink-3); font-size: 13px; padding-top: 1px; }
+.kv dd { margin: 0; min-width: 0; font-size: 14px; }
+.kv dd .sub { display: block; color: var(--ink-3); font-size: 12.5px; margin-top: 2px; }
+.sources { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.tally { display: flex; flex-wrap: wrap; gap: 6px; }
+.hash { font-family: var(--font-mono); font-size: var(--fs-data); word-break: break-all; }
+.hashline { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.hashline .hash { min-width: 0; }
+.copy {
+  flex: none; font: 600 11px/1 var(--font-ui); padding: 4px 7px; border-radius: 5px;
+  border: 1px solid var(--rule-2); background: transparent; color: var(--ink-2); cursor: pointer;
+}
+
+/* Status chips: shape and word, not color alone */
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font: 600 12px/1 var(--font-ui); padding: 4px 8px; border-radius: 999px; white-space: nowrap;
+  color: var(--skip); background: var(--skip-wash);
+}
+.chip i { font-style: normal; font-family: var(--font-mono); font-weight: 700; }
+.chip.pass { color: var(--pass); background: var(--pass-wash); }
+.chip.fail { color: var(--fail); background: var(--fail-wash); }
+.chip.warn { color: var(--warn); background: var(--warn-wash); }
+.chip.partial { color: var(--warn); background: var(--warn-wash); }
+.chip.net { color: var(--net); background: var(--net-wash); }
+
+/* Search */
+.search { display: flex; gap: 8px; }
+.search input {
+  flex: 1 1 auto; min-width: 0; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--rule-2); background: var(--panel); color: var(--ink);
+  font: 400 14px/1.2 var(--font-ui);
+}
+.results { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+
+/* Tabs and lists */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--rule); overflow-x: auto; }
+.tabs button {
+  font: 600 14px/1 var(--font-ui); padding: 10px 12px; border: 0; background: transparent; color: var(--ink-3);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; white-space: nowrap;
+}
+.tabs button[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--net); }
+.tabs .count { font-weight: 500; color: var(--ink-3); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.list { overflow: hidden; }
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+th {
+  text-align: left; font: 600 var(--fs-label)/1.3 var(--font-ui); letter-spacing: .09em; text-transform: uppercase;
+  color: var(--ink-3); padding: 10px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap;
+}
+td { padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+tr.row { cursor: pointer; }
+tr.row:hover td { background: var(--sunk); }
+tr.row.on td { background: var(--net-wash); }
+.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.mono, td .mono { white-space: nowrap; }
+.link {
+  font: inherit; color: var(--ink); background: none; border: 0; padding: 0; cursor: pointer;
+  text-decoration: underline; text-decoration-color: var(--rule-2); text-underline-offset: 3px;
+}
+.link:hover { text-decoration-color: var(--ink-3); }
+.tag {
+  display: inline-block; font: 600 11px/1.4 var(--font-ui); padding: 1px 6px; border-radius: 4px;
+  background: var(--sunk); color: var(--ink-2); white-space: nowrap; vertical-align: 1px;
+}
+.empty { padding: 22px 16px; color: var(--ink-2); font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.empty b { color: var(--ink); }
+@media (max-width: 680px) {
+  .opt { display: none; }
+  td, th { padding-inline: 10px; }
+}
+
+/* Detail sheet */
+.detail { padding: 16px; display: flex; flex-direction: column; gap: 18px; }
+.detail-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.detail-head h2 { font: 650 var(--fs-title)/1.25 var(--font-ui); }
+.detail-head .crumbs { font-size: 13px; color: var(--ink-3); margin-bottom: 4px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.detail section { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.summary-line { font-size: 15px; color: var(--ink); }
+.checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--rule); border-radius: 6px; }
+.checks li { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--rule); align-items: start; }
+.checks li:last-child { border-bottom: 0; }
+.checks b { font-weight: 600; font-size: 14px; }
+.checks p { color: var(--ink-2); font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .checks li { grid-template-columns: minmax(0, 1fr); gap: 4px; } }
+.fields td:nth-child(1), .fields td:nth-child(2) { font-family: var(--font-mono); font-size: var(--fs-data); color: var(--ink-3); white-space: nowrap; }
+.fields td:nth-child(3) { white-space: nowrap; font-weight: 600; font-size: 13px; }
+.fields td:nth-child(4) { min-width: 220px; }
+.fields .val { font-family: var(--font-mono); font-size: var(--fs-data); word-break: break-all; }
+.fields .raw { display: block; color: var(--ink-3); font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; margin-top: 2px; }
+.fields .note { display: block; color: var(--ink-3); font-size: 12px; margin-top: 2px; }
+.bytemap { display: flex; height: 28px; border-radius: 5px; overflow: hidden; border: 1px solid var(--rule-2); }
+.bytemap span {
+  flex: 1 1 0; min-width: 3px; overflow: hidden; white-space: nowrap; text-overflow: clip;
+  font: 600 10.5px/28px var(--font-mono); text-align: center; color: var(--ink);
+  border-right: 1px solid var(--panel); background: var(--seg-1);
+}
+.bytemap span:last-child { border-right: 0; }
+.bytemap .b-head { background: var(--seg-2); }
+.bytemap .b-meta { background: var(--seg-3); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12.5px; color: var(--ink-3); }
+.legend span { font-family: var(--font-mono); font-size: 12px; }
+.note-box { font-size: 13.5px; color: var(--ink-2); padding: 10px 12px; border-radius: 6px; background: var(--sunk); }
+pre.block {
+  margin: 0; padding: 10px 12px; border-radius: 6px; background: var(--sunk); overflow-x: auto;
+  font: 400 12px/1.55 var(--font-mono); color: var(--ink);
+}
+
+/* Method notes */
+.method { display: flex; flex-direction: column; gap: 14px; padding-top: 8px; }
+.method > h2 { font: 650 var(--fs-title)/1.25 var(--font-ui); }
+.method p, .method li { font-size: 14.5px; color: var(--ink-2); max-width: 72ch; }
+.method ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.method h3 { font: 600 14px/1.3 var(--font-ui); color: var(--ink); margin-bottom: 6px; }
+.method td { font-size: 13.5px; color: var(--ink-2); }
+.method td:first-child { color: var(--ink); font-weight: 600; white-space: nowrap; }
+.method td code { white-space: nowrap; }
+details { border: 1px solid var(--rule); border-radius: var(--r); background: var(--panel); }
+details > summary { cursor: pointer; padding: 12px 14px; font-weight: 600; font-size: 14.5px; list-style-position: inside; }
+details > .inner { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px 16px; }
+
+.dropmask {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  border: 3px dashed var(--net); font: 600 18px/1.3 var(--font-ui); color: var(--ink);
+}
+.dropmask[hidden] { display: none; }
+.busy { color: var(--ink-3); font-size: 13px; }
+@media (prefers-reduced-motion: no-preference) {
+  tr.row td, .btn, .netswitch button { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
+}
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"></span>
+      <div>
+        <h1>ONX <span>Explorer</span></h1>
+        <small>Open Network X · native currency Onyx</small>
+      </div>
+    </div>
+    <div class="netswitch" role="group" aria-label="Network">
+      <button type="button" id="net-testnet" data-net="testnet" aria-pressed="true">Testnet</button>
+      <button type="button" id="net-mainnet" data-net="mainnet" aria-pressed="false">Mainnet</button>
+    </div>
+  </header>
+
+  <section class="band" id="band" data-kind="testnet" aria-live="polite"></section>
+
+  <main class="main">
+    <section class="panel data" aria-labelledby="data-title">
+      <div class="data-head">
+        <h2 class="label" id="data-title">Source</h2>
+        <p id="source-line">Not connected. Nothing loaded.</p>
+      </div>
+      <div class="actions">
+        <button class="btn" type="button" id="btn-reload" hidden>Reload from source</button>
+        <button class="btn" type="button" data-pick="in-blocks">Open block files</button>
+        <input id="in-blocks" type="file" multiple accept=".blk,application/octet-stream" tabindex="-1" aria-hidden="true">
+        <button class="btn" type="button" data-pick="in-genesis">Add genesis.boc</button>
+        <input id="in-genesis" type="file" accept=".boc,application/octet-stream" tabindex="-1" aria-hidden="true">
+        <button class="btn" type="button" id="btn-replay" aria-expanded="false" aria-controls="replay-box">Compare with onx replay</button>
+        <button class="btn quiet" type="button" id="btn-clear">Clear</button>
+      </div>
+      <div class="replay-box" id="replay-box" hidden>
+        <label for="replay-text">Paste the output of <code>onx replay --genesis … --blocks …</code>. Block hashes and state roots are compared line by line.</label>
+        <textarea id="replay-text" spellcheck="false" placeholder="chain_id=…&#10;genesis_root=…&#10;seqno=1 block=… root=…"></textarea>
+      </div>
+      <p class="hint">Without wiring, you can open the files a node writes (<code>onx-data/blocks/</code> and <code>genesis.boc</code>) or drop them anywhere on this page. Files stay in your browser.</p>
+      <div class="filelist" id="filelist"></div>
+    </section>
+
+    <section class="panel overview" id="overview" aria-live="polite"></section>
+
+    <form class="search" id="search" role="search" autocomplete="off">
+      <label for="q" class="visually-hidden">Search</label>
+      <input id="q" type="search" placeholder="Block number, block or message hash, account" spellcheck="false">
+      <button class="btn" type="submit">Find</button>
+    </form>
+    <div class="results" id="results" hidden></div>
+
+    <div>
+      <div class="tabs" role="tablist" aria-label="Lists">
+        <button type="button" role="tab" id="tab-blocks" data-tab="blocks" aria-selected="true" aria-controls="list">Blocks</button>
+        <button type="button" role="tab" id="tab-messages" data-tab="messages" aria-selected="false" aria-controls="list">Messages</button>
+        <button type="button" role="tab" id="tab-accounts" data-tab="accounts" aria-selected="false" aria-controls="list">Accounts</button>
+        <button type="button" role="tab" id="tab-genesis" data-tab="genesis" aria-selected="false" aria-controls="list">Genesis</button>
+      </div>
+      <section class="panel list" id="list" role="tabpanel" style="border-top-left-radius:0;border-top-right-radius:0;border-top:0"></section>
+    </div>
+
+    <section class="panel detail" id="detail" hidden></section>
+
+    <section class="method" id="method" aria-labelledby="method-title">
+      <h2 id="method-title">How this page verifies</h2>
+      <p>Everything runs in your browser. This page is one HTML file with no external scripts, fonts or trackers, and it makes no network requests until a source is wired in for the selected network. Read the source in order: the wiring (<code>ONX_CONFIG</code>), the source adapters, the verification core, then the interface.</p>
+
+      <details>
+        <summary>Checked here</summary>
+        <div class="inner tbl-wrap">
+          <table>
+            <thead><tr><th>Check</th><th>Rule</th><th>Where the rule comes from</th></tr></thead>
+            <tbody>
+              <tr><td>File structure</td><td>Magic <code>ONXBLK04</code>, a 148-byte header, length-prefixed messages, a message count that matches the header, no trailing bytes. A file is accepted here exactly when <code>onx replay</code> would decode it.</td><td><code>crates/tooling/onx/src/blockfile.rs</code></td></tr>
+              <tr><td>Message structure</td><td>Kind 0 (transfer) or 1 (contract call), payload of at most 65,535 bytes, no payload on transfers.</td><td><code>docs/adr/0002</code>, <code>onx-stf/src/message.rs</code></td></tr>
+              <tr><td>Hashes</td><td>SHA-256 over a 32-byte zero-padded domain tag followed by the bytes: block hash <code>ONX_BLOCK_HDR_V1</code>, message hash <code>ONX_MSG_EXT_V1</code>, message root <code>ONX_MSGS_ROOT_V1</code>.</td><td><code>docs/specification/protocol-primitives.md</code> §4.5</td></tr>
+              <tr><td>Chain links</td><td>Each <code>prev_hash</code> is the hash of the previous block, logical time strictly increases, and the workchain never changes.</td><td><code>onx-stf/src/stf.rs</code> (<code>apply_block</code>)</td></tr>
+              <tr><td>Chain ID</td><td>The genesis hash (<code>ONX_GENESIS_V1</code>) equals block 1's <code>prev_hash</code> and the <code>chain_id</code> signed into every message.</td><td><code>docs/adr/0005</code></td></tr>
+              <tr><td>Signatures</td><td>Ed25519 over <code>pad32("ONX_MSG_EXT_SIGN_V1") ‖ body</code>. The key comes from <code>genesis.boc</code> or from the sender's first-spend key reveal, which must hash to the sender's address (<code>ONX_ADDR_V1</code>).</td><td><code>docs/adr/0005</code>, <code>docs/adr/0006</code></td></tr>
+              <tr><td>Nonces</td><td>Each sender's nonces run 0, 1, 2, … with no gap or repeat. Fully checkable when <code>genesis.boc</code> and every block from 1 are loaded.</td><td><code>docs/adr/0007</code></td></tr>
+              <tr><td>Stateless wallet rules</td><td>Transfers move a non-zero amount, contract calls pay a non-zero fee, and amount plus fee fits in 128 bits.</td><td><code>onx-stf/src/stf.rs</code> (<code>wallet_receive</code>)</td></tr>
+              <tr><td>Execution results</td><td>Block hashes and state roots compared with <code>onx replay</code> output that you paste.</td><td><code>crates/tooling/onx/src/main.rs</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
+
+      <details>
+        <summary>Not checked here</summary>
+        <div class="inner">
+          <ul>
+            <li>Balances, whether a sender could afford a message, deliveries, bounces and contract execution. Block files carry no receipts, so these need execution.</li>
+            <li>State roots, unless you paste <code>onx replay</code> output. Run <code>onx replay --genesis &lt;genesis.toml&gt; --blocks &lt;blocks dir&gt; --data-dir &lt;empty dir&gt;</code> on your own machine.</li>
+            <li>Ed25519 edge cases. The node verifies with ed25519-dalek <code>verify_strict</code>, which also rejects small-order keys. Your browser applies standard RFC 8032 verification. For any block the node accepted, the two agree.</li>
+            <li>Validator signatures and finality. ONX has no consensus layer yet: blocks come from a single producer.</li>
+          </ul>
+        </div>
+      </details>
+
+      <details>
+        <summary>Self-test</summary>
+        <div class="inner">
+          <p>Before verifying anything, this page checks its own decoding and hashing against vectors that the ONX repository computed independently of the Rust code (Python with libsodium). If any of these fail, ignore every verdict on this page.</p>
+          <div class="tbl-wrap" id="selftest"></div>
+        </div>
+      </details>
+
+      <details>
+        <summary>Wiring</summary>
+        <div class="inner">
+          <p>Testnet and Mainnet start unwired: nothing is read and nothing is shown. To connect one, edit <code>window.ONX_CONFIG</code>, the first script in this file:</p>
+          <ul>
+            <li><code>chainId</code>: the network's genesis hash, 64 hex characters. <code>onx-genesis</code> prints it, and it is block 1's <code>prev_hash</code>. Data from any other chain is flagged.</li>
+            <li><code>source</code>: <code>{ files: 'https://host/path/' }</code> for a URL serving what <code>onxd</code> writes (<code>genesis.boc</code>, <code>block-00000001.blk</code>, …), or your own adapter with <code>genesis()</code>, <code>block(seqno)</code> and, optionally, <code>latest()</code>, each returning raw bytes. The contract is written out in the <code>onx-sources</code> script. A URL on another host must allow this page's origin (CORS).</li>
+            <li><code>pollSeconds</code>: optional. How often to look for new blocks.</li>
+            <li><code>labels</code>: optional names for known accounts, shown as off-chain names.</li>
+          </ul>
+          <p>A source is never trusted. Every byte is verified here, so a source cannot alter a signed message or break a hash link without it showing. Until ONX has validator signatures, a source could still serve a different sequence of blocks; state roots are confirmed only against <code>onx replay</code> output.</p>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    <span>Reads <code>ONXBLK04</code> block files and <code>ONXG</code> v1 genesis documents.</span>
+    <span>Built against ONX commit <code>8acfcc8</code>.</span>
+  </footer>
+</div>
+<div class="dropmask" id="dropmask" hidden>Drop block files, genesis.boc or a replay log</div>
+
+<script id="onx-config">
+/* ===========================================================================
+   WIRING. The only place this explorer is connected to a chain.
+   Both networks start unwired: nothing is read and nothing is shown.
+   ---------------------------------------------------------------------------
+   chainId      HOOK 1. The network's genesis hash, 64 hex characters, pinned
+                at launch. onx-genesis prints it, and it is block 1's
+                prev_hash. Data from any other chain is flagged.
+   source       HOOK 2. Where blocks are read from. Either
+                  { files: 'https://host/path/' }
+                a URL serving the files onxd writes (genesis.boc,
+                block-00000001.blk, block-00000002.blk, ...), or your own
+                adapter object (contract in the onx-sources script below):
+                  { describe: 'my indexer',
+                    genesis: async () => bytes or null,
+                    block: async (seqno) => bytes or null,
+                    latest: async () => seqno }        // optional
+                A source is never trusted: every byte is verified here.
+   pollSeconds  HOOK 3, optional. Look for new blocks this often.
+   labels       HOOK 4, optional. { '<account hex>': 'name' }, shown as
+                off-chain names, never as chain data.
+   =========================================================================== */
+window.ONX_CONFIG = {
+  networks: {
+    testnet: { name: 'Testnet', chainId: 'fd336cc56b99cf2bb734de2ed7bf9277c4ab3669bfba44682b158214e1f9e9da', source: { files: 'https://data.on-x-scan.com/' }, pollSeconds: 30, labels: {} },
+    mainnet: { name: 'Mainnet', chainId: null, source: null, pollSeconds: null, labels: {} },
+  },
+  defaultNetwork: 'testnet',
+  maxBlocks: 5000, // stop reading a source after this many blocks
+};
+</script>
+
+<script id="onx-sources">
+/* ===========================================================================
+   Source adapters: how block bytes reach this page. A source only delivers
+   raw bytes; the verification core checks every byte before it is shown.
+   ---------------------------------------------------------------------------
+   Adapter contract (HOOK 2):
+     describe        string shown in the interface (optional)
+     genesis()       -> Promise<Uint8Array | ArrayBuffer | null>  genesis.boc
+     block(seqno)    -> Promise<Uint8Array | ArrayBuffer | null>  block file
+                        (ONXBLK04); null when there is no such block yet
+     latest()        -> Promise<number | null>  highest seqno (optional;
+                        without it, reading stops at the first missing block)
+   =========================================================================== */
+(function (root) {
+  'use strict';
+  const blockName = (seqno) => `block-${String(seqno).padStart(8, '0')}.blk`;
+  function asBytes(v, what) {
+    if (v == null) return null;
+    if (v instanceof Uint8Array) return v;
+    if (v instanceof ArrayBuffer) return new Uint8Array(v);
+    throw new Error(`${what} did not return bytes (expected Uint8Array or ArrayBuffer)`);
+  }
+
+  // The layout onxd writes, served under one URL:
+  // genesis.boc, block-00000001.blk, block-00000002.blk, ...
+  function files(baseUrl) {
+    const base = String(baseUrl).replace(/\/+$/, '') + '/';
+    const get = async (name) => {
+      const r = await fetch(base + name, { cache: 'no-store' });
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+      return new Uint8Array(await r.arrayBuffer());
+    };
+    return { describe: base, genesis: () => get('genesis.boc'), block: (seqno) => get(blockName(seqno)) };
+  }
+
+  // Read genesis (unless skipped) and consecutive blocks from fromSeqno on.
+  async function readAll(src, opts) {
+    const o = opts || {};
+    const max = o.maxBlocks || 5000;
+    const start = o.fromSeqno || 1;
+    const out = { genesis: null, blocks: [], error: null, stoppedAtLimit: false };
+    if (!o.skipGenesis && typeof src.genesis === 'function') {
+      try { out.genesis = asBytes(await src.genesis(), 'genesis()'); }
+      catch (e) { out.error = `genesis: ${e.message}`; }
+    }
+    let latest = null;
+    if (typeof src.latest === 'function') {
+      try {
+        const v = Number(await src.latest());
+        latest = Number.isFinite(v) ? v : null;
+      } catch (e) { out.error = out.error || `latest: ${e.message}`; }
+    }
+    for (let s = start; ; s++) {
+      if (latest !== null && s > latest) break;
+      if (s - start >= max) { out.stoppedAtLimit = true; break; }
+      let bytes;
+      try { bytes = asBytes(await src.block(s), `block(${s})`); }
+      catch (e) { out.error = `block ${s}: ${e.message}`; break; }
+      if (!bytes) break;
+      out.blocks.push({ name: blockName(s), seqno: s, bytes });
+    }
+    return out;
+  }
+
+  root.ONX_SOURCES = Object.freeze({ files, readAll, blockName });
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<script id="onx-core">
+/* ===========================================================================
+   ONX verification core. Decoding and checks only: no DOM, no network.
+   Every rule names where it comes from in gokooteam/The-Open-Network-X
+   (commit c9cb650). Runs unchanged in a browser or in Node 20+.
+   =========================================================================== */
+(function (root) {
+  'use strict';
+
+  const TE = new TextEncoder();
+
+  // SPEC: docs/specification/protocol-primitives.md §4.5 (domain tag registry).
+  const TAG = Object.freeze({
+    BLOCK_HDR: 'ONX_BLOCK_HDR_V1',      // block hash
+    MSG_EXT: 'ONX_MSG_EXT_V1',          // message hash (wire bytes, signature included)
+    MSG_EXT_SIGN: 'ONX_MSG_EXT_SIGN_V1',// Ed25519 signs pad32(tag) || body
+    MSGS_ROOT: 'ONX_MSGS_ROOT_V1',      // commitment to the ordered message hashes
+    ADDR: 'ONX_ADDR_V1',                // key-derived address
+    GENESIS: 'ONX_GENESIS_V1',          // genesis hash = chain ID
+    CELL: 'ONX_CELL_HASH_V1',           // cell hash (contract code/data cells)
+  });
+
+  const FORMAT = Object.freeze({
+    BLOCK_MAGIC: 'ONXBLK04',   // crates/tooling/onx/src/blockfile.rs
+    HEADER_LEN: 148,           // crates/protocol/onx-stf/src/block.rs
+    MSG_PREFIX_LEN: 141,       // chain_id .. msg_len, onx-stf/src/message.rs
+    MSG_MIN_WIRE: 237,         // 141 + pubkey 32 + signature 64
+    MSG_MAX_PAYLOAD: 65535,    // MAX_MESSAGE_BYTES
+    GENESIS_MAGIC: 'ONXG',     // onx-state-model/src/genesis.rs
+    GENESIS_VERSION: 1,
+    CELL_MAX_DATA: 128,        // onx-state-model/src/cell.rs
+    CELL_MAX_REFS: 4,
+    EMBEDDED_CELL_MAX: 1024,   // onx-state-model/src/account.rs
+    GAS_PER_NANO: 1000n,       // onx-stf/src/stf.rs
+  });
+  const U128_MAX = (1n << 128n) - 1n;
+
+  // ---------------------------------------------------------------- bytes
+  function hex(u8) {
+    let s = '';
+    for (let i = 0; i < u8.length; i++) s += u8[i].toString(16).padStart(2, '0');
+    return s;
+  }
+  function unhex(str) {
+    const s = String(str).trim().toLowerCase();
+    if (s.length % 2 !== 0 || /[^0-9a-f]/.test(s)) throw new Error('not a hex string');
+    const out = new Uint8Array(s.length / 2);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(s.slice(i * 2, i * 2 + 2), 16);
+    return out;
+  }
+  function concat(parts) {
+    let n = 0;
+    for (const p of parts) n += p.length;
+    const out = new Uint8Array(n);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+  }
+  function equal(a, b) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+  function compare(a, b) {
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] !== b[i]) return a[i] - b[i];
+    return a.length - b.length;
+  }
+  function allZero(u8) { for (let i = 0; i < u8.length; i++) if (u8[i] !== 0) return false; return true; }
+  function ascii(u8) { let s = ''; for (const c of u8) s += String.fromCharCode(c); return s; }
+  // Big-endian integer readers. SPEC: protocol-primitives.md (all integers big-endian).
+  function u32(b, o) { return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0; }
+  function i32(b, o) { return (b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]; }
+  function ubig(b, o, n) { let v = 0n; for (let i = 0; i < n; i++) v = (v << 8n) | BigInt(b[o + i]); return v; }
+
+  // -------------------------------------------------------------- hashing
+  // SPEC: domain_hash(tag, data) = SHA-256(pad32(tag) || data), where
+  // pad32 is the ASCII tag zero-padded to 32 bytes (onx-primitives/src/hash.rs).
+  function pad32(tag) {
+    const t = TE.encode(tag);
+    if (t.length > 32) throw new Error('domain tag longer than 32 bytes');
+    const out = new Uint8Array(32);
+    out.set(t);
+    return out;
+  }
+  async function sha256(bytes) {
+    return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+  }
+  function domainHash(tag, bytes) { return sha256(concat([pad32(tag), bytes])); }
+
+  // Ed25519 through WebCrypto. Returns { status: 'pass' | 'fail' | 'unavailable' }.
+  async function ed25519Verify(pubkey, message, signature) {
+    if (!(root.crypto && root.crypto.subtle)) return { status: 'unavailable', reason: 'WebCrypto is not available here' };
+    let key;
+    try {
+      key = await crypto.subtle.importKey('raw', pubkey, { name: 'Ed25519' }, false, ['verify']);
+    } catch (e) {
+      if (e && e.name === 'NotSupportedError') return { status: 'unavailable', reason: 'this browser has no Ed25519 in WebCrypto' };
+      return { status: 'fail', reason: 'the key is not a valid Ed25519 public key' };
+    }
+    try {
+      const ok = await crypto.subtle.verify({ name: 'Ed25519' }, key, signature, message);
+      return { status: ok ? 'pass' : 'fail' };
+    } catch (e) {
+      return { status: 'unavailable', reason: (e && e.message) || 'verification error' };
+    }
+  }
+
+  class DecodeError extends Error {
+    constructor(message, offset) { super(message); this.offset = offset; }
+  }
+
+  // A field record keeps the exact bytes and where they sit in the file,
+  // so every displayed value can be traced back to its source bytes.
+  function field(list, name, offset, raw, value, note) {
+    list.push({ name, offset, size: raw.length, raw, value, note: note || '' });
+  }
+
+  // ------------------------------------------------------- block header
+  // SPEC: onx-stf/src/block.rs, 148 bytes:
+  // seqno u32 | prev_hash 32 | msgs_root 32 | state_root 32 | lt u64 |
+  // workchain i32 | fee_collector 32 | msg_count u32
+  function decodeHeader(b, base) {
+    if (b.length !== FORMAT.HEADER_LEN) throw new DecodeError(`header is ${b.length} bytes, expected ${FORMAT.HEADER_LEN}`, base);
+    const at = (o, n) => b.subarray(o, o + n);
+    const header = {
+      seqno: u32(b, 0),
+      prevHash: at(4, 32),
+      msgsRoot: at(36, 32),
+      stateRoot: at(68, 32),
+      lt: ubig(b, 100, 8),
+      workchain: i32(b, 108),
+      feeCollector: at(112, 32),
+      msgCount: u32(b, 144),
+    };
+    const fields = [];
+    field(fields, 'seqno', base + 0, at(0, 4), String(header.seqno), 'u32, block number');
+    field(fields, 'prev_hash', base + 4, at(4, 32), hex(header.prevHash), 'hash of the previous header; block 1 holds the chain ID');
+    field(fields, 'msgs_root', base + 36, at(36, 32), hex(header.msgsRoot), 'commitment to the ordered messages');
+    field(fields, 'state_root', base + 68, at(68, 32), hex(header.stateRoot), 'post-state root claimed by the producer');
+    field(fields, 'lt', base + 100, at(100, 8), header.lt.toString(), 'u64 logical time');
+    field(fields, 'workchain', base + 108, at(108, 4), String(header.workchain), 'i32: -1 masterchain, 0 basic');
+    field(fields, 'fee_collector', base + 112, at(112, 32), hex(header.feeCollector), 'receives the validator half of fees');
+    field(fields, 'msg_count', base + 144, at(144, 4), String(header.msgCount), 'u32');
+    return { header, fields };
+  }
+
+  // --------------------------------------------------- external message
+  // SPEC: docs/adr/0002, onx-stf/src/message.rs (ExternalMessage::from_bytes):
+  // chain_id 32 | from 32 | nonce u64 | kind u8 | to 32 | amount u128 |
+  // fee u128 | msg_len u32 | payload | pubkey 32 | signature 64
+  function decodeMessage(w, base) {
+    if (w.length < FORMAT.MSG_MIN_WIRE) {
+      throw new DecodeError(`message is ${w.length} bytes, the minimum is ${FORMAT.MSG_MIN_WIRE}`, base);
+    }
+    const bodyLen = w.length - 64;
+    const kind = w[72];
+    if (kind !== 0 && kind !== 1) throw new DecodeError(`unknown message kind ${kind}`, base + 72);
+    const payloadLen = u32(w, 137);
+    if (payloadLen > FORMAT.MSG_MAX_PAYLOAD) {
+      throw new DecodeError(`payload length ${payloadLen} exceeds ${FORMAT.MSG_MAX_PAYLOAD}`, base + 137);
+    }
+    const expected = FORMAT.MSG_PREFIX_LEN + payloadLen + 32;
+    if (bodyLen !== expected) {
+      throw new DecodeError(`message body is ${bodyLen} bytes but its payload length implies ${expected}`, base);
+    }
+    if (kind === 0 && payloadLen !== 0) throw new DecodeError('a transfer carries a payload; transfers must be empty', base + 137);
+    const at = (o, n) => w.subarray(o, o + n);
+    const p = FORMAT.MSG_PREFIX_LEN;
+    const m = {
+      chainId: at(0, 32),
+      from: at(32, 32),
+      nonce: ubig(w, 64, 8),
+      kind,
+      to: at(73, 32),
+      amount: ubig(w, 105, 16),
+      fee: ubig(w, 121, 16),
+      payload: at(p, payloadLen),
+      pubkey: at(p + payloadLen, 32),
+      signature: at(bodyLen, 64),
+      body: at(0, bodyLen),
+      wire: w,
+    };
+    const fields = [];
+    field(fields, 'chain_id', base + 0, m.chainId, hex(m.chainId), 'signed; binds the message to one chain');
+    field(fields, 'from', base + 32, m.from, hex(m.from), 'sender account');
+    field(fields, 'nonce', base + 64, at(64, 8), m.nonce.toString(), 'u64, sender sequence number');
+    field(fields, 'kind', base + 72, at(72, 1), kind === 0 ? '0 (transfer)' : '1 (contract call)', 'u8');
+    field(fields, 'to', base + 73, m.to, hex(m.to), 'recipient account');
+    field(fields, 'amount', base + 105, at(105, 16), m.amount.toString() + ' nanos', 'u128');
+    field(fields, 'fee', base + 121, at(121, 16), m.fee.toString() + ' nanos', 'u128; half burned, half to the fee collector');
+    field(fields, 'payload_len', base + 137, at(137, 4), String(payloadLen), 'u32');
+    if (payloadLen) field(fields, 'payload', base + p, m.payload, hex(m.payload), 'contract call input');
+    field(fields, 'pubkey', base + p + payloadLen, m.pubkey, allZero(m.pubkey) ? 'none (all zero)' : hex(m.pubkey), 'key reveal on a first spend, otherwise zero');
+    field(fields, 'signature', base + bodyLen, m.signature, hex(m.signature), 'Ed25519 over pad32("ONX_MSG_EXT_SIGN_V1") ‖ bytes 0…' + (bodyLen - 1));
+    m.fields = fields;
+    return m;
+  }
+
+  // ----------------------------------------------------------- block file
+  // SPEC: crates/tooling/onx/src/blockfile.rs (decode_block_file) and
+  // onx-storage/src/encoding.rs (decode_body):
+  // "ONXBLK04" | header 148 | count u32 | ( len u32 | message )*
+  function decodeBlockFile(b) {
+    const fields = [];
+    const layout = [];
+    const magic = ascii(b.subarray(0, Math.min(8, b.length)));
+    if (b.length < 8 || magic !== FORMAT.BLOCK_MAGIC) {
+      throw new DecodeError(/^ONXBLK\d\d$/.test(magic)
+        ? `block file version ${magic} is not supported here (this page reads ${FORMAT.BLOCK_MAGIC})`
+        : `not an ONX block file: it does not start with ${FORMAT.BLOCK_MAGIC}`, 0);
+    }
+    field(fields, 'magic', 0, b.subarray(0, 8), FORMAT.BLOCK_MAGIC, 'block file format version');
+    layout.push({ kind: 'meta', label: 'magic', offset: 0, size: 8 });
+    if (b.length < 8 + FORMAT.HEADER_LEN) {
+      throw new DecodeError(`truncated block file: ${b.length} bytes, need at least ${8 + FORMAT.HEADER_LEN}`, b.length);
+    }
+    const headerBytes = b.subarray(8, 8 + FORMAT.HEADER_LEN);
+    const { header, fields: hf } = decodeHeader(headerBytes, 8);
+    fields.push(...hf);
+    layout.push({ kind: 'head', label: 'header', offset: 8, size: FORMAT.HEADER_LEN });
+
+    const base = 8 + FORMAT.HEADER_LEN;
+    const body = b.subarray(base);
+    if (body.length < 4) throw new DecodeError(`truncated block body: ${body.length} bytes, need at least 4`, base);
+    const count = u32(body, 0);
+    // Same guard as decode_block_file: each message costs at least its
+    // 4-byte length prefix plus 237 bytes, so a forged count fails here.
+    if (count * (4 + FORMAT.MSG_MIN_WIRE) > body.length - 4) {
+      throw new DecodeError(`block body claims ${count} messages but holds only ${body.length} bytes`, base);
+    }
+    field(fields, 'message count', base, body.subarray(0, 4), String(count), 'u32, must equal msg_count');
+    layout.push({ kind: 'meta', label: 'count', offset: base, size: 4 });
+
+    const messages = [];
+    let off = 4;
+    for (let i = 0; i < count; i++) {
+      if (body.length < off + 4) throw new DecodeError(`message ${i + 1}: length prefix missing`, base + off);
+      const len = u32(body, off);
+      if (body.length < off + 4 + len) {
+        throw new DecodeError(`message ${i + 1}: needs ${len} bytes, ${body.length - off - 4} remain`, base + off);
+      }
+      const m = decodeMessage(body.subarray(off + 4, off + 4 + len), base + off + 4);
+      m.index = i;
+      m.offset = base + off + 4;
+      m.lenOffset = base + off;
+      messages.push(m);
+      layout.push({ kind: 'meta', label: 'len', offset: base + off, size: 4 });
+      layout.push({ kind: 'msg', label: `message ${i + 1}`, offset: base + off + 4, size: len });
+      off += 4 + len;
+    }
+    if (off !== body.length) throw new DecodeError(`${body.length - off} trailing byte${body.length - off === 1 ? '' : 's'} after ${count} messages`, base + off);
+    if (count !== header.msgCount) {
+      throw new DecodeError(`header msg_count ${header.msgCount} does not match the ${count} messages in the body`, 8 + 144);
+    }
+    return { header, headerBytes, fields, layout, messages, size: b.length };
+  }
+
+  // ----------------------------------------------------------------- cells
+  // SPEC: state-model.md §4.2–4.3, onx-state-model/src/cell.rs (strict form).
+  function decodeCell(b) {
+    if (b.length < 2) throw new Error('cell shorter than its 2-byte descriptor');
+    const d1 = b[0], d2 = b[1];
+    if (d1 & 0xf0) throw new Error('cell descriptor sets reserved bits');
+    const refs = d1 & 0x07, special = (d1 & 0x08) !== 0;
+    if (refs > FORMAT.CELL_MAX_REFS) throw new Error(`cell has ${refs} references, the maximum is 4`);
+    if (d2 > FORMAT.CELL_MAX_DATA) throw new Error(`cell has ${d2} data bytes, the maximum is 128`);
+    const need = 2 + d2 + 32 * refs;
+    if (b.length < need) throw new Error(`truncated cell: needs ${need} bytes`);
+    const refList = [];
+    for (let i = 0; i < refs; i++) refList.push(b.subarray(2 + d2 + 32 * i, 2 + d2 + 32 * (i + 1)));
+    return { special, data: b.subarray(2, 2 + d2), refs: refList, consumed: need };
+  }
+  function cellHash(c) {
+    const d1 = c.refs.length | (c.special ? 0x08 : 0);
+    return domainHash(TAG.CELL, concat([Uint8Array.of(d1, c.data.length), c.data, ...c.refs]));
+  }
+
+  // -------------------------------------------------------- account record
+  // SPEC: state-model.md §4.1, onx-state-model/src/account.rs.
+  async function decodeAccountState(s) {
+    if (s.length === 0) throw new Error('empty account record');
+    const t = s[0];
+    const need = (n, what) => { if (s.length < n) throw new Error(`account record truncated (${what})`); };
+    if (t === 0) return { state: { type: 'uninitialized' }, consumed: 1 };
+    if (t === 3) return { state: { type: 'destroyed' }, consumed: 1 };
+    if (t === 2) {
+      need(57, 'frozen account');
+      return { state: { type: 'frozen', balance: ubig(s, 1, 16), lt: ubig(s, 17, 8), storageHash: s.subarray(25, 57) }, consumed: 57 };
+    }
+    if (t !== 1) throw new Error(`unknown account type ${t}`);
+    need(141, 'active account');
+    const st = {
+      type: 'active',
+      balance: ubig(s, 1, 16),
+      lt: ubig(s, 17, 8),
+      codeHash: s.subarray(25, 57),
+      dataHash: s.subarray(57, 89),
+      cellCount: u32(s, 89),
+      byteCount: ubig(s, 93, 8),
+      pubkey: s.subarray(101, 133),
+      nonce: ubig(s, 133, 8),
+      code: null,
+      data: null,
+    };
+    let off = 141;
+    for (const which of ['code', 'data']) {
+      const expect = which === 'code' ? st.codeHash : st.dataHash;
+      if (allZero(expect)) continue;
+      need(off + 4, `${which} cell length`);
+      const len = u32(s, off);
+      if (len > FORMAT.EMBEDDED_CELL_MAX) throw new Error(`${which} cell is ${len} bytes, the maximum is ${FORMAT.EMBEDDED_CELL_MAX}`);
+      need(off + 4 + len, `${which} cell`);
+      const raw = s.subarray(off + 4, off + 4 + len);
+      const cell = decodeCell(raw);
+      if (cell.consumed !== len) throw new Error(`${which} cell length prefix does not match its contents`);
+      if (!equal(await cellHash(cell), expect)) throw new Error(`${which} cell does not hash to the account's ${which}_hash`);
+      st[which] = { raw, data: cell.data, refs: cell.refs.length };
+      off += 4 + len;
+    }
+    return { state: st, consumed: off };
+  }
+
+  // -------------------------------------------------------------- genesis
+  // SPEC: onx-state-model/src/genesis.rs (GenesisDocument::from_bytes):
+  // "ONXG" | version u32 | workchain i32 | shard prefix u64 |
+  // validator count u32 | (pubkey 32 | stake u64)* |
+  // account count u32 | (id 32 | len u32 | account record)*
+  // The chain ID is the domain hash of the canonical encoding, which sorts
+  // validators by key (the Rust decoder re-sorts them before hashing).
+  async function decodeGenesis(b) {
+    const fields = [];
+    let o = 0;
+    const need = (n, what) => {
+      if (b.length < o + n) throw new DecodeError(`genesis truncated while reading ${what}`, o);
+    };
+    need(4, 'magic');
+    if (ascii(b.subarray(0, 4)) !== FORMAT.GENESIS_MAGIC) throw new DecodeError('not an ONX genesis document: it does not start with ONXG', 0);
+    field(fields, 'magic', 0, b.subarray(0, 4), 'ONXG', 'genesis document');
+    o = 4; need(4, 'version');
+    const version = u32(b, o);
+    if (version !== FORMAT.GENESIS_VERSION) throw new DecodeError(`unsupported genesis version ${version}`, o);
+    field(fields, 'version', o, b.subarray(o, o + 4), String(version), 'u32');
+    o += 4; need(4, 'workchain');
+    const workchain = i32(b, o);
+    field(fields, 'workchain', o, b.subarray(o, o + 4), String(workchain), 'i32');
+    o += 4; need(8, 'shard prefix');
+    const shardPrefix = ubig(b, o, 8);
+    // ShardIdent::new: non-zero marker bit and a prefix of at most 60 bits.
+    let tz = 0n;
+    while (shardPrefix !== 0n && ((shardPrefix >> tz) & 1n) === 0n) tz++;
+    if (shardPrefix === 0n || 63n - tz > 60n) throw new DecodeError('invalid shard prefix', o);
+    field(fields, 'shard prefix', o, b.subarray(o, o + 8), '0x' + shardPrefix.toString(16).padStart(16, '0'), `prefix length ${63n - tz} bits`);
+    o += 8; need(4, 'validator count');
+    const vcount = u32(b, o);
+    field(fields, 'validator count', o, b.subarray(o, o + 4), String(vcount), 'u32');
+    o += 4;
+    const vStart = o;
+    const validators = [];
+    for (let i = 0; i < vcount; i++) {
+      need(40, `validator ${i + 1}`);
+      validators.push({ pubkey: b.subarray(o, o + 32), stake: ubig(b, o + 32, 8), raw: b.subarray(o, o + 40), offset: o });
+      o += 40;
+    }
+    const vEnd = o;
+    need(4, 'account count');
+    const acount = u32(b, o);
+    field(fields, 'account count', o, b.subarray(o, o + 4), String(acount), 'u32');
+    o += 4;
+    const accounts = [];
+    let prevId = null;
+    for (let i = 0; i < acount; i++) {
+      need(36, `account ${i + 1}`);
+      const id = b.subarray(o, o + 32);
+      if (prevId && compare(id, prevId) <= 0) throw new DecodeError('genesis accounts are not in strictly ascending order', o);
+      prevId = id;
+      const len = u32(b, o + 32);
+      const start = o;
+      o += 36;
+      need(len, `account ${i + 1} record`);
+      let dec;
+      try { dec = await decodeAccountState(b.subarray(o, o + len)); }
+      catch (e) { throw new DecodeError(`account ${i + 1}: ${e.message}`, o); }
+      if (dec.consumed !== len) throw new DecodeError(`account ${i + 1}: record has trailing bytes`, o + dec.consumed);
+      accounts.push({ id, state: dec.state, offset: start, size: 36 + len });
+      o += len;
+    }
+    if (o !== b.length) throw new DecodeError(`${b.length - o} trailing byte${b.length - o === 1 ? '' : 's'} after the last account`, o);
+    if (validators.length === 0) throw new DecodeError('genesis needs at least one validator', vStart);
+    if (accounts.length === 0) throw new DecodeError('genesis needs at least one account', vEnd);
+    const sorted = validators.slice().sort((x, y) => compare(x.pubkey, y.pubkey));
+    for (let i = 1; i < sorted.length; i++) {
+      if (equal(sorted[i].pubkey, sorted[i - 1].pubkey)) throw new DecodeError('duplicate validator key in genesis', vStart);
+    }
+    const canonicalBytes = concat([b.subarray(0, vStart), ...sorted.map((v) => v.raw), b.subarray(vEnd)]);
+    const chainId = await domainHash(TAG.GENESIS, canonicalBytes);
+    return {
+      workchain, shardPrefix, validators: sorted, accounts, fields, chainId,
+      canonical: equal(canonicalBytes, b), size: b.length,
+    };
+  }
+
+  // -------------------------------------------------------- replay output
+  // SPEC: crates/tooling/onx/src/main.rs (stdout of `onx replay`).
+  function parseReplay(text) {
+    const r = { chainId: null, genesisRoot: null, blocks: new Map(), skipped: [], final: {}, lines: 0, unknown: 0, failed: null };
+    for (const rawLine of String(text).split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      r.lines++;
+      let m;
+      if ((m = /^chain_id=([0-9a-f]{64})$/i.exec(line))) r.chainId = m[1].toLowerCase();
+      else if ((m = /^genesis_root=([0-9a-f]{64})$/i.exec(line))) r.genesisRoot = m[1].toLowerCase();
+      else if ((m = /^seqno=(\d+) block=([0-9a-f]{64}) root=([0-9a-f]{64})$/i.exec(line))) r.blocks.set(Number(m[1]), { block: m[2].toLowerCase(), root: m[3].toLowerCase() });
+      else if ((m = /^seqno=(\d+) status=skipped$/i.exec(line))) r.skipped.push(Number(m[1]));
+      else if ((m = /^final_seqno=(\d+)$/i.exec(line))) r.final.seqno = Number(m[1]);
+      else if ((m = /^final_block_hash=([0-9a-f]{64})$/i.exec(line))) r.final.blockHash = m[1].toLowerCase();
+      else if ((m = /^final_state_root=([0-9a-f]{64})$/i.exec(line))) r.final.stateRoot = m[1].toLowerCase();
+      else if (/^onx replay failed:/i.test(line)) r.failed = line;
+      else r.unknown++;
+    }
+    return r;
+  }
+
+  // ------------------------------------------------------------- analysis
+  function check(list, id, label, status, detail) { list.push({ id, label, status, detail }); }
+  function verdictOf(checks) {
+    if (checks.some((c) => c.status === 'fail')) return 'fail';
+    if (checks.some((c) => c.status === 'skip')) return 'partial';
+    return 'pass';
+  }
+
+  async function analyze(input) {
+    const blockFiles = input.blockFiles || [];
+    const pinned = input.pinnedChainId ? String(input.pinnedChainId).toLowerCase() : null;
+    const ed25519 = input.ed25519 !== false;
+    const A = {
+      blocks: [], rejected: [], duplicates: [], genesis: null, replay: null,
+      chain: { id: null, sources: [], consistent: true, network: 'unpinned', pinned },
+      messages: [], accounts: new Map(), tally: { pass: 0, fail: 0, skip: 0, warn: 0, info: 0 },
+      verdict: 'empty',
+    };
+
+    if (input.genesisFile) {
+      try { A.genesis = Object.assign({ name: input.genesisFile.name }, await decodeGenesis(input.genesisFile.bytes)); }
+      catch (e) { A.genesis = { name: input.genesisFile.name, error: e.message, offset: e.offset == null ? null : e.offset }; }
+    }
+    const G = A.genesis && !A.genesis.error ? A.genesis : null;
+    if (input.replayText && input.replayText.trim()) A.replay = parseReplay(input.replayText);
+
+    // Decode every file strictly, then hash what decoded.
+    const decoded = [];
+    for (const f of blockFiles) {
+      try {
+        const d = decodeBlockFile(f.bytes);
+        d.name = f.name;
+        d.hash = await domainHash(TAG.BLOCK_HDR, d.headerBytes);
+        for (const m of d.messages) m.hash = await domainHash(TAG.MSG_EXT, m.wire);
+        d.msgsRootComputed = await domainHash(TAG.MSGS_ROOT, concat(d.messages.map((m) => m.hash)));
+        decoded.push(d);
+      } catch (e) {
+        A.rejected.push({ name: f.name, size: f.bytes.length, error: e.message, offset: e.offset == null ? null : e.offset });
+      }
+    }
+    decoded.sort((x, y) => x.header.seqno - y.header.seqno || compare(x.hash, y.hash));
+    const bySeq = new Map();
+    for (const d of decoded) {
+      const first = bySeq.get(d.header.seqno);
+      if (!first) { bySeq.set(d.header.seqno, d); A.blocks.push(d); continue; }
+      if (equal(first.hash, d.hash)) { A.duplicates.push({ name: d.name, of: first.name }); continue; }
+      first.conflicts = (first.conflicts || []).concat(d.name);
+      d.conflicts = [first.name];
+      d.shadowed = true;
+      A.blocks.push(d);
+    }
+
+    // Chain ID: every independent source must agree (ADR-0005).
+    const sources = [];
+    if (G) sources.push({ source: 'genesis.boc', value: hex(G.chainId) });
+    const b1 = bySeq.get(1);
+    if (b1) sources.push({ source: 'block 1 prev_hash', value: hex(b1.header.prevHash) });
+    const msgChainIds = new Set();
+    let msgTotal = 0;
+    for (const d of A.blocks) for (const m of d.messages) { msgChainIds.add(hex(m.chainId)); msgTotal++; }
+    if (msgTotal) sources.push({ source: `${msgTotal} signed message${msgTotal === 1 ? '' : 's'}`, value: msgChainIds.size === 1 ? [...msgChainIds][0] : null, mixed: msgChainIds.size > 1 });
+    if (A.replay && A.replay.chainId) sources.push({ source: 'onx replay output', value: A.replay.chainId });
+    // The value most sources agree on wins; ties go to the earlier source.
+    // A single damaged file is then the one flagged, not every other source.
+    const votes = new Map();
+    for (const s of sources) if (s.value) votes.set(s.value, (votes.get(s.value) || 0) + 1);
+    let chainId = null;
+    let best = 0;
+    for (const s of sources) if (s.value && votes.get(s.value) > best) { best = votes.get(s.value); chainId = s.value; }
+    for (const s of sources) s.status = s.mixed ? 'fail' : (s.value === chainId ? 'pass' : 'fail');
+    A.chain.id = chainId;
+    A.chain.sources = sources;
+    A.chain.consistent = sources.every((s) => s.status === 'pass');
+    if (pinned) A.chain.network = chainId ? (chainId === pinned ? 'match' : 'mismatch') : 'nodata';
+
+    // Key registry: genesis keys first, then first-spend reveals in chain order.
+    const keys = new Map();
+    const genesisAccounts = new Map();
+    if (G) {
+      for (const a of G.accounts) {
+        genesisAccounts.set(hex(a.id), a.state);
+        if (a.state.type === 'active' && !allZero(a.state.pubkey)) keys.set(hex(a.id), { pubkey: a.state.pubkey, source: 'genesis' });
+      }
+    }
+    const acct = (h) => {
+      if (!A.accounts.has(h)) A.accounts.set(h, { id: h, genesis: genesisAccounts.get(h) || null, sent: [], received: [], collector: [] });
+      return A.accounts.get(h);
+    };
+    for (const h of genesisAccounts.keys()) acct(h);
+
+    let prev = null;
+    let fromStart = false;
+    let nextNonce = new Map();
+    for (const d of A.blocks) {
+      const s = d.header.seqno;
+      const checks = [];
+      if (d.shadowed) {
+        check(checks, 'conflict', 'Conflicting block', 'fail', `another loaded file (${d.conflicts.join(', ')}) holds a different block ${s}; this one is not linked into the chain`);
+        for (const m of d.messages) { m.block = s; m.checks = []; m.verdict = 'fail'; A.messages.push(m); }
+        d.checks = checks;
+        d.verdict = 'fail';
+        continue;
+      }
+      const linked = !!prev && prev.header.seqno === s - 1;
+      if (s === 1) { fromStart = true; nextNonce = new Map(); }
+      else if (!linked) { fromStart = false; nextNonce = new Map(); }
+      const complete = fromStart && !!G;
+
+      check(checks, 'decode', 'File structure', 'pass',
+        `${FORMAT.BLOCK_MAGIC}, 148-byte header, ${d.messages.length} message${d.messages.length === 1 ? '' : 's'}, ${d.size} bytes with nothing left over`);
+      const expectedName = `block-${String(s).padStart(8, '0')}.blk`;
+      if (d.name && d.name !== expectedName) {
+        check(checks, 'name', 'File name', 'warn', `named ${d.name}; onx replay orders files by name and would expect ${expectedName}`);
+      }
+      if (d.conflicts) check(checks, 'conflict', 'Conflicting block', 'fail', `another loaded file (${d.conflicts.join(', ')}) holds a different block ${s}`);
+      check(checks, 'hash', 'Block hash', 'info', `SHA-256(pad32("ONX_BLOCK_HDR_V1") ‖ 148-byte header) = ${hex(d.hash)}`);
+      check(checks, 'msgs_root', 'Message root',
+        equal(d.msgsRootComputed, d.header.msgsRoot) ? 'pass' : 'fail',
+        equal(d.msgsRootComputed, d.header.msgsRoot)
+          ? `recomputed from the ${d.messages.length} message hash${d.messages.length === 1 ? '' : 'es'} in order; matches the header`
+          : `recomputed ${hex(d.msgsRootComputed)}, header says ${hex(d.header.msgsRoot)}`);
+
+      if (s === 1) {
+        if (chainId) {
+          const ok = hex(d.header.prevHash) === chainId;
+          check(checks, 'link', 'Links to genesis', ok ? 'pass' : 'fail',
+            ok ? 'prev_hash equals the chain ID (the genesis hash)' : `prev_hash ${hex(d.header.prevHash)} is not the chain ID ${chainId}`);
+        } else {
+          check(checks, 'link', 'Links to genesis', 'skip', 'no chain ID known');
+        }
+        check(checks, 'lt', 'Logical time', d.header.lt > 0n ? 'pass' : 'fail', d.header.lt > 0n ? `${d.header.lt} is after genesis (0)` : 'block 1 must have lt greater than 0');
+      } else if (linked) {
+        const ok = equal(d.header.prevHash, prev.hash);
+        check(checks, 'link', 'Links to previous block', ok ? 'pass' : 'fail',
+          ok ? `prev_hash equals the hash of block ${s - 1}` : `prev_hash ${hex(d.header.prevHash)} is not the hash of block ${s - 1} (${hex(prev.hash)})`);
+        const ltOk = d.header.lt > prev.header.lt;
+        check(checks, 'lt', 'Logical time', ltOk ? 'pass' : 'fail', ltOk ? `${d.header.lt} > ${prev.header.lt}` : `${d.header.lt} does not exceed block ${s - 1}'s ${prev.header.lt}`);
+      } else {
+        check(checks, 'link', 'Links to previous block', 'skip', `block ${s - 1} is not loaded`);
+        check(checks, 'lt', 'Logical time', 'skip', `block ${s - 1} is not loaded`);
+      }
+      const wcRef = G ? G.workchain : (linked ? prev.header.workchain : null);
+      if (wcRef === null) check(checks, 'workchain', 'Workchain', 'skip', 'nothing to compare with');
+      else check(checks, 'workchain', 'Workchain', d.header.workchain === wcRef ? 'pass' : 'fail',
+        d.header.workchain === wcRef ? `${d.header.workchain}, unchanged` : `${d.header.workchain}, expected ${wcRef}`);
+
+      let rp = A.replay ? A.replay.blocks.get(s) : null;
+      if (!rp && A.replay && A.replay.final.seqno === s && A.replay.final.blockHash) rp = { block: A.replay.final.blockHash, root: A.replay.final.stateRoot };
+      if (rp) {
+        const hOk = rp.block === hex(d.hash);
+        check(checks, 'replay_hash', 'Hash matches onx replay', hOk ? 'pass' : 'fail', hOk ? 'replay reports the same block hash' : `replay reports ${rp.block}`);
+        if (rp.root) {
+          const rOk = rp.root === hex(d.header.stateRoot);
+          check(checks, 'state_root', 'State root matches onx replay', rOk ? 'pass' : 'fail',
+            rOk ? 'the root the producer claimed is the root replay computed' : `header claims ${hex(d.header.stateRoot)}, replay computed ${rp.root}`);
+        }
+      } else {
+        check(checks, 'state_root', 'State root', 'skip', 'claimed by the producer; this page does not execute blocks. Paste onx replay output to compare.');
+      }
+
+      const fc = acct(hex(d.header.feeCollector));
+      fc.collector.push(s);
+
+      // Messages, in block order (the order the STF applies them).
+      for (const m of d.messages) {
+        m.block = s;
+        const mc = [];
+        const from = hex(m.from);
+        const sender = acct(from);
+        acct(hex(m.to)).received.push(m);
+        sender.sent.push(m);
+
+        if (chainId) {
+          const ok = hex(m.chainId) === chainId;
+          check(mc, 'chain', 'Chain ID', ok ? 'pass' : 'fail', ok ? 'signed for this chain' : `signed for chain ${hex(m.chainId)}`);
+        }
+        if (m.kind === 0) {
+          check(mc, 'rule', 'Transfer rules', m.amount > 0n ? 'pass' : 'fail',
+            m.amount > 0n ? 'non-zero amount, no payload' : 'zero-amount transfers are rejected by the wallet handler');
+        } else {
+          check(mc, 'rule', 'Contract call rules', m.fee > 0n ? 'pass' : 'fail',
+            m.fee > 0n ? `non-zero fee; buys ${(m.fee * FORMAT.GAS_PER_NANO).toString()} gas` : 'zero-fee contract calls are rejected by the wallet handler');
+        }
+        if (m.amount + m.fee > U128_MAX) check(mc, 'overflow', 'Amount plus fee', 'fail', 'amount + fee overflows 128 bits');
+
+        const known = keys.get(from);
+        let key = null;
+        let reveal = false;
+        if (!allZero(m.pubkey)) {
+          const derived = await domainHash(TAG.ADDR, m.pubkey);
+          const ok = equal(derived, m.from);
+          if (known) {
+            check(mc, 'key', 'Key reveal', 'fail', `the sender already has a key (from ${known.source}); a second reveal is rejected`);
+          } else {
+            check(mc, 'key', 'Key reveal', ok ? 'pass' : 'fail',
+              ok ? 'the revealed key hashes to the sender address' : 'the revealed key does not hash to the sender address');
+            if (ok) { key = m.pubkey; reveal = true; }
+          }
+        } else if (known) {
+          key = known.pubkey;
+          check(mc, 'key', 'Sender key', 'info', `on record from ${known.source}`);
+        } else if (complete) {
+          check(mc, 'key', 'Sender key', 'fail', 'the sender has no key on record and the message reveals none');
+        } else {
+          check(mc, 'key', 'Sender key', 'skip', 'unknown here; load genesis.boc and every block before this one');
+        }
+
+        if (key && !ed25519) {
+          check(mc, 'sig', 'Signature', 'skip', 'this browser has no Ed25519 in WebCrypto');
+        } else if (key) {
+          const r = await ed25519Verify(key, concat([pad32(TAG.MSG_EXT_SIGN), m.body]), m.signature);
+          check(mc, 'sig', 'Signature', r.status === 'unavailable' ? 'skip' : r.status,
+            r.status === 'pass' ? `Ed25519 over pad32("ONX_MSG_EXT_SIGN_V1") ‖ ${m.body.length}-byte body`
+              : r.status === 'fail' ? (r.reason || 'the signature does not verify') : r.reason);
+        } else {
+          check(mc, 'sig', 'Signature', 'skip', 'no key to check against');
+        }
+        if (reveal) keys.set(from, { pubkey: m.pubkey, source: `key reveal in block ${s}` });
+
+        const expectNonce = nextNonce.get(from);
+        if (expectNonce !== undefined) {
+          check(mc, 'nonce', 'Nonce', m.nonce === expectNonce ? 'pass' : 'fail',
+            m.nonce === expectNonce ? `${m.nonce}, one after this sender's previous message` : `${m.nonce}, expected ${expectNonce}`);
+        } else if (complete) {
+          const g = genesisAccounts.get(from);
+          const base = g ? (g.type === 'active' ? g.nonce : null) : 0n;
+          if (base === null) check(mc, 'nonce', 'Nonce', 'fail', 'the sender is not an active account at genesis');
+          else check(mc, 'nonce', 'Nonce', m.nonce === base ? 'pass' : 'fail',
+            m.nonce === base ? `${m.nonce}, this sender's first message since genesis` : `${m.nonce}, expected ${base} for this sender's first message`);
+        } else {
+          check(mc, 'nonce', 'Nonce', 'skip', 'starting nonce unknown; load genesis.boc and every block from 1');
+        }
+        nextNonce.set(from, m.nonce + 1n);
+
+        m.checks = mc;
+        m.verdict = verdictOf(mc);
+        A.messages.push(m);
+      }
+      d.checks = checks;
+      d.verdict = verdictOf(checks.concat(...d.messages.map((m) => m.checks)));
+      prev = d;
+    }
+    A.keys = keys;
+
+    // Tally every check, plus rejected files as failures.
+    const add = (c) => { A.tally[c.status] = (A.tally[c.status] || 0) + 1; };
+    for (const d of A.blocks) { d.checks.forEach(add); for (const m of d.messages) (m.checks || []).forEach(add); }
+    for (const s of sources) add(s);
+    A.tally.fail += A.rejected.length;
+    if (A.genesis && A.genesis.error) A.tally.fail += 1;
+    if (A.blocks.length || A.rejected.length || G) {
+      A.verdict = A.tally.fail ? 'fail' : (A.tally.skip ? 'partial' : 'pass');
+    }
+    return A;
+  }
+
+  // ------------------------------------------------------------ self-test
+  // Vectors from the ONX repository, computed independently of the Rust code:
+  // crates/protocol/onx-stf/tests/hand_derived_vectors.rs (Python + libsodium)
+  // crates/protocol/onx-state-model/tests/hand_derived_cell.rs
+  const V = {
+    msgWire: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd11111111111111111111111111111111111111111111111111111111111111110000000000000007002222222222222222222222222222222222222222222222222222222222222222000000000000000000000000000003e80000000000000000000000000000000a00000000444444444444444444444444444444444444444444444444444444444444444433333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333',
+    msgHash: 'bef51624d10e0bcd1f93e7edee27f832621d4aa59d91c611435898d92ddd3b9d',
+    msgsRoot: '2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515e',
+    header: '0000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515ebbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00000000000f4240ffffffffcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000001',
+    headerHash: 'cda94f160317f6bd0666d328c565084f782e880150ae054b7c370f8632b110f9',
+    pubG: '2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12',
+    sigG: '7d6851faa2de6347f59853c7410339664eaf111ba5e65a2417eeabfdfc0322087d66a04e55be8081afc8d78affa751c5f2b45c1c411839fc6d08b1d671ffa305',
+    msgHashG: 'f9b035272494a9d7ecf577f0fb3a8b6ca3d97b1753c73dbeec90ac2859cde160',
+    addrG: '82972854269005891682cfedf715bde97112f9fbe159238b4fe098c5b90c10e8',
+    cell: '0004deadbeef',
+    cellHash: '0038d5ef2f2b8e83686bf5f69da7eee472f6112676d262c67eee8c860e43196f',
+  };
+
+  async function selfTest() {
+    const out = [];
+    const run = async (name, source, fn) => {
+      try {
+        const r = await fn();
+        out.push({ name, source, status: r === true ? 'pass' : r === 'unavailable' ? 'skip' : 'fail' });
+      } catch (e) {
+        out.push({ name, source, status: 'fail', detail: e.message });
+      }
+    };
+    const handVec = 'onx-stf/tests/hand_derived_vectors.rs';
+    await run('SHA-256 of "abc"', 'FIPS 180-2 example', async () =>
+      hex(await sha256(TE.encode('abc'))) === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
+    await run('Cell hash', 'onx-state-model/tests/hand_derived_cell.rs', async () =>
+      hex(await cellHash(decodeCell(unhex(V.cell)))) === V.cellHash);
+    await run('Message decoding and hash', handVec + ' (vector A)', async () => {
+      const w = unhex(V.msgWire);
+      const m = decodeMessage(w, 0);
+      const fieldsOk = m.nonce === 7n && m.kind === 0 && m.amount === 1000n && m.fee === 10n && m.payload.length === 0 &&
+        hex(m.from) === '11'.repeat(32) && hex(m.to) === '22'.repeat(32) && hex(m.pubkey) === '44'.repeat(32);
+      return fieldsOk && hex(await domainHash(TAG.MSG_EXT, w)) === V.msgHash;
+    });
+    await run('Message root', handVec, async () =>
+      hex(await domainHash(TAG.MSGS_ROOT, unhex(V.msgHash))) === V.msgsRoot);
+    await run('Header decoding and hash', handVec, async () => {
+      const hb = unhex(V.header);
+      const { header } = decodeHeader(hb, 0);
+      const ok = header.seqno === 42 && header.lt === 1000000n && header.workchain === -1 && header.msgCount === 1 && hex(header.msgsRoot) === V.msgsRoot;
+      return ok && hex(await domainHash(TAG.BLOCK_HDR, hb)) === V.headerHash;
+    });
+    const signedG = () => { const w = unhex(V.msgWire); w.set(unhex(V.sigG), w.length - 64); return w; };
+    await run('Ed25519 signature from libsodium', handVec + ' (vector G)', async () => {
+      const w = signedG();
+      const m = decodeMessage(w, 0);
+      const r = await ed25519Verify(unhex(V.pubG), concat([pad32(TAG.MSG_EXT_SIGN), m.body]), m.signature);
+      if (r.status === 'unavailable') return 'unavailable';
+      return r.status === 'pass' && hex(await domainHash(TAG.MSG_EXT, w)) === V.msgHashG;
+    });
+    await run('Ed25519 rejects a tampered message', handVec + ' (vector G, amount changed)', async () => {
+      const w = signedG();
+      w[119] = 0x03; w[120] = 0xe7; // amount 1000 -> 999 after signing
+      const m = decodeMessage(w, 0);
+      const r = await ed25519Verify(unhex(V.pubG), concat([pad32(TAG.MSG_EXT_SIGN), m.body]), m.signature);
+      if (r.status === 'unavailable') return 'unavailable';
+      return r.status === 'fail';
+    });
+    await run('Key-derived address', handVec + ' (vector G)', async () =>
+      hex(await domainHash(TAG.ADDR, unhex(V.pubG))) === V.addrG);
+    return out;
+  }
+
+  root.ONXCore = Object.freeze({
+    TAG, FORMAT, hex, unhex, concat, equal, allZero, pad32, sha256, domainHash, ed25519Verify,
+    decodeHeader, decodeMessage, decodeBlockFile, decodeGenesis, decodeAccountState, decodeCell, cellHash,
+    parseReplay, analyze, selfTest, DecodeError,
+  });
+})(typeof window !== 'undefined' ? window : globalThis);
+</script>
+
+<script id="onx-ui">
+/* ===========================================================================
+   Interface. Renders what the core reports; it makes no verification
+   decisions of its own.
+   =========================================================================== */
+(function () {
+  'use strict';
+  const C = window.ONXCore;
+  const SRC = window.ONX_SOURCES;
+  const CFG = window.ONX_CONFIG;
+  const $ = (id) => document.getElementById(id);
+  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ESC[c]);
+  const short = (h) => (h && h.length > 18 ? h.slice(0, 8) + '…' + h.slice(-6) : h || '');
+  const NANOS = 1000000000n;
+
+  const S = {
+    net: CFG.networks[CFG.defaultNetwork] ? CFG.defaultNetwork : Object.keys(CFG.networks)[0],
+    blockFiles: [], genesisFile: null, replayText: '',
+    origin: null,            // null | 'source' | 'files'
+    reading: false, readError: '',
+    A: null, tests: null, ed25519: true,
+    tab: 'blocks', view: null, back: [], runId: 0, note: '', pollTimer: 0,
+  };
+
+  // ------------------------------------------------------------ formatting
+  function group(digits) { return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function onx(nanos) {
+    const whole = nanos / NANOS;
+    const frac = nanos % NANOS;
+    let s = group(whole.toString());
+    if (frac) s += '.' + frac.toString().padStart(9, '0').replace(/0+$/, '');
+    return s + ' ONX';
+  }
+  function nanosLine(nanos) { return `${onx(nanos)} <span class="muted">(${group(nanos.toString())} nanos)</span>`; }
+  const STATUS = {
+    pass: ['pass', '✓', 'Verified'], fail: ['fail', '✕', 'Failed'], skip: ['skip', '–', 'Not checked'],
+    warn: ['warn', '!', 'Warning'], info: ['skip', '·', 'Info'], partial: ['partial', '◐', 'Partly verified'],
+  };
+  function chip(status, text) {
+    const [cls, icon, word] = STATUS[status] || STATUS.skip;
+    return `<span class="chip ${cls}"><i aria-hidden="true">${icon}</i>${esc(text || word)}</span>`;
+  }
+  function labelFor(h) {
+    const net = CFG.networks[S.net] || {};
+    return (net.labels || {})[h] || null;
+  }
+  function acctLink(h) {
+    const lab = labelFor(h);
+    return `<button type="button" class="link mono" data-go="acct:${h}" title="${h}">${esc(short(h))}</button>` +
+      (lab ? ` <span class="tag" title="Off-chain label from this page's settings">${esc(lab)}</span>` : '');
+  }
+  function hashLine(h, label) {
+    return `<div class="hashline"><span class="hash">${esc(h)}</span><button type="button" class="copy" data-copy="${esc(h)}" aria-label="Copy ${esc(label || 'value')}">Copy</button></div>`;
+  }
+  function payloadText(p) {
+    if (!p.length) return '';
+    for (const c of p) if (c < 0x20 || c > 0x7e) return '';
+    return `"${String.fromCharCode(...p)}"`;
+  }
+  function kindName(m) { return m.kind === 0 ? 'Transfer' : 'Contract call'; }
+
+  // ---------------------------------------------------------------- source
+  // Resolves the configured source (HOOK 2) into an adapter.
+  function sourceOf(netKey) {
+    const s = CFG.networks[netKey] && CFG.networks[netKey].source;
+    if (!s) return null;
+    if (typeof s.files === 'string') return SRC.files(s.files);
+    if (typeof s.block === 'function') return s;
+    return { invalid: true };
+  }
+
+  // --------------------------------------------------------- network band
+  function renderNet() {
+    const net = CFG.networks[S.net];
+    document.documentElement.setAttribute('data-net', S.net);
+    for (const key of Object.keys(CFG.networks)) {
+      const b = $('net-' + key);
+      if (b) b.setAttribute('aria-pressed', String(S.net === key));
+    }
+    const band = $('band');
+    band.setAttribute('data-kind', S.net);
+    const pinned = net.chainId ? String(net.chainId).toLowerCase() : null;
+    const src = sourceOf(S.net);
+    const state = pinned && src ? 'Connected' : pinned ? 'Chain ID pinned, no source' : src ? 'Source set, chain ID not pinned' : 'Not connected';
+    const slot = (key, value, help) =>
+      `<code>${key}</code><span class="${value ? 'mono' : 'unset'}">${value ? esc(value) : 'not set'}</span><span class="help">${esc(help)}</span>`;
+    const srcText = !src ? null : src.invalid ? 'invalid' : (src.describe || 'custom adapter');
+    const lines = [];
+    if (src && src.invalid) lines.push(`${chip('fail', 'Source')} <code>source</code> must be <code>{ files: '&lt;url&gt;' }</code> or an object with a <code>block(seqno)</code> method.`);
+    if (S.reading) lines.push(`Reading from ${esc(srcText)}…`);
+    else if (S.readError) lines.push(`${chip('fail', 'Source error')} ${esc(S.readError)}`);
+    const A = S.A;
+    if (A && A.chain.id) {
+      if (!pinned) lines.push(`Loaded data is from chain <span class="mono">${esc(short(A.chain.id))}</span>. It can't be attributed to ${esc(net.name)} until a chain ID is pinned.`);
+      else if (A.chain.id === pinned) lines.push(`${chip('pass', 'Matches')} The loaded data belongs to ${esc(net.name)}.`);
+      else lines.push(`${chip('fail', 'Other network')} The loaded data is from chain <span class="mono">${esc(short(A.chain.id))}</span>, not ${esc(net.name)}.`);
+    }
+    band.innerHTML = `
+      <div class="band-top"><span class="netname">${esc(net.name)}</span><span class="state">${state}</span></div>
+      <div class="slots">
+        ${slot('chainId', pinned, 'genesis hash, pinned at launch')}
+        ${slot('source', srcText, 'where blocks are read from')}
+      </div>
+      ${pinned && src ? '' : `<p class="band-hint">Wire ${esc(net.name)} up in <code>ONX_CONFIG</code>, the first script in this file.</p>`}
+      ${lines.map((l) => `<p class="attrib">${l}</p>`).join('')}`;
+    $('btn-reload').hidden = !src || !!src.invalid;
+  }
+
+  // -------------------------------------------------------------- source panel
+  function renderData() {
+    const src = sourceOf(S.net);
+    const parts = [];
+    if (S.origin === 'source' && src) parts.push(`From ${esc(src.describe || 'custom adapter')}`);
+    else if (S.origin === 'files') parts.push('Files you opened');
+    const n = S.blockFiles.length;
+    if (n) parts.push(`${n} block file${n === 1 ? '' : 's'}`);
+    if (S.genesisFile) parts.push(esc(S.genesisFile.name));
+    if (S.replayText.trim()) parts.push('replay output');
+    $('source-line').innerHTML = parts.length ? parts.join(' · ') : (src && !src.invalid ? 'Connected. Nothing read yet.' : 'Not connected. Nothing loaded.');
+    const A = S.A;
+    const rows = [];
+    if (S.note) rows.push(`<div class="fileerr">${chip('warn', 'Note')}<span>${esc(S.note)}</span></div>`);
+    if (A) {
+      for (const r of A.rejected) {
+        rows.push(`<div class="fileerr">${chip('fail', 'Rejected')}<b>${esc(r.name)}</b><span>${esc(r.error)}${r.offset != null ? ` (byte ${r.offset})` : ''}</span></div>`);
+      }
+      for (const d of A.duplicates) {
+        rows.push(`<div class="fileerr">${chip('skip', 'Duplicate')}<b>${esc(d.name)}</b><span>same block as ${esc(d.of)}; ignored</span></div>`);
+      }
+      if (A.genesis && A.genesis.error) {
+        rows.push(`<div class="fileerr">${chip('fail', 'Rejected')}<b>${esc(A.genesis.name)}</b><span>${esc(A.genesis.error)}${A.genesis.offset != null ? ` (byte ${A.genesis.offset})` : ''}</span></div>`);
+      }
+      if (A.replay && (A.replay.failed || (A.replay.lines && !A.replay.blocks.size && !A.replay.chainId))) {
+        rows.push(`<div class="fileerr">${chip('warn', 'Replay')}<span>${esc(A.replay.failed || 'no replay lines recognized in the pasted text')}</span></div>`);
+      }
+    }
+    $('filelist').innerHTML = rows.join('');
+  }
+
+  // ------------------------------------------------------------ overview
+  function renderOverview() {
+    const el = $('overview');
+    const A = S.A;
+    const failedTests = (S.tests || []).filter((t) => t.status === 'fail').length;
+    const testWarning = failedTests ? chip('fail', `Self-test failed (${failedTests}): do not trust results`) : '';
+    const dash = '<span class="muted">—</span>';
+    if (!A || A.verdict === 'empty') {
+      el.innerHTML = `<div class="overview-head"><h2 class="label">Chain</h2>${testWarning}</div>
+        <dl class="kv">
+          <dt>Chain ID</dt><dd>${dash}</dd>
+          <dt>Latest block</dt><dd>${dash}</dd>
+          <dt>Blocks</dt><dd>${dash}</dd>
+          <dt>Messages</dt><dd>${dash}</dd>
+          <dt>Accounts</dt><dd>${dash}</dd>
+          <dt>Checks</dt><dd>${dash}</dd>
+        </dl>`;
+      return;
+    }
+    const live = A.blocks.filter((d) => !d.shadowed);
+    const seqs = live.map((d) => d.header.seqno);
+    const lo = seqs.length ? Math.min(...seqs) : null;
+    const hi = seqs.length ? Math.max(...seqs) : null;
+    const gaps = seqs.length ? hi - lo + 1 - new Set(seqs).size : 0;
+    const latest = live.length ? live[live.length - 1] : null;
+    const verdict = A.verdict === 'pass' ? chip('pass', 'All checks passed')
+      : A.verdict === 'fail' ? chip('fail', `${A.tally.fail} failed`)
+      : chip('partial', 'Partly verified');
+    const srcChips = A.chain.sources.map((s) => chip(s.status, s.source)).join('');
+    el.innerHTML = `
+      <div class="overview-head"><h2 class="label">Chain</h2><div class="tally">${verdict}${testWarning}</div></div>
+      <dl class="kv">
+        <dt>Chain ID</dt>
+        <dd>${A.chain.id ? hashLine(A.chain.id, 'chain ID') : dash}
+          ${srcChips ? `<span class="sub">Sources that must agree:</span><div class="sources">${srcChips}</div>` : ''}</dd>
+        <dt>Latest block</dt>
+        <dd>${latest ? `<button type="button" class="link" data-go="block:${latest.header.seqno}">${latest.header.seqno}</button> <span class="mono muted">${esc(short(C.hex(latest.hash)))}</span>` : dash}</dd>
+        <dt>Blocks</dt>
+        <dd>${seqs.length ? `${lo === hi ? lo : `${lo} to ${hi}`} <span class="muted">(${seqs.length} loaded${gaps ? `, ${gaps} missing in between` : ''}${lo > 1 ? `, history before ${lo} not loaded` : ''})</span>` : dash}</dd>
+        <dt>Messages</dt><dd>${A.messages.length}</dd>
+        <dt>Accounts</dt><dd>${A.accounts.size}</dd>
+        <dt>Checks</dt>
+        <dd><div class="tally">${chip('pass', `${A.tally.pass} verified`)}${chip('fail', `${A.tally.fail} failed`)}${chip('skip', `${A.tally.skip} not checked`)}${A.tally.warn ? chip('warn', `${A.tally.warn} warnings`) : ''}</div>
+          ${A.tally.skip ? `<span class="sub">Unchecked items need data that isn't loaded, such as genesis.boc, earlier blocks or replay output. Open a block to see why.</span>` : ''}</dd>
+      </dl>`;
+  }
+
+  // ---------------------------------------------------------------- lists
+  function renderTabs() {
+    const A = S.A;
+    const counts = {
+      blocks: A ? A.blocks.length : 0, messages: A ? A.messages.length : 0,
+      accounts: A ? A.accounts.size : 0,
+    };
+    for (const t of ['blocks', 'messages', 'accounts', 'genesis']) {
+      const b = $('tab-' + t);
+      b.setAttribute('aria-selected', String(S.tab === t));
+      const name = t[0].toUpperCase() + t.slice(1);
+      b.innerHTML = t === 'genesis' ? name : `${name}<span class="count">${counts[t]}</span>`;
+    }
+    const el = $('list');
+    el.setAttribute('aria-labelledby', 'tab-' + S.tab);
+    const net = CFG.networks[S.net];
+    const empty = !A || A.verdict === 'empty';
+    if (S.tab === 'blocks') {
+      el.innerHTML = empty
+        ? `<div class="empty"><b>No blocks yet.</b><span>Blocks appear here once ${esc(net.name)} is wired to a source, or when you open block files.</span></div>`
+        : blocksTable(A);
+    } else if (S.tab === 'messages') {
+      el.innerHTML = empty
+        ? `<div class="empty"><b>No messages yet.</b><span>Messages appear here with the blocks that carry them.</span></div>`
+        : messagesTable(A);
+    } else if (S.tab === 'accounts') {
+      el.innerHTML = empty
+        ? `<div class="empty"><b>No accounts yet.</b><span>Accounts appear here from the genesis document and from messages.</span></div>`
+        : accountsTable(A);
+    } else {
+      el.innerHTML = genesisView(A);
+    }
+  }
+
+  function isOn(kind, key) { return S.view && S.view.kind === kind && S.view.key === key; }
+
+  function blocksTable(A) {
+    if (!A.blocks.length) return `<div class="empty"><b>No blocks decoded.</b><span>The Source panel lists anything that was rejected.</span></div>`;
+    const rows = A.blocks.slice().reverse().map((d) => {
+      const s = d.header.seqno;
+      const key = d.shadowed ? `${s}~${C.hex(d.hash)}` : String(s);
+      return `<tr class="row${isOn('block', key) ? ' on' : ''}" data-go="block:${key}">
+        <td><button type="button" class="link" data-go="block:${key}">${s}</button></td>
+        <td class="mono">${esc(short(C.hex(d.hash)))}</td>
+        <td class="num">${d.messages.length}</td>
+        <td class="num opt">${d.header.lt}</td>
+        <td class="mono opt">${esc(short(C.hex(d.header.stateRoot)))}</td>
+        <td>${chip(d.verdict)}</td></tr>`;
+    }).join('');
+    return `<div class="tbl-wrap"><table><thead><tr><th>Block</th><th>Hash</th><th class="num">Msgs</th><th class="num opt">LT</th><th class="opt">State root (claimed)</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function messagesTable(A) {
+    if (!A.messages.length) return `<div class="empty"><b>No messages in the loaded blocks.</b></div>`;
+    const rows = A.messages.slice().reverse().map((m) => {
+      const key = `${m.block}:${m.index}`;
+      return `<tr class="row${isOn('msg', key) ? ' on' : ''}" data-go="msg:${key}">
+        <td class="num">${m.block}</td>
+        <td><button type="button" class="link mono" data-go="msg:${key}">${esc(short(C.hex(m.hash)))}</button></td>
+        <td>${kindName(m)}</td>
+        <td class="opt">${acctLink(C.hex(m.from))} → ${acctLink(C.hex(m.to))}</td>
+        <td class="num">${onx(m.amount)}</td>
+        <td>${chip(m.verdict)}</td></tr>`;
+    }).join('');
+    return `<div class="tbl-wrap"><table><thead><tr><th class="num">Block</th><th>Message</th><th>Type</th><th class="opt">From → To</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function keyStatus(A, h, g) {
+    const k = A.keys.get(h);
+    if (k) return k.source === 'genesis' ? 'genesis key' : 'revealed';
+    if (g && g.type === 'active' && g.code) return 'contract';
+    return 'none known';
+  }
+
+  function accountsTable(A) {
+    if (!A.accounts.size) return `<div class="empty"><b>No accounts in the loaded data.</b></div>`;
+    const list = [...A.accounts.values()].sort((x, y) => (y.sent.length + y.received.length) - (x.sent.length + x.received.length) || (x.id < y.id ? -1 : 1));
+    const rows = list.map((a) => {
+      const g = a.genesis;
+      const atGenesis = g ? (g.type === 'active' || g.type === 'frozen' ? onx(g.balance) : g.type) : '<span class="muted">not in genesis</span>';
+      return `<tr class="row${isOn('acct', a.id) ? ' on' : ''}" data-go="acct:${a.id}">
+        <td>${acctLink(a.id)}</td>
+        <td class="num opt">${atGenesis}</td>
+        <td class="num">${a.sent.length}</td>
+        <td class="num">${a.received.length}</td>
+        <td class="opt">${esc(keyStatus(A, a.id, g))}${a.collector.length ? ' <span class="tag">fee collector</span>' : ''}</td></tr>`;
+    }).join('');
+    return `<div class="tbl-wrap"><table><thead><tr><th>Account</th><th class="num opt">At genesis</th><th class="num">Sent</th><th class="num">Received</th><th class="opt">Key</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function fieldsTable(fields) {
+    const rows = fields.map((f) => {
+      const raw = C.hex(f.raw);
+      const showRaw = raw !== f.value && f.raw.length <= 16;
+      return `<tr><td>${f.offset}</td><td>${f.size}</td><td>${esc(f.name)}</td><td><span class="val">${esc(f.value)}</span>${showRaw ? `<span class="raw">raw ${esc(raw)}</span>` : ''}${f.note ? `<span class="note">${esc(f.note)}</span>` : ''}</td></tr>`;
+    }).join('');
+    return `<div class="tbl-wrap"><table class="fields"><thead><tr><th>Offset</th><th>Bytes</th><th>Field</th><th>Value</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  }
+
+  function genesisView(A) {
+    const G = A && A.genesis;
+    if (!G) return `<div class="empty"><b>No genesis yet.</b><span>It appears here when the source provides <code>genesis.boc</code> or you add one. With it, this page confirms the chain ID, knows every genesis key, and checks nonces from the start of the chain.</span></div>`;
+    if (G.error) return `<div class="empty"><b>${esc(G.name)} was rejected.</b><span>${esc(G.error)}</span></div>`;
+    const vals = G.validators.map((v) => `<tr><td class="mono">${esc(short(C.hex(v.pubkey)))}</td><td class="num">${v.stake}</td><td class="num opt">${v.offset}</td></tr>`).join('');
+    const accts = G.accounts.map((a) => {
+      const h = C.hex(a.id);
+      const st = a.state;
+      const kind = st.type !== 'active' ? st.type : st.code ? 'contract' : C.allZero(st.pubkey) ? 'keyless' : 'keyed';
+      return `<tr class="row" data-go="acct:${h}"><td>${acctLink(h)}</td><td>${esc(kind)}</td><td class="num">${st.balance !== undefined ? onx(st.balance) : '—'}</td><td class="num opt">${st.nonce !== undefined ? st.nonce : '—'}</td><td class="num opt">${a.offset}</td></tr>`;
+    }).join('');
+    return `<div class="detail" style="border:0">
+      <section><h3 class="label">Genesis document · ${esc(G.name)} · ${G.size} bytes</h3>
+        <dl class="kv"><dt>Chain ID</dt><dd>${hashLine(C.hex(G.chainId), 'chain ID')}<span class="sub">SHA-256(pad32("ONX_GENESIS_V1") ‖ canonical document)${G.canonical ? '' : '. The file lists validators out of order; the chain ID uses the sorted form, as the node does.'}</span></dd>
+        <dt>Workchain</dt><dd>${G.workchain === -1 ? '-1 (masterchain)' : G.workchain === 0 ? '0 (basic)' : G.workchain}</dd>
+        <dt>Shard</dt><dd class="mono">0x${G.shardPrefix.toString(16).padStart(16, '0')}</dd></dl></section>
+      <section><h3 class="label">Header fields</h3>${fieldsTable(G.fields)}</section>
+      <section><h3 class="label">Validators (${G.validators.length})</h3><div class="tbl-wrap"><table><thead><tr><th>Public key</th><th class="num">Stake</th><th class="num opt">Offset</th></tr></thead><tbody>${vals}</tbody></table></div></section>
+      <section><h3 class="label">Accounts (${G.accounts.length})</h3><div class="tbl-wrap"><table><thead><tr><th>Account</th><th>Kind</th><th class="num">Balance</th><th class="num opt">Nonce</th><th class="num opt">Offset</th></tr></thead><tbody>${accts}</tbody></table></div></section>
+    </div>`;
+  }
+
+  // --------------------------------------------------------------- detail
+  function checksList(checks) {
+    return `<ul class="checks">${checks.map((c) => `<li>${chip(c.status)}<div><b>${esc(c.label)}</b><p>${esc(c.detail || '')}</p></div></li>`).join('')}</ul>`;
+  }
+  function crumbs(parts) {
+    const back = S.back.length ? `<button type="button" class="link" data-go="back">← Back</button>` : '';
+    return `<div class="crumbs">${back}${parts.map(esc).join(' › ')}</div>`;
+  }
+
+  function findBlock(key) {
+    if (!S.A) return null;
+    if (key.includes('~')) {
+      const [s, h] = key.split('~');
+      return S.A.blocks.find((d) => String(d.header.seqno) === s && C.hex(d.hash) === h) || null;
+    }
+    return S.A.blocks.find((d) => !d.shadowed && String(d.header.seqno) === key) || null;
+  }
+
+  function blockDetail(d) {
+    const s = d.header.seqno;
+    const segs = d.layout.map((l) => {
+      const cls = l.kind === 'head' ? 'b-head' : l.kind === 'meta' ? 'b-meta' : '';
+      return `<span class="${cls}" style="flex-grow:${l.size}" title="${esc(l.label)}: bytes ${l.offset} to ${l.offset + l.size - 1} (${l.size})">${l.size >= 60 ? esc(l.label) : ''}</span>`;
+    }).join('');
+    const legend = d.layout.filter((l) => l.label !== 'len').map((l) => `<span>${esc(l.label)} ${l.offset}–${l.offset + l.size - 1}</span>`).join('');
+    const msgs = d.messages.map((m) => `<tr class="row" data-go="msg:${s}:${m.index}">
+        <td class="num">${m.index + 1}</td>
+        <td><button type="button" class="link mono" data-go="msg:${s}:${m.index}">${esc(short(C.hex(m.hash)))}</button></td>
+        <td>${kindName(m)}</td>
+        <td class="opt">${acctLink(C.hex(m.from))} → ${acctLink(C.hex(m.to))}</td>
+        <td class="num">${onx(m.amount)}</td>
+        <td>${chip(m.verdict)}</td></tr>`).join('');
+    return `
+      <div class="detail-head"><div>${crumbs(['Blocks', `Block ${s}`])}<h2>Block ${s}</h2></div>${chip(d.verdict)}</div>
+      <section><h3 class="label">Block hash</h3>${hashLine(C.hex(d.hash), 'block hash')}</section>
+      <section><h3 class="label">Checks</h3>${checksList(d.checks)}</section>
+      <section><h3 class="label">Messages (${d.messages.length})</h3>
+        ${d.messages.length ? `<div class="tbl-wrap"><table><thead><tr><th class="num">#</th><th>Message</th><th>Type</th><th class="opt">From → To</th><th class="num">Amount</th><th>Status</th></tr></thead><tbody>${msgs}</tbody></table></div>` : '<p class="muted">Empty block.</p>'}
+        <p class="note-box">Block files carry the signed messages only. What happened on delivery (credits, bounces, contract results) comes from execution and is not in this file.</p>
+      </section>
+      <section><h3 class="label">File layout · ${esc(d.name || '')} · ${d.size} bytes</h3>
+        <div class="bytemap" role="img" aria-label="Byte layout of the block file">${segs}</div>
+        <div class="legend">${legend}</div></section>
+      <section><h3 class="label">Header and body fields</h3>${fieldsTable(d.fields)}</section>`;
+  }
+
+  function msgDetail(m) {
+    const from = C.hex(m.from), to = C.hex(m.to);
+    const pt = payloadText(m.payload);
+    return `
+      <div class="detail-head"><div>${crumbs(['Blocks', `Block ${m.block}`, `Message ${m.index + 1}`])}<h2>${kindName(m)} in block ${m.block}</h2></div>${chip(m.verdict)}</div>
+      <p class="summary-line">${onx(m.amount)} from ${acctLink(from)} to ${acctLink(to)}, fee ${onx(m.fee)}, nonce ${m.nonce}.</p>
+      <section><h3 class="label">Message hash</h3>${hashLine(C.hex(m.hash), 'message hash')}
+        <p class="muted" style="font-size:13px">SHA-256(pad32("ONX_MSG_EXT_V1") ‖ all ${m.wire.length} message bytes, signature included)</p></section>
+      <section><h3 class="label">Checks</h3>${m.checks.length ? checksList(m.checks) : '<p class="muted">Not checked: this message sits in a conflicting block.</p>'}</section>
+      <section><h3 class="label">Values</h3>
+        <dl class="kv">
+          <dt>Amount</dt><dd>${nanosLine(m.amount)}</dd>
+          <dt>Fee</dt><dd>${nanosLine(m.fee)}${m.kind === 1 ? ` <span class="sub">Buys ${group((m.fee * 1000n).toString())} gas for the contract.</span>` : ''}</dd>
+          <dt>Payload</dt><dd>${m.payload.length ? `<span class="hash">${esc(C.hex(m.payload))}</span>${pt ? ` <span class="muted">${esc(pt)}</span>` : ''}` : '<span class="muted">none</span>'}</dd>
+          <dt>Key reveal</dt><dd>${C.allZero(m.pubkey) ? '<span class="muted">none</span>' : `<span class="hash">${esc(C.hex(m.pubkey))}</span>`}</dd>
+          <dt>Signed bytes</dt><dd>pad32("ONX_MSG_EXT_SIGN_V1") ‖ message bytes 0 to ${m.body.length - 1} <span class="muted">(${32 + m.body.length} bytes)</span></dd>
+        </dl></section>
+      <section><h3 class="label">Fields · offsets are from the start of the block file</h3>${fieldsTable(m.fields)}</section>`;
+  }
+
+  function acctDetail(h) {
+    const A = S.A;
+    const a = A.accounts.get(h);
+    if (!a) return '';
+    const g = a.genesis;
+    const k = A.keys.get(h);
+    const lab = labelFor(h);
+    const genesisLine = !g ? (A.genesis && !A.genesis.error ? 'Not in genesis. Accounts appear when they first receive value.' : '<span class="muted">genesis.boc not loaded</span>')
+      : g.type === 'active' ? `Active, ${onx(g.balance)}, nonce ${g.nonce}${g.code ? `, contract code ${g.code.raw.length} bytes` : ''}`
+      : g.type === 'frozen' ? `Frozen, ${onx(g.balance)}` : g.type;
+    const keyLine = k ? `${k.source === 'genesis' ? 'Key in genesis' : `Revealed (${esc(k.source)})`}: <span class="hash">${esc(C.hex(k.pubkey))}</span>`
+      : g && g.code ? 'Contract account: runs code, has no signing key.' : '<span class="muted">No key known from the loaded data.</span>';
+    const row = (m, dir) => `<tr class="row" data-go="msg:${m.block}:${m.index}"><td class="num">${m.block}</td><td><button type="button" class="link mono" data-go="msg:${m.block}:${m.index}">${esc(short(C.hex(m.hash)))}</button></td><td>${dir === 'out' ? `to ${acctLink(C.hex(m.to))}` : `from ${acctLink(C.hex(m.from))}`}</td><td class="num">${onx(m.amount)}</td><td class="num opt">${dir === 'out' ? m.nonce : ''}</td><td>${chip(m.verdict)}</td></tr>`;
+    const table = (list, dir) => list.length
+      ? `<div class="tbl-wrap"><table><thead><tr><th class="num">Block</th><th>Message</th><th>${dir === 'out' ? 'To' : 'From'}</th><th class="num">Amount</th><th class="num opt">${dir === 'out' ? 'Nonce' : ''}</th><th>Status</th></tr></thead><tbody>${list.slice().reverse().map((m) => row(m, dir)).join('')}</tbody></table></div>`
+      : '<p class="muted">None in the loaded blocks.</p>';
+    return `
+      <div class="detail-head"><div>${crumbs(['Accounts', short(h)])}<h2>Account ${esc(short(h))}${lab ? ` <span class="tag" title="Off-chain label">${esc(lab)}</span>` : ''}</h2></div></div>
+      <section><h3 class="label">Address</h3>${hashLine(h, 'address')}</section>
+      <dl class="kv">
+        <dt>At genesis</dt><dd>${genesisLine}</dd>
+        <dt>Key</dt><dd>${keyLine}</dd>
+        ${a.collector.length ? `<dt>Fee collector</dt><dd>for block${a.collector.length === 1 ? '' : 's'} ${a.collector.join(', ')}</dd>` : ''}
+      </dl>
+      <p class="note-box">Current balances need execution. This page shows the genesis balance and the messages that name this account; credits, bounces and fees are applied by the node and checked by <code>onx replay</code>.</p>
+      <section><h3 class="label">Sent (${a.sent.length})</h3>${table(a.sent, 'out')}</section>
+      <section><h3 class="label">Received (${a.received.length})</h3>${table(a.received, 'in')}</section>`;
+  }
+
+  function renderDetail() {
+    const el = $('detail');
+    const v = S.view;
+    let html = '';
+    if (S.A && v) {
+      if (v.kind === 'block') {
+        const d = findBlock(v.key);
+        html = d ? blockDetail(d) : '';
+      } else if (v.kind === 'msg') {
+        const [s, i] = v.key.split(':').map(Number);
+        const m = S.A.messages.find((x) => x.block === s && x.index === i);
+        html = m ? msgDetail(m) : '';
+      } else if (v.kind === 'acct') {
+        html = acctDetail(v.key);
+      }
+    }
+    if (!html) { S.view = null; el.hidden = true; el.innerHTML = ''; return; }
+    el.innerHTML = html;
+    el.hidden = false;
+  }
+
+  function renderAll() {
+    renderNet();
+    renderData();
+    renderOverview();
+    renderTabs();
+    renderDetail();
+  }
+
+  // ------------------------------------------------------------ navigation
+  function go(target) {
+    if (target === 'back') {
+      S.view = S.back.pop() || null;
+    } else {
+      const i = target.indexOf(':');
+      const kind = target.slice(0, i), key = target.slice(i + 1);
+      if (S.view && !(S.view.kind === kind && S.view.key === key)) S.back.push(S.view);
+      if (S.back.length > 30) S.back.shift();
+      S.view = { kind, key };
+      if (kind === 'block') S.tab = 'blocks';
+      else if (kind === 'msg' && S.tab !== 'accounts' && S.tab !== 'blocks') S.tab = 'messages';
+    }
+    renderTabs();
+    renderDetail();
+    const el = $('detail');
+    if (!el.hidden) el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  }
+
+  // --------------------------------------------------------------- loading
+  async function refresh() {
+    const id = ++S.runId;
+    const net = CFG.networks[S.net];
+    let A;
+    try {
+      A = await C.analyze({
+        blockFiles: S.blockFiles, genesisFile: S.genesisFile, replayText: S.replayText,
+        pinnedChainId: net.chainId, ed25519: S.ed25519,
+      });
+    } catch (e) {
+      if (id !== S.runId) return;
+      S.A = null;
+      S.note = `Verification stopped: ${e.message}. This page needs WebCrypto (https://, localhost or a local file).`;
+      renderAll();
+      return;
+    }
+    if (id !== S.runId) return;
+    S.A = A;
+    renderAll();
+  }
+
+  function clearLoaded() {
+    S.blockFiles = []; S.genesisFile = null; S.replayText = ''; S.origin = null;
+    S.view = null; S.back = []; S.note = '';
+    $('replay-text').value = '';
+  }
+
+  // Read from the wired source (HOOK 2). fresh = start over from block 1.
+  async function readFromSource(fresh) {
+    const src = sourceOf(S.net);
+    if (!src || src.invalid) { renderNet(); return; }
+    S.reading = true;
+    S.readError = '';
+    renderNet();
+    const known = S.origin === 'source' && !fresh ? S.blockFiles.reduce((mx, f) => Math.max(mx, f.seqno || 0), 0) : 0;
+    const r = await SRC.readAll(src, { fromSeqno: known + 1, maxBlocks: CFG.maxBlocks, skipGenesis: known > 0 });
+    S.reading = false;
+    S.readError = r.error || '';
+    if (fresh || S.origin !== 'source') clearLoaded();
+    if (r.genesis) S.genesisFile = { name: 'genesis.boc', bytes: r.genesis };
+    if (!r.blocks.length && !fresh && known > 0) { renderNet(); return; }
+    S.blockFiles = S.blockFiles.concat(r.blocks);
+    S.origin = 'source';
+    S.note = r.stoppedAtLimit ? `Stopped after ${CFG.maxBlocks} blocks (maxBlocks in ONX_CONFIG).` : '';
+    await refresh();
+  }
+
+  // HOOK 3: optional polling for new blocks.
+  function schedulePoll() {
+    clearInterval(S.pollTimer);
+    const secs = Number(CFG.networks[S.net].pollSeconds || 0);
+    if (secs > 0 && sourceOf(S.net)) {
+      S.pollTimer = setInterval(() => { if (!S.reading && S.origin === 'source') readFromSource(false); }, secs * 1000);
+    }
+  }
+
+  async function readFiles(fileList) {
+    const out = [];
+    for (const f of fileList) out.push({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
+    return out;
+  }
+
+  // Sort dropped files by their content, not their names.
+  async function loadDropped(fileList) {
+    const files = await readFiles(fileList);
+    const blocks = [];
+    let genesis = null;
+    let replay = null;
+    const ignored = [];
+    for (const f of files) {
+      const head = String.fromCharCode(...f.bytes.subarray(0, 8));
+      if (head.startsWith('ONXBLK')) blocks.push(f);
+      else if (head.startsWith('ONXG')) genesis = f;
+      else {
+        const text = new TextDecoder().decode(f.bytes.subarray(0, 2000000));
+        if (/^(chain_id|seqno|genesis_root)=/m.test(text)) replay = text;
+        else ignored.push(f.name);
+      }
+    }
+    if ((blocks.length || genesis) && S.origin === 'source') clearLoaded();
+    if (blocks.length) S.blockFiles = blocks;
+    if (genesis) S.genesisFile = genesis;
+    if (blocks.length || genesis) S.origin = 'files';
+    if (replay !== null) {
+      S.replayText = replay;
+      $('replay-text').value = replay;
+      $('replay-box').hidden = false;
+      $('btn-replay').setAttribute('aria-expanded', 'true');
+    }
+    S.note = ignored.length ? `Ignored ${ignored.join(', ')}: not a block file, genesis document or replay log.` : '';
+    await refresh();
+  }
+
+  // ---------------------------------------------------------------- search
+  function search(q) {
+    const res = $('results');
+    const A = S.A;
+    const query = q.trim().toLowerCase();
+    if (!query) { res.hidden = true; res.innerHTML = ''; return; }
+    if (!A || A.verdict === 'empty') { res.hidden = false; res.innerHTML = '<div class="muted">Nothing is loaded yet.</div>'; return; }
+    const hits = [];
+    if (/^\d+$/.test(query)) {
+      const d = findBlock(String(Number(query)));
+      if (d) hits.push({ go: `block:${d.header.seqno}`, text: `Block ${d.header.seqno}` });
+    }
+    const h = query.replace(/^0x/, '');
+    if (/^[0-9a-f]{6,64}$/.test(h)) {
+      for (const d of A.blocks) if (C.hex(d.hash).startsWith(h)) hits.push({ go: `block:${d.shadowed ? `${d.header.seqno}~${C.hex(d.hash)}` : d.header.seqno}`, text: `Block ${d.header.seqno} · ${short(C.hex(d.hash))}` });
+      for (const m of A.messages) if (C.hex(m.hash).startsWith(h)) hits.push({ go: `msg:${m.block}:${m.index}`, text: `Message ${short(C.hex(m.hash))} in block ${m.block}` });
+      for (const id of A.accounts.keys()) if (id.startsWith(h)) hits.push({ go: `acct:${id}`, text: `Account ${short(id)}` });
+      if (A.chain.id && A.chain.id.startsWith(h)) hits.push({ go: null, text: 'That is the chain ID of the loaded data.' });
+    }
+    for (const id of A.accounts.keys()) {
+      const lab = labelFor(id);
+      if (lab && lab.toLowerCase().includes(query)) hits.push({ go: `acct:${id}`, text: `Account ${short(id)} (${lab})` });
+    }
+    const uniq = [];
+    const seen = new Set();
+    for (const x of hits) { const k = x.go + x.text; if (!seen.has(k)) { seen.add(k); uniq.push(x); } }
+    if (uniq.length === 1 && uniq[0].go) { res.hidden = true; res.innerHTML = ''; go(uniq[0].go); return; }
+    res.hidden = false;
+    res.innerHTML = uniq.length
+      ? uniq.slice(0, 50).map((x) => x.go ? `<div><button type="button" class="link" data-go="${esc(x.go)}">${esc(x.text)}</button></div>` : `<div class="muted">${esc(x.text)}</div>`).join('')
+      : `<div class="muted">Nothing in the loaded data matches “${esc(q.trim())}”. Search takes a block number, at least 6 hex characters of a hash or account, or a label.</div>`;
+  }
+
+  // ------------------------------------------------------------ self-test
+  function renderSelfTest() {
+    const rows = (S.tests || []).map((t) => `<tr><td>${chip(t.status)}</td><td>${esc(t.name)}</td><td><code>${esc(t.source)}</code>${t.detail ? `<br><span class="muted">${esc(t.detail)}</span>` : ''}</td></tr>`).join('');
+    $('selftest').innerHTML = `<table><thead><tr><th>Result</th><th>Test</th><th>Vector source</th></tr></thead><tbody>${rows}</tbody></table>`;
+  }
+
+  // ---------------------------------------------------------------- events
+  function copyText(text, btn) {
+    const done = (msg) => { const old = btn.textContent; btn.textContent = msg; setTimeout(() => { btn.textContent = old; }, 1400); };
+    const fallback = () => {
+      const target = btn.parentElement && btn.parentElement.querySelector('.hash');
+      if (target) { const sel = getSelection(); sel.removeAllRanges(); const r = document.createRange(); r.selectNodeContents(target); sel.addRange(r); done('Selected'); }
+    };
+    try { navigator.clipboard.writeText(text).then(() => done('Copied'), fallback); } catch (e) { fallback(); }
+  }
+
+  async function setNetwork(net) {
+    if (!CFG.networks[net] || net === S.net) return;
+    S.net = net;
+    try { history.replaceState(null, '', '#' + net); } catch (e) { /* the frame may not allow it */ }
+    if (S.origin === 'source') clearLoaded();
+    S.readError = '';
+    schedulePoll();
+    renderNet();
+    if (sourceOf(net)) await readFromSource(true);
+    else await refresh();
+  }
+
+  document.addEventListener('click', (e) => {
+    const pick = e.target.closest('[data-pick]');
+    if (pick) { $(pick.getAttribute('data-pick')).click(); return; }
+    const copy = e.target.closest('[data-copy]');
+    if (copy) { copyText(copy.getAttribute('data-copy'), copy); return; }
+    const nav = e.target.closest('[data-go]');
+    if (nav) { e.preventDefault(); go(nav.getAttribute('data-go')); return; }
+    const tab = e.target.closest('[data-tab]');
+    if (tab) { S.tab = tab.getAttribute('data-tab'); renderTabs(); return; }
+    const netBtn = e.target.closest('button[data-net]');
+    if (netBtn) setNetwork(netBtn.getAttribute('data-net'));
+  });
+
+  document.querySelector('.tabs').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const order = ['blocks', 'messages', 'accounts', 'genesis'];
+    const i = order.indexOf(S.tab) + (e.key === 'ArrowRight' ? 1 : -1);
+    S.tab = order[(i + order.length) % order.length];
+    renderTabs();
+    $('tab-' + S.tab).focus();
+  });
+
+  $('in-blocks').addEventListener('change', async (e) => {
+    const files = await readFiles(e.target.files);
+    e.target.value = '';
+    if (!files.length) return;
+    if (S.origin === 'source') clearLoaded();
+    S.blockFiles = files; S.origin = 'files'; S.note = '';
+    await refresh();
+  });
+  $('in-genesis').addEventListener('change', async (e) => {
+    const files = await readFiles(e.target.files);
+    e.target.value = '';
+    if (!files.length) return;
+    if (S.origin === 'source') clearLoaded();
+    S.genesisFile = files[0]; S.origin = 'files';
+    await refresh();
+  });
+  $('btn-replay').addEventListener('click', () => {
+    const box = $('replay-box');
+    box.hidden = !box.hidden;
+    $('btn-replay').setAttribute('aria-expanded', String(!box.hidden));
+    if (!box.hidden) $('replay-text').focus();
+  });
+  let replayTimer = 0;
+  $('replay-text').addEventListener('input', (e) => {
+    clearTimeout(replayTimer);
+    replayTimer = setTimeout(() => { S.replayText = e.target.value; refresh(); }, 250);
+  });
+  $('btn-reload').addEventListener('click', () => readFromSource(true));
+  $('btn-clear').addEventListener('click', () => { clearLoaded(); refresh(); });
+  $('search').addEventListener('submit', (e) => { e.preventDefault(); search($('q').value); });
+
+  let dragDepth = 0;
+  window.addEventListener('dragenter', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('dropmask').hidden = false; } });
+  window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('dropmask').hidden = true; });
+  window.addEventListener('dragover', (e) => { e.preventDefault(); });
+  window.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dragDepth = 0;
+    $('dropmask').hidden = true;
+    if (e.dataTransfer && e.dataTransfer.files.length) loadDropped(e.dataTransfer.files);
+  });
+
+  // ------------------------------------------------------------------ boot
+  async function boot() {
+    const hash = (location.hash || '').replace('#', '');
+    if (CFG.networks[hash]) S.net = hash;
+    renderAll();
+    try {
+      S.tests = await C.selfTest();
+    } catch (e) {
+      S.tests = [{ name: 'Self-test', source: 'this page', status: 'fail', detail: 'WebCrypto is unavailable. Open this page over https://, from localhost, or as a local file.' }];
+    }
+    S.ed25519 = !S.tests.some((t) => t.name.startsWith('Ed25519') && t.status === 'skip');
+    renderSelfTest();
+    schedulePoll();
+    if (sourceOf(S.net)) await readFromSource(true);
+    else await refresh();
+  }
+  boot();
+})();
+</script>
