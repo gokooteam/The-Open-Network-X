@@ -19,11 +19,19 @@
 //! truncation, wrong lengths, or trailing bytes.
 
 use onx_stf::block::{Block, BlockBody, BlockHeader, BLOCK_HEADER_BYTE_LEN};
+use onx_stf::message::EXT_BODY_PREFIX_LEN;
 use onx_storage::{decode_body, encode_body};
 
 /// Magic prefix identifying a block file. Versioned so a future format
 /// change is detectable instead of silently misparsed.
 pub const BLOCK_FILE_MAGIC: &[u8; 8] = b"ONXBLK04";
+
+/// Minimum wire length of one external message: the fixed body prefix (141)
+/// plus the 32-byte pubkey plus the 64-byte signature, with an empty
+/// payload. Any body claiming more messages than fit at this density is
+/// corrupt — this bounds the decoder's upfront reservation by the actual
+/// file size.
+const MIN_MESSAGE_WIRE_LEN: usize = EXT_BODY_PREFIX_LEN + 32 + 64;
 
 /// Canonical block file name for a sequence number: zero-padded so
 /// lexicographic filename order matches chain order.
@@ -87,8 +95,29 @@ pub fn decode_block_file(bytes: &[u8]) -> Result<Block, BlockFileError> {
     }
     let header = BlockHeader::from_bytes(&rest[..BLOCK_HEADER_BYTE_LEN])
         .map_err(|e| BlockFileError::BadHeader(e.to_string()))?;
-    let body: BlockBody = decode_body(&rest[BLOCK_HEADER_BYTE_LEN..])
-        .map_err(|e| BlockFileError::BadBody(e.to_string()))?;
+    let body_bytes = &rest[BLOCK_HEADER_BYTE_LEN..];
+    // Allocation guard: `decode_body` reserves `count` message slots up
+    // front, straight from the body's first 4 bytes, BEFORE checking the
+    // file is that long. A 160-byte file claiming u32::MAX messages made
+    // the old decoder try to reserve ~1.2 TB and abort the process instead
+    // of returning an error. Validate the claim against the actual length
+    // first: every message costs at least its 4-byte length prefix plus
+    // the minimum wire encoding, so a hostile count is rejected here with
+    // a clean error and the reservation stays bounded by the file size.
+    if body_bytes.len() >= 4 {
+        let claimed =
+            u32::from_be_bytes(body_bytes[..4].try_into().expect("length checked above")) as u64;
+        let min_per_message = 4u64 + MIN_MESSAGE_WIRE_LEN as u64;
+        // No overflow: claimed <= u32::MAX, so the product fits in u64.
+        if claimed * min_per_message > body_bytes.len() as u64 - 4 {
+            return Err(BlockFileError::BadBody(format!(
+                "block body claims {claimed} messages but the file holds only {} body bytes",
+                body_bytes.len()
+            )));
+        }
+    }
+    let body: BlockBody =
+        decode_body(body_bytes).map_err(|e| BlockFileError::BadBody(e.to_string()))?;
     if body.messages.len() as u32 != header.msg_count {
         return Err(BlockFileError::BadBody(format!(
             "header msg_count {} != body message count {}",
@@ -161,6 +190,42 @@ mod tests {
             decode_block_file(&bytes),
             Err(BlockFileError::BadBody(_))
         ));
+    }
+
+    #[test]
+    fn hostile_message_count_rejected_without_allocation() {
+        // The 160-byte crash file: magic + a zeroed (parseable) header +
+        // a u32::MAX message count with no bodies behind it. The old
+        // decoder reserved ~1.2 TB up front and aborted; the guard must
+        // turn it into a clean error.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(BLOCK_FILE_MAGIC);
+        bytes.extend_from_slice(&[0u8; BLOCK_HEADER_BYTE_LEN]);
+        bytes.extend_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(bytes.len(), 160);
+        assert!(matches!(
+            decode_block_file(&bytes),
+            Err(BlockFileError::BadBody(_))
+        ));
+
+        // A merely-implausible count is rejected the same way.
+        let mut bytes2 = Vec::new();
+        bytes2.extend_from_slice(BLOCK_FILE_MAGIC);
+        bytes2.extend_from_slice(&[0u8; BLOCK_HEADER_BYTE_LEN]);
+        bytes2.extend_from_slice(&1_000_000u32.to_be_bytes());
+        assert!(matches!(
+            decode_block_file(&bytes2),
+            Err(BlockFileError::BadBody(_))
+        ));
+
+        // An empty-but-well-formed body still decodes.
+        let mut bytes3 = Vec::new();
+        bytes3.extend_from_slice(BLOCK_FILE_MAGIC);
+        bytes3.extend_from_slice(&[0u8; BLOCK_HEADER_BYTE_LEN]);
+        bytes3.extend_from_slice(&0u32.to_be_bytes());
+        let block = decode_block_file(&bytes3).unwrap();
+        assert_eq!(block.header.msg_count, 0);
+        assert!(block.body.messages.is_empty());
     }
 
     #[test]

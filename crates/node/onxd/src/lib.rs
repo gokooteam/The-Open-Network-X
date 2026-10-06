@@ -332,6 +332,7 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         Path::new(&config.tx_pool_dir),
         config.mempool_max_txs,
         mempool_chain_id,
+        fee_collector,
     )?;
     fs::create_dir_all(&config.tx_pool_dir).map_err(|err| {
         format!(
@@ -344,7 +345,6 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         poll_interval: Duration::from_millis(config.block_poll_interval_ms),
         tx_pool_dir: Path::new(&config.tx_pool_dir).to_path_buf(),
         blocks_dir: Path::new(&config.storage_path).join("blocks"),
-        consecutive_failure_limit: 3,
         telemetry: Some(metrics),
     };
     let shutdown = Arc::new(AtomicBool::new(false));

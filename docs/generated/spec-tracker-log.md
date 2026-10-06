@@ -61,8 +61,8 @@ Automated log of commits tracked against WHITEPAPER.md.
   - crates/onx-sharding/src/lib.rs
   - crates/onx-sharding/tests/sharding_tests.rs
   - docs/RESEARCH_LOGBOOK.md
-  - docs/decisions/ADR-0018-hypercube-fast-path-and-cross-workchain-rules.md
-  - docs/decisions/ADR-0019-economics-parameters.md
+  - docs/adr/0025-hypercube-fast-path-and-cross-workchain-rules.md
+  - docs/adr/0026-economics-parameters.md
   - docs/specification/architecture.md
   - docs/specification/economics.md
 
@@ -129,7 +129,7 @@ Automated log of commits tracked against WHITEPAPER.md.
   - crates/onx-economics/src/slashing.rs
   - crates/onx-economics/tests/economics_tests.rs
   - docs/RESEARCH_LOGBOOK.md
-  - docs/decisions/ADR-0020-validator-slashing-and-reward-distribution.md
+  - docs/adr/0027-validator-slashing-and-reward-distribution.md
 
 ## Commit fd16f18dadf4f4a57ad79fc6434068cb85f25f64
 
@@ -181,7 +181,7 @@ Automated log of commits tracked against WHITEPAPER.md.
 - **Modified files:**
   - crates/onx-execution/src/interpreter.rs
   - crates/onx-execution/tests/execution_tests.rs
-  - docs/decisions/ADR-0017-tvm-instruction-set.md
+  - docs/adr/0024-tvm-instruction-set.md
   - docs/specification/tvm-instruction-set.md
 
 ## Commit a1d126211d23e71c32d8c16a0564c5884675be91
@@ -375,21 +375,21 @@ Automated log of commits tracked against WHITEPAPER.md.
   - CONTRIBUTING.md
   - README.md
   - WHITEPAPER.md
-  - docs/decisions/ADR-0001-preserve-multichain-architecture.md
-  - docs/decisions/ADR-0002-protocol-primitives-and-serialization.md
-  - docs/decisions/ADR-0003-state-model-and-account-lifecycle.md
-  - docs/decisions/ADR-0005-transactions-and-messaging.md
-  - docs/decisions/ADR-0006-blocks-and-masterchain-coupling.md
-  - docs/decisions/ADR-0007-execution-model-and-merkle-proof-reservation.md
-  - docs/decisions/ADR-0008-consensus-and-validator-operation.md
-  - docs/decisions/ADR-0009-networking-adnl-and-rldp.md
-  - docs/decisions/ADR-0010-networking-dht.md
-  - docs/decisions/ADR-0011-networking-overlay.md
-  - docs/decisions/ADR-0012-dynamic-sharding.md
-  - docs/decisions/ADR-0013-economics.md
-  - docs/decisions/ADR-0014-payment-channels.md
-  - docs/decisions/ADR-0016-merge-block-second-parent-reference.md
-  - docs/decisions/ADR-0017-tvm-instruction-set.md
+  - docs/adr/0008-preserve-multichain-architecture.md
+  - docs/adr/0009-protocol-primitives-and-serialization.md
+  - docs/adr/0010-state-model-and-account-lifecycle.md
+  - docs/adr/0012-transactions-and-messaging.md
+  - docs/adr/0013-blocks-and-masterchain-coupling.md
+  - docs/adr/0014-execution-model-and-merkle-proof-reservation.md
+  - docs/adr/0015-consensus-and-validator-operation.md
+  - docs/adr/0016-networking-adnl-and-rldp.md
+  - docs/adr/0017-networking-dht.md
+  - docs/adr/0018-networking-overlay.md
+  - docs/adr/0019-dynamic-sharding.md
+  - docs/adr/0020-economics.md
+  - docs/adr/0021-payment-channels.md
+  - docs/adr/0023-merge-block-second-parent-reference.md
+  - docs/adr/0024-tvm-instruction-set.md
   - docs/research_log.md
   - docs/specification/architecture.md
   - docs/specification/blocks.md
@@ -528,14 +528,14 @@ Automated log of commits tracked against WHITEPAPER.md.
   - crates/tooling/onx-genesis/src/main.rs
   - crates/tooling/onx-genesis/tests/genesis_tests.rs
   - docs/ONX Repository Architecture 342200224 Cleanup Proposal
-  - docs/decisions/ADR-0004-implementation-language.md
-  - docs/decisions/ADR-0006-blocks-and-masterchain-coupling.md
-  - docs/decisions/ADR-0007-execution-model-and-merkle-proof-reservation.md
-  - docs/decisions/ADR-0008-consensus-and-validator-operation.md
-  - docs/decisions/ADR-0009-networking-adnl-and-rldp.md
-  - docs/decisions/ADR-0016-merge-block-second-parent-reference.md
-  - docs/decisions/ADR-0019-economics-parameters.md
-  - docs/decisions/ADR-0020-validator-slashing-and-reward-distribution.md
+  - docs/adr/0011-implementation-language.md
+  - docs/adr/0013-blocks-and-masterchain-coupling.md
+  - docs/adr/0014-execution-model-and-merkle-proof-reservation.md
+  - docs/adr/0015-consensus-and-validator-operation.md
+  - docs/adr/0016-networking-adnl-and-rldp.md
+  - docs/adr/0023-merge-block-second-parent-reference.md
+  - docs/adr/0026-economics-parameters.md
+  - docs/adr/0027-validator-slashing-and-reward-distribution.md
   - docs/generated/spec-tracker-log.md
   - docs/guides/local-network-launch.md
   - docs/planning/development-tasks.md

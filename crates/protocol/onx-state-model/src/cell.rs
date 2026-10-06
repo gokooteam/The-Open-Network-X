@@ -117,6 +117,15 @@ impl Cell {
         let is_special = (d1 & 0x08) != 0;
         let data_len = d2 as usize;
 
+        // Strict canonical form: d1 carries the reference count in bits 0-2
+        // and the special flag in bit 3. Bits 4-7 are reserved and must be
+        // zero. The encoder never sets them, so any input with them set is
+        // non-canonical and must be rejected: two implementations must not
+        // disagree on whether a cell encoding is valid.
+        if d1 & 0xF0 != 0 {
+            return Err(StateModelError::InvalidDescriptor);
+        }
+
         if ref_count > MAX_CELL_REFS {
             return Err(StateModelError::TooManyReferences {
                 count: ref_count,

@@ -62,9 +62,23 @@ fn phase1_boc_encoding_independent_of_insertion_order() {
 }
 
 /// The encoding lays cells out in strictly ascending hash order.
+///
+/// Note: the wire form contains exactly the cells reachable from the root,
+/// so this builds a real 5-cell chain rather than five disconnected cells.
 #[test]
 fn phase1_boc_cells_written_in_ascending_hash_order() {
-    let boc = build_five_cell_boc(0xEF);
+    let mut cells = BTreeMap::new();
+    let mut child_hash: Option<[u8; 32]> = None;
+    let mut tip = [0u8; 32];
+    for j in 0..5u8 {
+        let refs = child_hash.map(|h| vec![h]).unwrap_or_default();
+        let cell = Cell::new(vec![0xEF, j], refs).unwrap();
+        let h = cell.hash();
+        cells.insert(h, cell);
+        child_hash = Some(h);
+        tip = h;
+    }
+    let boc = BagOfCells::new(tip, cells).unwrap();
     let bytes = boc.to_bytes();
 
     // Layout: 32-byte root hash, big-endian u32 cell count, then per cell:
@@ -91,9 +105,26 @@ fn phase1_boc_cells_written_in_ascending_hash_order() {
 }
 
 /// Decode(encode(x)) == x, and re-encoding the decoded value is byte-identical.
+///
+/// The BoC under test must be canonical: every cell reachable from the root.
+/// (The wire form contains exactly the reachable set, so a BoC built with
+/// unreachable cells via `from_root` + `add_cell` does not round-trip
+/// identically — `to_bytes` emits only the reachable cells.)
 #[test]
 fn phase1_boc_round_trip_is_stable() {
-    let boc = build_five_cell_boc(0x12);
+    // Diamond DAG: root references two children that share one grandchild.
+    let grandchild = Cell::new(vec![0x12, 3], vec![]).unwrap();
+    let child_a = Cell::new(vec![0x12, 1], vec![grandchild.hash()]).unwrap();
+    let child_b = Cell::new(vec![0x12, 2], vec![grandchild.hash()]).unwrap();
+    let root = Cell::new(vec![0x12, 0], vec![child_a.hash(), child_b.hash()]).unwrap();
+    let root_hash = root.hash();
+
+    let mut cells = BTreeMap::new();
+    for cell in [&root, &child_a, &child_b, &grandchild] {
+        cells.insert(cell.hash(), cell.clone());
+    }
+    let boc = BagOfCells::new(root_hash, cells).unwrap();
+
     let bytes = boc.to_bytes();
     let (decoded, used) = BagOfCells::from_bytes(&bytes).unwrap();
     assert_eq!(used, bytes.len());

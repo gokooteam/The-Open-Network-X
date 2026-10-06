@@ -6,7 +6,7 @@
 
 - `WHITEPAPER.md` Appendix A: denomination, initial supply, validator rewards, and slashing/burn examples.
 - `docs/specification/consensus.md`: stake, rewards, and slashing authority.
-- `docs/decisions/ADR-0019-economics-parameters.md`: resolves ONX-ARCH-008 parameters.
+- `docs/adr/0026-economics-parameters.md`: resolves ONX-ARCH-008 parameters.
 
 ## 2. Requirement
 
