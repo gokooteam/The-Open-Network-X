@@ -11,6 +11,10 @@ pub struct State {
     pub tree: ShardStateTree,
     /// Workchain this state belongs to. Blocks for another workchain are rejected.
     pub workchain: i32,
+    /// Chain identity: the genesis hash, fixed for the chain's lifetime.
+    /// External messages bind their signatures to this value — it cannot be
+    /// `last_hash`, which stops being the genesis hash after block 1.
+    pub chain_id: [u8; 32],
     /// Sequence number of the last applied block (genesis state: 0).
     pub seqno: u32,
     /// Logical time of the last applied block (genesis state: 0).
@@ -27,6 +31,7 @@ impl State {
         Self {
             tree: doc.state_tree(),
             workchain: doc.workchain.0 .0,
+            chain_id: doc.genesis_hash(),
             seqno: 0,
             last_lt: 0,
             last_hash: doc.genesis_hash(),

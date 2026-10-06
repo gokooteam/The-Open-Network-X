@@ -588,6 +588,16 @@ impl Interpreter {
                 let slice = self.pop_slice()?;
                 self.push(StackValue::from_i128(slice.remaining_refs() as i128))?;
             }
+            0x4D => {
+                // SETDATA: pop a cell and install it as the contract's
+                // persistent data (TVM c4). This is the integration hook
+                // the STF uses: on successful halt, the interpreter's
+                // `data` is the contract's new persistent data cell, which
+                // the STF writes back to the contract account.
+                self.consume_gas(10)?;
+                let cell = self.pop_cell()?;
+                self.data = cell;
+            }
             // Cryptographic 0x60-0x62
             0x60 => {
                 // HASHBYTES

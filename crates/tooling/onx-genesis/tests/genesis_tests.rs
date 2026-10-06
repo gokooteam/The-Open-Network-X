@@ -25,11 +25,15 @@ fn test_config() -> GenesisConfig {
                 address: "onx:alice".to_string(),
                 amount: 1_000_000,
                 public_key: None,
+                code_hex: None,
+                data_hex: None,
             },
             onx_genesis::Balance {
                 address: "onx:bob".to_string(),
                 amount: 2_000_000,
                 public_key: None,
+                code_hex: None,
+                data_hex: None,
             },
         ],
         validators: vec![onx_genesis::Validator {
@@ -112,6 +116,8 @@ fn rejects_duplicate_addresses_and_empty_sets() {
         address: "onx:alice".to_string(),
         amount: 5,
         public_key: None,
+        code_hex: None,
+        data_hex: None,
     });
     assert!(build_genesis_document(&cfg).is_err());
 

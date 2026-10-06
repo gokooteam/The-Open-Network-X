@@ -421,6 +421,18 @@ impl ChainStore {
         }
     }
 
+    /// The chain's identity (genesis hash), for binding external messages.
+    /// `None` before genesis init. The mempool uses this to validate the
+    /// chain ID at the door.
+    pub fn chain_id(&self) -> Result<Option<[u8; 32]>, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let meta = rtxn.open_table(META)?;
+        match meta.get(b"chain_id".as_slice())? {
+            None => Ok(None),
+            Some(v) => Ok(Some(hash32_from_value(v.value(), "chain_id")?)),
+        }
+    }
+
     /// Reconstruct the full in-memory [`State`] at the head.
     ///
     /// `None` before genesis init. This is the resume path after a crash:
@@ -471,6 +483,14 @@ impl ChainStore {
         }
 
         let meta = rtxn.open_table(META)?;
+        let chain_id = match meta.get(b"chain_id".as_slice())? {
+            None => {
+                return Err(StorageError::Corrupt(
+                    "genesis initialized but chain_id missing from meta".to_string(),
+                ))
+            }
+            Some(v) => hash32_from_value(v.value(), "chain_id")?,
+        };
         let workchain = match meta.get(b"workchain".as_slice())? {
             None => {
                 return Err(StorageError::Corrupt(
@@ -501,6 +521,7 @@ impl ChainStore {
         Ok(Some(State {
             tree,
             workchain,
+            chain_id,
             seqno,
             last_lt,
             last_hash,
@@ -508,7 +529,8 @@ impl ChainStore {
     }
 }
 
-/// Accounts a block may have touched: every sender and receiver, plus the
+/// Accounts a block may have touched: every external sender, every
+/// internal-message source and destination (including bounces), plus the
 /// fee collector. Inclusion is deliberately generous rather than clever:
 /// the collector is included even when a block's fees are all zero (in
 /// which case it is simply absent from the new tree and skipped). What
@@ -518,7 +540,10 @@ fn dirty_accounts(block: &Block, receipts: &Receipts) -> BTreeSet<[u8; 32]> {
     let mut set = BTreeSet::new();
     for r in &receipts.0 {
         set.insert(r.sender.to_bytes());
-        set.insert(r.receiver.to_bytes());
+        for d in &r.deliveries {
+            set.insert(d.src.to_bytes());
+            set.insert(d.dest.to_bytes());
+        }
     }
     set.insert(block.header.fee_collector.to_bytes());
     set
@@ -602,7 +627,7 @@ mod tests {
             .expect("genesis state");
         let block = propose_block(
             &state,
-            test_block_txs(7, 1, &accounts),
+            test_block_txs(7, 1, &accounts, state.chain_id),
             test_block_lt(1),
             test_fee_collector(),
         )

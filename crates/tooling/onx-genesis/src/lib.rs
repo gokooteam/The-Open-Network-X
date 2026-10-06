@@ -2,7 +2,7 @@
 use onx_data_structures::{ShardIdent, WorkchainIdent};
 use onx_primitives::PublicKey;
 use onx_state_model::{
-    parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, GenesisDocument,
+    parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, Cell, GenesisDocument,
     GenesisValidator, StorageStat,
 };
 use serde::Deserialize;
@@ -22,6 +22,16 @@ pub struct Balance {
     /// otherwise, so no genesis account can ever carry an unverifiable key.
     #[serde(default)]
     pub public_key: Option<String>,
+    /// Optional contract code, as hex of the canonical cell bytes
+    /// (`Cell::to_bytes`). When present the account is born a contract;
+    /// the code cell is embedded in the account state (and therefore in
+    /// the state root). Rejected if the hex or the cell bytes are malformed.
+    #[serde(default)]
+    pub code_hex: Option<String>,
+    /// Optional initial contract data, as hex of the canonical cell bytes.
+    /// Only meaningful alongside `code_hex`; rejected if malformed.
+    #[serde(default)]
+    pub data_hex: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +63,8 @@ impl Default for GenesisConfig {
                 address: "onx:genesis-account".to_string(),
                 amount: 5_000_000_000_000_000_000,
                 public_key: None,
+                code_hex: None,
+                data_hex: None,
             }],
             validators: vec![Validator {
                 public_key: "validator-pubkey-00".to_string(),
@@ -185,10 +197,11 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
                 b.address
             ));
         }
-        // Genesis accounts are plain value accounts: no code, no data,
-        // logical time zero, nonce zero. Code-bearing accounts arrive via
-        // transactions. The public key is optional: without one the account
-        // is keyless (can receive, never spend).
+        // Genesis accounts start with logical time zero and nonce zero.
+        // The public key is optional: without one the account is keyless
+        // (can receive, never spend). Contract code/data are optional:
+        // when `code_hex` is present the account is born a contract whose
+        // code and data cells are embedded in its state.
         let pubkey = match &b.public_key {
             Some(key_str) => {
                 let bytes = parse_or_derive_pubkey(key_str).map_err(|e| e.to_string())?;
@@ -202,13 +215,27 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
             }
             None => [0u8; 32],
         };
+        let code = match &b.code_hex {
+            Some(hex) => Some(parse_cell_hex(hex, &b.address, "code_hex")?),
+            None => None,
+        };
+        let data = match &b.data_hex {
+            Some(hex) => Some(parse_cell_hex(hex, &b.address, "data_hex")?),
+            None => None,
+        };
+        if data.is_some() && code.is_none() {
+            return Err(format!(
+                "onx-genesis failed: balance {:?} has data_hex without code_hex",
+                b.address
+            ));
+        }
         accounts.insert(
             id,
             AccountState::Active {
                 balance_nanos: b.amount as u128,
                 last_trans_lt: 0,
-                code_hash: [0u8; 32],
-                data_hash: [0u8; 32],
+                code,
+                data,
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
@@ -220,6 +247,44 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
     }
 
     GenesisDocument::new(workchain, shard, validators, accounts).map_err(|e| e.to_string())
+}
+
+/// Parse hex of canonical cell bytes (`Cell::to_bytes`) into a `Cell`.
+/// Fail-closed: bad hex or malformed cell bytes reject the whole genesis.
+fn parse_cell_hex(hex: &str, address: &str, field: &str) -> Result<Cell, String> {
+    fn hex_val(c: u8) -> Result<u8, String> {
+        match c {
+            b'0'..=b'9' => Ok(c - b'0'),
+            b'a'..=b'f' => Ok(c - b'a' + 10),
+            b'A'..=b'F' => Ok(c - b'A' + 10),
+            _ => Err(format!("invalid hex character: {}", c as char)),
+        }
+    }
+    let hex = hex.as_bytes();
+    if !hex.len().is_multiple_of(2) {
+        return Err(format!(
+            "onx-genesis failed: balance {address:?} has odd-length hex in {field}"
+        ));
+    }
+    let mut bytes = Vec::with_capacity(hex.len() / 2);
+    for pair in hex.chunks(2) {
+        let hi = hex_val(pair[0]).map_err(|e| {
+            format!("onx-genesis failed: balance {address:?} has bad hex in {field}: {e}")
+        })?;
+        let lo = hex_val(pair[1]).map_err(|e| {
+            format!("onx-genesis failed: balance {address:?} has bad hex in {field}: {e}")
+        })?;
+        bytes.push(hi << 4 | lo);
+    }
+    let (cell, consumed) = Cell::from_bytes(&bytes).map_err(|e| {
+        format!("onx-genesis failed: balance {address:?} has malformed cell in {field}: {e}")
+    })?;
+    if consumed != bytes.len() {
+        return Err(format!(
+            "onx-genesis failed: balance {address:?} has trailing bytes after cell in {field}"
+        ));
+    }
+    Ok(cell)
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

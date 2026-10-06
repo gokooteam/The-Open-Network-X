@@ -1,7 +1,7 @@
 //! Phase 3 regression tests: block bodies and the pure state transition function.
 //!
 //! Covers: happy-path transfers with fee split accounting, every header
-//! validation rule, every transaction rejection rule, in-process
+//! validation rule, every message rejection rule, in-process
 //! determinism over randomized block sequences, and cross-process
 //! determinism via the `onx-stf-probe` binary (two OS processes must print
 //! byte-identical output).
@@ -12,7 +12,8 @@ use onx_state_model::{
     derive_account_id, AccountState, GenesisDocument, GenesisValidator, StorageStat,
 };
 use onx_stf::{
-    apply_block, propose_block, txs_root, BlockBody, BlockHeader, State, StfError, Transaction,
+    apply_block, msgs_root, propose_block, BlockBody, BlockHeader, ExternalMessage, MsgKind, State,
+    StfError,
 };
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -27,18 +28,36 @@ fn test_secret(id: &AccountId) -> SecretKey {
     SecretKey::from_seed(&seed).expect("domain hash output is a valid seed")
 }
 
-/// Signs transactions for a test, tracking per-account nonces exactly the
-/// way the STF expects them: the k-th transaction from an account carries
+/// Signs messages for a test, tracking per-account nonces exactly the
+/// way the STF expects them: the k-th message from an account carries
 /// that account's k-th nonce (genesis accounts start at 0).
-#[derive(Default)]
-struct TxSigner {
+struct MsgSigner {
+    chain_id: [u8; 32],
     nonces: BTreeMap<AccountId, u64>,
 }
 
-impl TxSigner {
-    fn sign(&mut self, from: AccountId, to: AccountId, amount: u128, fee: u128) -> Transaction {
+impl MsgSigner {
+    fn new(chain_id: [u8; 32]) -> Self {
+        Self {
+            chain_id,
+            nonces: BTreeMap::new(),
+        }
+    }
+
+    fn sign(&mut self, from: AccountId, to: AccountId, amount: u128, fee: u128) -> ExternalMessage {
         let nonce = self.next_nonce(from);
-        Transaction::new_signed(from, to, amount, fee, nonce, &test_secret(&from))
+        ExternalMessage::new_signed(
+            self.chain_id,
+            MsgKind::Transfer,
+            from,
+            nonce,
+            to,
+            amount,
+            fee,
+            Vec::new(),
+            [0u8; 32],
+            &test_secret(&from),
+        )
     }
 
     fn next_nonce(&mut self, from: AccountId) -> u64 {
@@ -52,8 +71,8 @@ fn active(balance_nanos: u128, id: &AccountId) -> AccountState {
     AccountState::Active {
         balance_nanos,
         last_trans_lt: 0,
-        code_hash: [0u8; 32],
-        data_hash: [0u8; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
@@ -97,9 +116,10 @@ fn stf_happy_path_transfer_with_fee_split() {
 
     // Alice sends Bob 1_000_000 with fee 1_000. Fee split is 50/50 per
     // onx-economics: 500 burned, 500 to the collector.
-    let mut signer = TxSigner::default();
-    let tx = signer.sign(alice, bob, 1_000_000, 1_000);
-    let block = propose_block(&state, vec![tx], 1, collector).unwrap();
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg = signer.sign(alice, bob, 1_000_000, 1_000);
+    let msg_hash = msg.hash();
+    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
 
     assert_eq!(balance_of(&next, &alice), 10_000_000 - 1_001_000);
@@ -111,11 +131,20 @@ fn stf_happy_path_transfer_with_fee_split() {
 
     assert_eq!(receipts.0.len(), 1);
     let r = &receipts.0[0];
-    assert_eq!(r.tx_hash, tx.hash());
+    assert_eq!(r.msg_hash, msg_hash);
+    assert_eq!(r.sender, alice);
+    assert_eq!(r.nonce, 0);
     assert_eq!(r.fee_burned_nanos, 500);
     assert_eq!(r.fee_validator_nanos, 500);
-    assert_eq!(r.sender_balance_after, 10_000_000 - 1_001_000);
-    assert_eq!(r.receiver_balance_after, 6_000_000);
+    // One external -> one wallet-emitted internal -> one delivery:
+    // the value reached Bob, no bounce, no VM run (plain transfer).
+    assert_eq!(r.deliveries.len(), 1);
+    let d = &r.deliveries[0];
+    assert_eq!(d.src, alice);
+    assert_eq!(d.dest, bob);
+    assert_eq!(d.value_nanos, 1_000_000);
+    assert!(!d.bounced);
+    assert_eq!(d.gas_used, 0);
 
     // Total supply decreased by exactly the burned fee: nothing is minted.
     let supply_before: u128 = ids.iter().map(|id| balance_of(&state, id)).sum();
@@ -130,9 +159,9 @@ fn stf_creates_receiver_account_on_first_transfer() {
     let (alice, carol) = (ids[0], ids[2]);
     assert_eq!(balance_of(&state, &carol), 0);
 
-    let mut signer = TxSigner::default();
-    let tx = signer.sign(alice, carol, 250_000, 0);
-    let block = propose_block(&state, vec![tx], 1, collector).unwrap();
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg = signer.sign(alice, carol, 250_000, 0);
+    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     assert_eq!(balance_of(&next, &carol), 250_000);
     // Zero fee: no dust account created for the collector.
@@ -143,9 +172,9 @@ fn stf_creates_receiver_account_on_first_transfer() {
 fn stf_self_transfer_nets_to_fee_only() {
     let (state, ids, collector) = test_genesis();
     let alice = ids[0];
-    let mut signer = TxSigner::default();
-    let tx = signer.sign(alice, alice, 1_000_000, 400);
-    let block = propose_block(&state, vec![tx], 1, collector).unwrap();
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg = signer.sign(alice, alice, 1_000_000, 400);
+    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     // Debited amount+fee, credited amount: net -fee.
     assert_eq!(balance_of(&next, &alice), 10_000_000 - 400);
@@ -203,16 +232,16 @@ fn stf_rejects_lt_regression() {
 #[test]
 fn stf_rejects_tampered_body_and_header() {
     let (state, ids, collector) = test_genesis();
-    let mut signer = TxSigner::default();
-    let tx = signer.sign(ids[0], ids[1], 100, 0);
-    let block = propose_block(&state, vec![tx], 1, collector).unwrap();
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg = signer.sign(ids[0], ids[1], 100, 0);
+    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
 
-    // Mutate the body after proposing: txs_root no longer matches.
+    // Mutate the body after proposing: msgs_root no longer matches.
     let mut tampered = block.clone();
-    tampered.body.transactions[0].amount_nanos = 101;
+    tampered.body.messages[0].amount_nanos = 101;
     assert!(matches!(
         apply_block(&state, &tampered),
-        Err(StfError::TxsRootMismatch { .. })
+        Err(StfError::MsgsRootMismatch { .. })
     ));
 
     // Lie about the resulting state root.
@@ -228,21 +257,21 @@ fn stf_rejects_tampered_body_and_header() {
 }
 
 #[test]
-fn stf_rejects_invalid_transactions() {
+fn stf_rejects_invalid_messages() {
     let (state, ids, collector) = test_genesis();
     let (alice, bob) = (ids[0], ids[1]);
     let stranger = derive_account_id("test-stranger");
 
     // Zero amount.
-    let mut signer = TxSigner::default();
-    let bad: Vec<Transaction> = vec![signer.sign(alice, bob, 0, 10)];
+    let mut signer = MsgSigner::new(state.chain_id);
+    let bad: Vec<ExternalMessage> = vec![signer.sign(alice, bob, 0, 10)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
         Err(StfError::ZeroAmount)
     ));
 
     // Insufficient funds (alice has 10M).
-    let mut bad_signer = TxSigner::default();
+    let mut bad_signer = MsgSigner::new(state.chain_id);
     let bad = vec![bad_signer.sign(alice, bob, 9_999_999, 2)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
@@ -250,7 +279,7 @@ fn stf_rejects_invalid_transactions() {
     ));
 
     // Unknown sender.
-    let mut bad_signer = TxSigner::default();
+    let mut bad_signer = MsgSigner::new(state.chain_id);
     let bad = vec![bad_signer.sign(stranger, bob, 1, 0)];
     assert!(matches!(
         propose_block(&state, bad, 1, collector),
@@ -265,18 +294,18 @@ fn stf_rejects_invalid_transactions() {
     assert_eq!(next.state_root().unwrap(), state.state_root().unwrap());
 }
 
-/// Same account touched twice in one block: allowed, ordered by tx index.
+/// Same account touched twice in one block: allowed, ordered by message index.
 #[test]
 fn stf_allows_intra_block_multi_touch() {
     let (state, ids, collector) = test_genesis();
     let (alice, bob) = (ids[0], ids[1]);
-    let mut signer = TxSigner::default();
-    let txs = vec![
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msgs = vec![
         signer.sign(alice, bob, 1_000_000, 0),
         signer.sign(alice, bob, 2_000_000, 0),
         signer.sign(bob, alice, 500_000, 100),
     ];
-    let block = propose_block(&state, txs, 1, collector).unwrap();
+    let block = propose_block(&state, msgs, 1, collector).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
     assert_eq!(receipts.0.len(), 3);
     // Alice: 10M - 1M - 2M + 500k = 7_500_000 (the 100 fee is paid by Bob).
@@ -289,28 +318,29 @@ fn stf_allows_intra_block_multi_touch() {
 
 #[test]
 fn stf_header_commits_to_ordered_set() {
-    // Same transactions in different order => different txs_root.
+    // Same messages in different order => different msgs_root.
     let (state, ids, collector) = test_genesis();
-    let mut signer = TxSigner::default();
-    let tx1 = signer.sign(ids[0], ids[1], 1, 0);
-    let mut signer = TxSigner::default();
-    let tx2 = signer.sign(ids[1], ids[0], 1, 0);
-    let r1 = txs_root(&[tx1, tx2]);
-    let r2 = txs_root(&[tx2, tx1]);
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg1 = signer.sign(ids[0], ids[1], 1, 0);
+    let mut signer = MsgSigner::new(state.chain_id);
+    let msg2 = signer.sign(ids[1], ids[0], 1, 0);
+    let r1 = msgs_root(&[msg1.clone(), msg2.clone()]);
+    let r2 = msgs_root(&[msg2.clone(), msg1.clone()]);
     assert_ne!(r1, r2);
 
     // Header round-trips through canonical bytes.
-    let block = propose_block(&state, vec![tx1, tx2], 1, collector).unwrap();
+    let block = propose_block(&state, vec![msg1.clone(), msg2.clone()], 1, collector).unwrap();
     let bytes = block.header.to_bytes();
     assert_eq!(bytes.len(), onx_stf::block::BLOCK_HEADER_BYTE_LEN);
     let back = BlockHeader::from_bytes(&bytes).unwrap();
     assert_eq!(back, block.header);
     assert_eq!(back.hash(), block.header.hash());
 
-    // Transaction round-trips too.
-    let tx_bytes = tx1.to_bytes();
-    assert_eq!(tx_bytes.len(), onx_stf::block::TRANSACTION_BYTE_LEN);
-    assert_eq!(Transaction::from_bytes(&tx_bytes).unwrap(), tx1);
+    // Message round-trips too. A transfer is 141-byte prefix +
+    // 32-byte pubkey + 64-byte signature = 237 bytes.
+    let msg_bytes = msg1.to_bytes();
+    assert_eq!(msg_bytes.len(), 237);
+    assert_eq!(ExternalMessage::from_bytes(&msg_bytes).unwrap(), msg1);
 }
 
 /// Deterministic xorshift64* (mirrors the probe binary; no rand dependency).
@@ -332,7 +362,8 @@ impl XorShift64 {
 fn stf_randomized_sequences_deterministic_in_process() {
     fn run_once() -> (State, Vec<onx_stf::Receipts>) {
         let (genesis_state, ids, collector) = test_genesis();
-        let mut signer = TxSigner::default();
+        let chain_id = genesis_state.chain_id;
+        let mut signer = MsgSigner::new(chain_id);
         let mut state = genesis_state;
         let mut all_receipts = Vec::new();
         let mut rng = XorShift64(0xDEAD_BEEF_CAFE_1234);
@@ -343,7 +374,15 @@ fn stf_randomized_sequences_deterministic_in_process() {
         mirror.insert(collector, 0);
         for b in 1..=15u64 {
             let n = 1 + (rng.next() % 6) as usize;
-            let mut txs = Vec::new();
+            let mut msgs = Vec::new();
+            // Two-phase settlement mirror (ADR-0003): the wallet phase
+            // debits senders in block order, but deliveries credit
+            // receivers only in phase 2 — so a receipt earned *this* block
+            // is NOT spendable until the next block. The generator debits
+            // immediately and defers all credits to block end, exactly
+            // like the STF.
+            let mut pending_credits: Vec<(AccountId, u128)> = Vec::new();
+            let mut pending_collector_fee: u128 = 0;
             for _ in 0..n {
                 let from = ids[(rng.next() as usize) % ids.len()];
                 let to = ids[(rng.next() as usize) % ids.len()];
@@ -356,21 +395,32 @@ fn stf_randomized_sequences_deterministic_in_process() {
                 let amount = 1 + (rng.next() as u128 % spendable);
                 let (burned, val_fee) = onx_economics::split_transaction_fee(fee);
                 let _ = burned;
+                // Wallet-phase debit: visible to later messages in this block.
                 mirror.insert(from, bal - amount - fee);
-                *mirror.entry(to).or_insert(0) += amount;
-                *mirror.entry(collector).or_insert(0) += val_fee;
+                // Delivery-phase credits: land after the block, like the STF.
+                pending_credits.push((to, amount));
+                pending_collector_fee += val_fee;
                 let nonce = signer.next_nonce(from);
-                txs.push(Transaction::new_signed(
+                msgs.push(ExternalMessage::new_signed(
+                    chain_id,
+                    MsgKind::Transfer,
                     from,
+                    nonce,
                     to,
                     amount,
                     fee,
-                    nonce,
+                    Vec::new(),
+                    [0u8; 32],
                     &test_secret(&from),
                 ));
             }
-            let block = propose_block(&state, txs, b, collector).unwrap();
+            let block = propose_block(&state, msgs, b, collector).unwrap();
             let (next, receipts) = apply_block(&state, &block).unwrap();
+            // Delivery phase settles: apply the deferred credits now.
+            for (to, amount) in pending_credits {
+                *mirror.entry(to).or_insert(0) += amount;
+            }
+            *mirror.entry(collector).or_insert(0) += pending_collector_fee;
             all_receipts.push(receipts);
             state = next;
         }
@@ -393,8 +443,18 @@ fn stf_cross_process_determinism() {
     let bin = env!("CARGO_BIN_EXE_onx-stf-probe");
     let out_a = Command::new(bin).output().expect("probe must run");
     let out_b = Command::new(bin).output().expect("probe must run");
-    assert!(out_a.status.success(), "probe run A failed");
-    assert!(out_b.status.success(), "probe run B failed");
+    // Include stderr: if the probe panics, the message names the cause
+    // (e.g. its balance mirror disagreeing with two-phase settlement).
+    assert!(
+        out_a.status.success(),
+        "probe run A failed: {}",
+        String::from_utf8_lossy(&out_a.stderr)
+    );
+    assert!(
+        out_b.status.success(),
+        "probe run B failed: {}",
+        String::from_utf8_lossy(&out_b.stderr)
+    );
     assert_eq!(
         out_a.stdout, out_b.stdout,
         "probe output diverged across processes"
@@ -402,16 +462,14 @@ fn stf_cross_process_determinism() {
     let text = String::from_utf8(out_a.stdout).unwrap();
     assert!(text.contains("final_state_root="));
     assert!(text.contains("final_seqno=25"));
+    assert!(text.contains("total_msgs="));
 }
 
-/// An empty-body block still commits to a well-defined txs_root.
+/// An empty-body block still commits to a well-defined msgs_root.
 #[test]
-fn stf_empty_body_has_stable_txs_root() {
-    let e1 = txs_root(&[]);
-    let e2 = BlockBody {
-        transactions: vec![],
-    }
-    .txs_root();
+fn stf_empty_body_has_stable_msgs_root() {
+    let e1 = msgs_root(&[]);
+    let e2 = BlockBody { messages: vec![] }.msgs_root();
     assert_eq!(e1, e2);
     assert_ne!(e1, [0u8; 32]);
 }

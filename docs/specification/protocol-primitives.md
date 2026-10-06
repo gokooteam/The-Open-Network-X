@@ -56,10 +56,46 @@ The protocol specification requires robust, deterministic, and independently tes
 - **Ed25519 Signature:** 64 bytes ($R \parallel s$, encoded according to RFC 8032 §5.1.6).
 
 ### 4.5 Domain Separation Prefixes
-All protocol hashing contexts must prepend an explicit domain separation tag before hashing:
-- `ONX:BLOCK:HEADER:V1` -> Prepend ASCII tag `ONX_BLK_HDR_V1\x00...` (padded to 32 bytes).
-- `ONX:TX:BODY:V1` -> Prepend padded 32-byte tag for transaction payload digests.
-- `ONX:VALIDATOR:SIGN:V1` -> Prepend padded 32-byte tag for validator vote signing digests.
+All protocol hashing contexts must prepend an explicit domain separation tag before hashing. `domain_hash(tag, msg) = SHA256(pad32(tag) || msg)`, where `pad32` is the ASCII tag zero-padded to 32 bytes. **Code is the authority for tag strings**: tags are frozen in golden test vectors and MUST NOT be renamed — a renamed tag silently forks every hash it touches.
+
+**Consensus spine** (the deterministic-replay path; frozen):
+
+| Tag string              | Domain-separates |
+|-------------------------|------------------|
+| `ONX_MSG_EXT_V1`        | External message identity: `SHA256(pad32 \|\| wire)` (signature included) |
+| `ONX_MSG_EXT_SIGN_V1`    | External message signature payload: `SHA256(pad32 \|\| body)` — the body includes `chain_id` |
+| `ONX_MSG_INT_V1`        | Internal message delivery ID: `SHA256(pad32 \|\| canonical bytes)` |
+| `ONX_MSGS_ROOT_V1`      | Ordered external-message-set commitment in the block header |
+| `ONX_ADDR_V1`           | Key-derived address: `SHA256(pad32 \|\| pubkey)` |
+| `ONX_BLOCK_HDR_V1`      | Block header identity: `SHA256(pad32 \|\| 148-byte header)` |
+| `ONX_CELL_HASH_V1`      | Cell representation hash (see `state-model.md` §4.3) |
+| `ONX_GENESIS_V1`        | Genesis document hash, which doubles as the chain ID |
+| `ONX_GENESIS_ADDR_V1`   | `AccountId` derivation from a genesis config label |
+| `ONX_GENESIS_VALKEY_V1` | Validator public-key derivation from a config label (dev-only; derived keys have no known private key) |
+
+**Orphan crates** (pre-spine code, not exercised by `onx replay`; tags live on until those crates are integrated or retired):
+
+| Tag string              | Used by |
+|-------------------------|---------|
+| `ONX_BLK_HDR_V1`        | `onx-data-structures` block hash |
+| `ONX_TX_BODY_V1`        | `onx-execution` interpreter and `onx-payment-channels` signature payloads |
+| `ONX_MSG_HASH_V1`       | `onx-data-structures` / `onx-transactions` message hashing |
+| `ONX_VALIDATOR_SIGN_V1` | `onx-networking` validator/DHT signatures |
+| `ONX_EXEC_HASH_V1`      | `onx-execution` interpreter |
+| `ONX_CHANNEL_STATE_V1`  | `onx-payment-channels` channel state |
+| `ONX_DHT_RECORD_V1`     | `onx-networking` DHT records |
+| `ONX_ADNL_CHANNEL_V1`, `ONX_ADNL_KEY_DESC_V1`, `ONX_ADNL_PAYLOAD_V1`, `ONX_ADNL_SHARED_SECRET_V1` | `onx-networking` ADNL transport |
+
+**Retired / dead** (kept out of new code; documented so nobody reuses the strings):
+
+| Tag string            | Status |
+|-----------------------|--------|
+| `ONX_TX_V1`, `ONX_TXS_ROOT_V1` | Dropped with the V1 transaction encoding (pre-release, never shipped) |
+| `ONX_TX_V2`, `ONX_TX_V2_SIGN`, `ONX_TXS_ROOT_V2` | Dropped with the V2 transaction encoding (pre-release, never shipped) |
+| `ONX_TX_V3`, `ONX_TX_V3_SIGN`, `ONX_TXS_ROOT_V3` | Dropped with the V3 transaction encoding — replaced by the message model (ADR-0001/0002), pre-release, never shipped |
+| `ONX_TRIE_NODE_V1`    | Defined in `onx-state-model/src/tree.rs` but never used — trie nodes hash as plain cells (`ONX_CELL_HASH_V1`) |
+
+**Test-only** (never consensus): `ONX_TEST_KEY_V1`, `ONX_PROBE_KEY_V1`.
 
 ---
 

@@ -7,14 +7,14 @@
 //!   c. Crash recovery — kill -9 mid-replay, resume, root matches.
 //!   d. Equivalence — pure in-memory apply vs persisted replay agree.
 //!   e. Corrupted block files rejected (tampered, truncated, bad prev_hash).
-//!   f. Invalid-transaction block rejected, head not advanced.
+//!   f. Invalid-message block rejected, head not advanced.
 //!   g. Idempotent re-run over committed blocks is a no-op.
 
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
-use onx_stf::{propose_block, Block, State, Transaction};
+use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -30,7 +30,7 @@ fn addr_hex(byte: u8) -> String {
 /// Deterministic signing key for a test account byte.
 ///
 /// Test-only: the seed is public, so these keys are not secret. The
-/// corresponding pubkey is written into the genesis TOML, so transactions
+/// corresponding pubkey is written into the genesis TOML, so messages
 /// from these accounts actually authorize.
 fn test_secret_key(byte: u8) -> SecretKey {
     SecretKey::from_seed(&[byte; 32]).expect("fixed test seed decodes")
@@ -70,26 +70,30 @@ fn account_id(byte: u8) -> AccountId {
     AccountId::from_bytes([byte; 32])
 }
 
-/// Build `n_blocks` of `txs_per` deterministic transactions via the honest
-/// producer path. Returns the blocks and the pure in-memory final state.
+/// Build `n_blocks` of `msgs_per` deterministic external messages via the
+/// honest producer path. Returns the blocks and the pure in-memory final
+/// state.
 fn build_chain(
     genesis_toml: &Path,
     n_blocks: u32,
-    txs_per: usize,
+    msgs_per: usize,
     seed: u64,
 ) -> (Vec<Block>, State) {
     let config = onx_genesis::parse_config(genesis_toml).unwrap();
     let doc = onx_genesis::build_genesis_document(&config).unwrap();
+    // Chain identity is the genesis hash; every message must carry it
+    // (ADR-0005).
+    let chain_id = doc.genesis_hash();
     let mut state = State::from_genesis(&doc);
     let collector = account_id(0xaa);
     let mut rng = seed;
     let mut blocks = Vec::new();
-    // Per-account nonces: every signed transaction consumes the sender's
+    // Per-account nonces: every signed message consumes the sender's
     // current nonce, so the fixture tracks them alongside the chain.
     let mut nonces: BTreeMap<AccountId, u64> = BTreeMap::new();
     for _ in 0..n_blocks {
-        let mut txs = Vec::new();
-        for _ in 0..txs_per {
+        let mut msgs = Vec::new();
+        for _ in 0..msgs_per {
             let from = account_id(0xaa + (xorshift64(&mut rng) % 4) as u8);
             let mut to = account_id(0xaa + (xorshift64(&mut rng) % 4) as u8);
             if to == from {
@@ -99,17 +103,21 @@ fn build_chain(
             nonces.insert(from, nonce + 1);
             // The account byte doubles as the key seed (see test_secret_key).
             let secret = test_secret_key(from.to_bytes()[0]);
-            txs.push(Transaction::new_signed(
+            msgs.push(ExternalMessage::new_signed(
+                chain_id,
+                MsgKind::Transfer,
                 from,
+                nonce,
                 to,
                 (1_000 + xorshift64(&mut rng) % 50_000) as u128,
                 (10 + xorshift64(&mut rng) % 100) as u128,
-                nonce,
+                Vec::new(),
+                [0u8; 32],
                 &secret,
             ));
         }
         let lt = state.last_lt + 1;
-        let block = propose_block(&state, txs, lt, collector).unwrap();
+        let block = propose_block(&state, msgs, lt, collector).unwrap();
         let (new_state, _) = onx_stf::apply_block(&state, &block).unwrap();
         state = new_state;
         blocks.push(block);
@@ -180,12 +188,23 @@ fn tmpdir(name: &str) -> PathBuf {
 // verified internally consistent (replay succeeds, roots deterministic
 // across runs). This is the new frozen baseline: the same rule applies —
 // investigate, do not update.
+//
+// NOTE 2026-10-05, message-model milestone (ADR-0001/ADR-0002):
+// synchronous transactions were replaced by external messages (new wire
+// encoding, new domain tags, header commitment `msgs_root`, block files
+// now `ONXBLK04`). The transfer fixture below was regenerated from the
+// message-model implementation via `replay_prints_vectors_for_freezing`
+// and came back BYTE-IDENTICAL to the V2 vectors — the wallet handler
+// reproduces the V2 state transitions exactly for plain transfers, so
+// these vectors stand unchanged. Parity, not coincidence: any divergence
+// would have been a state-machine regression. Same rule stands:
+// investigate, do not update.
 // ---------------------------------------------------------------------------
 
 /// Genesis root of the fixed test genesis config above.
 const GOLDEN_GENESIS_ROOT: &str =
     "079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d";
-/// State root after block 3 of the fixed 5-block × 4-tx chain (seed 0xC10C).
+/// State root after block 3 of the fixed 5-block × 4-msg chain (seed 0xC10C).
 const GOLDEN_ROOT_AFTER_3: &str =
     "3fbb03b29519164464d470e1facbb62f96d0f1ea4fe2e4dce3df87661650af36";
 /// Final state root after block 5 of the fixed chain.
@@ -344,7 +363,7 @@ fn replay_rejects_tampered_block_file() {
     let (blocks, _) = build_chain(&genesis, 4, 4, 0x7A1);
     let blocks_dir = dir.join("blocks");
     write_block_files(&blocks_dir, &blocks);
-    // Flip a byte in the middle of block 3's body (a transaction amount).
+    // Flip a byte in the middle of block 3's body (a message field).
     let p3 = blocks_dir.join(block_file_name(3));
     let mut bytes = std::fs::read(&p3).unwrap();
     bytes[200] ^= 0xff;
@@ -401,29 +420,36 @@ fn replay_rejects_wrong_prev_hash() {
 }
 
 // ---------------------------------------------------------------------------
-// (f) Invalid-transaction block rejected; head not advanced
+// (f) Invalid-message block rejected; head not advanced
 // ---------------------------------------------------------------------------
 
 #[test]
-fn replay_rejects_invalid_transaction_block() {
-    let dir = tmpdir("badtx");
+fn replay_rejects_invalid_message_block() {
+    let dir = tmpdir("badmsg");
     let genesis = write_genesis_toml(&dir);
+    let config = onx_genesis::parse_config(&genesis).unwrap();
+    let doc = onx_genesis::build_genesis_document(&config).unwrap();
+    let chain_id = doc.genesis_hash();
     let (blocks, state) = build_chain(&genesis, 3, 4, 0xBAD);
-    // Hand-assemble block 4 with a properly signed tx spending far more than
-    // any balance. txs_root is correct (assemble computes it); the STF must
-    // reject the transaction itself — the tx error fires before the
-    // state-root check.
+    // Hand-assemble block 4 with a properly signed message spending far
+    // more than any balance. msgs_root is correct (assemble computes it);
+    // the STF must reject the message itself — the wallet error fires
+    // before the state-root check.
     let sender = account_id(0xaa);
     let nonce = match state.tree.get(&sender) {
         Some(AccountState::Active { nonce, .. }) => *nonce,
         _ => panic!("fixture sender must be active"),
     };
-    let evil_txs = vec![Transaction::new_signed(
+    let evil_msgs = vec![ExternalMessage::new_signed(
+        chain_id,
+        MsgKind::Transfer,
         sender,
+        nonce,
         account_id(0xbb),
         u128::MAX,
         10,
-        nonce,
+        Vec::new(),
+        [0u8; 32],
         &test_secret_key(0xaa),
     )];
     let prev = &blocks[2];
@@ -433,10 +459,10 @@ fn replay_rejects_invalid_transaction_block() {
         prev.header.lt + 1,
         -1,
         account_id(0xaa),
-        evil_txs,
-        [0xff; 32], // garbage claimed root: must not mask the tx error
+        evil_msgs,
+        [0xff; 32], // garbage claimed root: must not mask the message error
     )
-    .expect("evil block has one transaction");
+    .expect("evil block has one message");
     let blocks_dir = dir.join("blocks");
     write_block_files(&blocks_dir, &blocks);
     std::fs::write(
@@ -445,17 +471,17 @@ fn replay_rejects_invalid_transaction_block() {
     )
     .unwrap();
 
-    let out = run_expect_failure(&dir, &genesis, &blocks_dir, "badtx");
+    let out = run_expect_failure(&dir, &genesis, &blocks_dir, "badmsg");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("InsufficientBalance") || stderr.contains("rejected"),
+        stderr.contains("insufficient funds") || stderr.contains("rejected"),
         "unexpected stderr: {stderr}"
     );
 
     // Head must not have advanced: drop the evil file, replay the valid
     // prefix to completion, and the chain must still reach its golden root.
     std::fs::remove_file(blocks_dir.join(block_file_name(4))).unwrap();
-    let out2 = run_replay(&genesis, &blocks_dir, &dir.join("data-badtx"));
+    let out2 = run_replay(&genesis, &blocks_dir, &dir.join("data-badmsg"));
     assert!(
         out2.status.success(),
         "valid-prefix replay failed after rejection: {}",

@@ -21,8 +21,8 @@ fn test_account_state_serialization_round_trip() {
     let active = AccountState::Active {
         balance_nanos: 1_000_000_000,
         last_trans_lt: 100,
-        code_hash: [0x11; 32],
-        data_hash: [0x22; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 5,
             byte_count: 500,
@@ -52,8 +52,8 @@ fn test_account_lifecycle_transitions() {
     let active_1 = AccountState::Active {
         balance_nanos: 1_000_000,
         last_trans_lt: 10,
-        code_hash: [1; 32],
-        data_hash: [2; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
@@ -69,8 +69,8 @@ fn test_account_lifecycle_transitions() {
     let active_2 = AccountState::Active {
         balance_nanos: 900_000,
         last_trans_lt: 15,
-        code_hash: [1; 32],
-        data_hash: [3; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 150,
@@ -84,8 +84,8 @@ fn test_account_lifecycle_transitions() {
     let active_regress = AccountState::Active {
         balance_nanos: 800_000,
         last_trans_lt: 12,
-        code_hash: [1; 32],
-        data_hash: [3; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 150,
@@ -110,8 +110,8 @@ fn test_account_lifecycle_transitions() {
     let active_unfrozen = AccountState::Active {
         balance_nanos: 1_000_000,
         last_trans_lt: 25,
-        code_hash: [1; 32],
-        data_hash: [4; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 80,
@@ -137,8 +137,8 @@ fn test_balance_underflow_and_transition_with_delta() {
     let active_init = AccountState::Active {
         balance_nanos: 1_000_000,
         last_trans_lt: 10,
-        code_hash: [1; 32],
-        data_hash: [2; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
@@ -151,8 +151,8 @@ fn test_balance_underflow_and_transition_with_delta() {
     let active_next_valid = AccountState::Active {
         balance_nanos: 700_000,
         last_trans_lt: 15,
-        code_hash: [1; 32],
-        data_hash: [2; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
@@ -168,8 +168,8 @@ fn test_balance_underflow_and_transition_with_delta() {
     let active_next_underflow = AccountState::Active {
         balance_nanos: 0,
         last_trans_lt: 15,
-        code_hash: [1; 32],
-        data_hash: [2; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
@@ -270,8 +270,8 @@ fn test_shard_state_tree_and_merkle_proofs() {
     let state1 = AccountState::Active {
         balance_nanos: 500,
         last_trans_lt: 1,
-        code_hash: [0x01; 32],
-        data_hash: [0x02; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 10,
@@ -283,8 +283,8 @@ fn test_shard_state_tree_and_merkle_proofs() {
     let state2 = AccountState::Active {
         balance_nanos: 1500,
         last_trans_lt: 2,
-        code_hash: [0x03; 32],
-        data_hash: [0x04; 32],
+        code: None,
+        data: None,
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 20,
@@ -315,4 +315,68 @@ fn test_shard_state_tree_and_merkle_proofs() {
         tampered_proof.verify(&root_hash),
         Err(StateModelError::InvalidMerkleProof(_))
     ));
+}
+
+#[test]
+fn test_codeless_account_encoding_is_byte_identical_to_v2() {
+    // The contract upgrade must not change the encoding of plain accounts:
+    // 141 bytes, with the code_hash/data_hash header fields all zero and
+    // nothing appended. This is what keeps the V2 golden vectors valid.
+    let active = AccountState::Active {
+        balance_nanos: 1_000_000_000,
+        last_trans_lt: 100,
+        code: None,
+        data: None,
+        storage_stat: StorageStat {
+            cell_count: 5,
+            byte_count: 500,
+        },
+        pubkey: [0x77; 32],
+        nonce: 7,
+    };
+    let bytes = active.to_bytes();
+    assert_eq!(bytes.len(), 141, "codeless account must stay 141 bytes");
+    assert_eq!(bytes[0], 1, "Active type tag");
+    // code_hash (bytes 25..57) and data_hash (57..89) are all zero.
+    assert!(bytes[25..57].iter().all(|&b| b == 0));
+    assert!(bytes[57..89].iter().all(|&b| b == 0));
+    // Round-trips with no cells.
+    let (de, consumed) = AccountState::from_bytes(&bytes).unwrap();
+    assert_eq!(consumed, 141);
+    match de {
+        AccountState::Active {
+            code: None,
+            data: None,
+            ..
+        } => {}
+        other => panic!("unexpected: {other:?}"),
+    }
+    assert_eq!(de, active);
+}
+
+#[test]
+fn test_embedded_cell_hash_mismatch_rejected() {
+    // A tampered code payload (hash doesn't match the header) fails closed.
+    let code = Cell::new(vec![0x45], vec![]).unwrap();
+    let active = AccountState::Active {
+        balance_nanos: 1,
+        last_trans_lt: 1,
+        code: Some(code),
+        data: None,
+        storage_stat: StorageStat {
+            cell_count: 1,
+            byte_count: 3,
+        },
+        pubkey: [0u8; 32],
+        nonce: 0,
+    };
+    let mut bytes = active.to_bytes();
+    // Flip a bit inside the appended code cell payload.
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    let err = AccountState::from_bytes(&bytes).unwrap_err();
+    assert!(
+        matches!(err, StateModelError::DeserializationError(_)),
+        "unexpected: {err:?}"
+    );
 }
