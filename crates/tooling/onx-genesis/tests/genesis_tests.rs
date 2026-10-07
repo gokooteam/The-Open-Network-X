@@ -151,3 +151,50 @@ fn parses_repo_default_config() {
     assert!(!doc.validators.is_empty());
     assert!(!doc.accounts.is_empty());
 }
+
+#[test]
+fn rekeyed_fixture_validator_is_test_secret_key_0x11() {
+    // Rekey (2026-10-07): the repo fixture's validator must be the public
+    // key of test_secret_key(0x11) = SecretKey::from_seed(&[0x11; 32]) — a
+    // public, deterministic test key — so fixture blocks can actually be
+    // signed (ONXBLK05). The old DEV label "validator-01" derived a key
+    // with no known private key and could never sign.
+    let cfg = parse_config(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../config/genesis.toml"
+    ))
+    .expect("repo genesis.toml must parse");
+    let doc = build_genesis_document(&cfg).expect("repo genesis.toml must build");
+
+    let expected = onx_primitives::SecretKey::from_seed(&[0x11u8; 32])
+        .expect("fixed test seed decodes")
+        .public_key()
+        .encode();
+    assert_eq!(doc.validators.len(), 1);
+    assert_eq!(
+        doc.validators[0].pubkey, expected,
+        "fixture validator is not test_secret_key(0x11)"
+    );
+
+    // Property: the rekey changes the chain ID (the genesis hash commits to
+    // the validator set) but leaves the state root (accounts) untouched —
+    // only the validator key moved, nothing about the funded accounts.
+    let mut old_cfg = cfg.clone();
+    old_cfg.validators[0].public_key = "validator-01".to_string();
+    let old_doc = build_genesis_document(&old_cfg).expect("old DEV-label config must build");
+    assert_ne!(
+        doc.genesis_hash(),
+        old_doc.genesis_hash(),
+        "chain ID must change on rekey"
+    );
+    assert_eq!(
+        doc.state_tree()
+            .state_root_hash()
+            .expect("state root builds"),
+        old_doc
+            .state_tree()
+            .state_root_hash()
+            .expect("state root builds"),
+        "state root must be unchanged by the validator rekey"
+    );
+}
