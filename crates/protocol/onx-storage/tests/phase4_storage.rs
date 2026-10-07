@@ -621,6 +621,7 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
     };
     cleanup(&ref_path);
 
+    let mut ever_committed = false;
     for i in 0..iters {
         // NOTE: the seed is constant across iterations — the kill *timing*
         // (random sleep below) is what varies. Comparing against one
@@ -652,6 +653,9 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         // Reopen (this IS the recovery) and verify full-or-nothing.
         let store = ChainStore::open(&path)?;
         let crashed_at = verify_crash_invariants(&store)?;
+        if crashed_at > 0 {
+            ever_committed = true;
+        }
 
         // Resume from the head pointer to completion.
         let resumed_root = run_chain_to(&store, num_blocks, seed)?;
@@ -662,6 +666,13 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         drop(store);
         cleanup(&path);
     }
+    // The probe must actually commit blocks: if every iteration dies at
+    // seqno 0, the test is hollow (this is how the empty-sig rejection
+    // silently neutered the probe).
+    assert!(
+        ever_committed,
+        "crash probe never committed a block in {iters} iterations — test is hollow"
+    );
     Ok(())
 }
 

@@ -810,23 +810,13 @@ fn startup_regenerates_block_file_missing_after_crash() {
     .unwrap();
     assert_eq!(block.header.seqno, 2);
     // Real signature (the test genesis declares test_secret(0x11) as its
-    // validator): the regenerated file must pass `onx replay`'s auth check.
+    // sole validator): the regenerated file must pass `onx replay`'s auth check.
     let real_sig = {
-        use onx::auth::GenesisValidatorRef;
         let secret = test_secret(0x11);
         let preimage = block.header.sign_bytes(&h.chain_id);
         let sig = secret.sign_raw(&preimage).encode();
-        // Validator 0 in the pubkey-sorted canonical list.
-        let refs = [GenesisValidatorRef {
-            pubkey: secret.public_key().encode(),
-            stake: 1000,
-        }];
-        let index = refs
-            .iter()
-            .position(|r| r.pubkey == secret.public_key().encode())
-            .unwrap() as u32;
         vec![onx_stf::SigEntry {
-            validator_index: index,
+            validator_index: 0,
             sig,
         }]
     };
@@ -1019,4 +1009,76 @@ fn producer_refuses_to_start_without_signing_key() {
         err.contains("no signing key"),
         "expected no-signing-key refusal, got: {err}"
     );
+}
+
+/// Audit R1: running the onxd BINARY without a signing key must exit
+/// non-zero quickly — not sit idle behind a healthy-looking PID. (The
+/// unit-level test calls run_producer_loop directly; this exercises the
+/// daemon's supervision: pre-spawn key check + producer task in select!.)
+#[test]
+fn daemon_binary_refuses_to_start_without_key() {
+    use std::time::Instant;
+
+    let dir = std::env::temp_dir().join(format!("onxd-nokey-{}", std::process::id()));
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+    std::fs::create_dir_all(&dir).unwrap();
+    let genesis_toml = write_genesis_toml(&dir);
+    let storage = dir.join("state");
+    let txpool = dir.join("txpool");
+
+    // Minimal daemon config: genesis + storage + fee collector, NO key.
+    let cfg_path = dir.join("onxd.toml");
+    std::fs::write(
+        &cfg_path,
+        format!(
+            "role = \"validator\"\nstorage_path = \"{}\"\nnetwork_enabled = false\n\
+             bootstrap_genesis = \"{}\"\ntx_pool_dir = \"{}\"\n\
+             fee_collector = \"{}\"\nblock_poll_interval_ms = 25\n",
+            storage.to_str().unwrap(),
+            genesis_toml.to_str().unwrap(),
+            txpool.to_str().unwrap(),
+            hex::encode([0xaa; 32]),
+        ),
+    )
+    .unwrap();
+
+    // Build the onxd binary (cargo test doesn't build bins).
+    let bin = {
+        let root = workspace_root();
+        let target = root.join("target").join("debug").join("onxd");
+        if !target.is_file() {
+            let status = Command::new(cargo_bin())
+                .args(["build", "-p", "onxd", "--bin", "onxd"])
+                .current_dir(&root)
+                .status()
+                .expect("cargo build failed to spawn");
+            assert!(status.success(), "cargo build -p onxd failed");
+        }
+        target
+    };
+
+    let start = Instant::now();
+    let out = Command::new(&bin)
+        .args(["--config", cfg_path.to_str().unwrap()])
+        .output()
+        .expect("onxd failed to spawn");
+    let elapsed = start.elapsed();
+
+    assert!(
+        !out.status.success(),
+        "onxd without a key must exit non-zero, got: {}",
+        out.status
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "onxd without a key must fail fast, took {elapsed:?}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no signing key"),
+        "expected no-signing-key error, got: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

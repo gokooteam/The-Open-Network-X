@@ -15,6 +15,14 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
+/// Best-effort memory wipe for key material. Uses volatile writes so the
+/// compiler cannot optimize the wipe away.
+fn zeroize(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+}
+
 /// Load a validator signing key (ONXBLK05, TRAP 4).
 ///
 /// - The file must contain exactly 32 bytes (the seed).
@@ -29,16 +37,16 @@ use tokio::time::sleep;
 /// Any violation is a startup refusal, never a warning.
 fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String> {
     use std::io::Read;
-    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
-    // Refuse symlinks: the key path must be a real file.
-    let link_meta =
-        fs::symlink_metadata(path).map_err(|e| format!("signing key {path}: cannot stat: {e}"))?;
-    if link_meta.file_type().is_symlink() {
-        return Err(format!("signing key {path}: must not be a symlink"));
-    }
-    let mut file =
-        fs::File::open(path).map_err(|e| format!("signing key {path}: cannot open: {e}"))?;
+    // Open with O_NOFOLLOW: the key path must be a real file, never a
+    // symlink. This closes the symlink race that a symlink_metadata check
+    // alone leaves open.
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("signing key {path}: cannot open (not a regular file?): {e}"))?;
     // Stat the open fd — the checks below apply to the exact bytes we read.
     let metadata = file
         .metadata()
@@ -56,6 +64,8 @@ fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String>
     file.read_to_end(&mut seed)
         .map_err(|e| format!("signing key {path}: cannot read: {e}"))?;
     if seed.len() != 32 {
+        // Zero the buffer before returning: it may hold a partial key.
+        zeroize(&mut seed);
         return Err(format!(
             "signing key {path}: must be 32 bytes, got {}",
             seed.len()
@@ -63,6 +73,9 @@ fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String>
     }
     let secret =
         SecretKey::from_seed(&seed).map_err(|e| format!("signing key {path}: bad seed: {e}"))?;
+    // The seed has served its purpose; wipe it from memory. (SecretKey
+    // manages its own material from here.)
+    zeroize(&mut seed);
     let pubkey = secret.public_key().encode();
 
     // The key must belong to a genesis validator.
@@ -386,6 +399,18 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         Some(path) => Some(load_signing_key(path, &store)?),
     };
 
+    // Fail fast before spawning anything: a daemon without a signing key
+    // cannot produce a single valid block. Refusing here (not inside the
+    // producer thread) guarantees the process exits non-zero at startup
+    // instead of sitting idle behind a healthy-looking PID.
+    if signing_key.is_none() {
+        return Err(
+            "no signing key configured (signing_key_path in config or --signing-key): \
+             refusing to start"
+                .to_string(),
+        );
+    }
+
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
     // Networking is frozen: reporting a peer count would imply a network
     // exists. Zero is the honest value until the real loop lands.
@@ -443,6 +468,7 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     let producer_task = tokio::task::spawn_blocking(move || {
         run_producer_loop(store, mempool, producer_cfg, producer_shutdown)
     });
+    let mut producer_task = producer_task;
 
     let runtime_shutdown = config
         .shutdown_after_ms
@@ -462,6 +488,26 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
                 std::future::pending::<()>().await;
             }
         } => {},
+        // The producer task is supervised: if it exits (error or panic)
+        // the daemon must not sit idle behind a healthy PID — break out
+        // and propagate the failure as a non-zero exit below.
+        res = &mut producer_task => {
+            match res {
+                Ok(Ok(stats)) => {
+                    eprintln!(
+                        "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
+                        stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
+                    );
+                    return Ok(());
+                }
+                Ok(Err(e)) => {
+                    return Err(format!("onxd: producer exited with error: {e}"));
+                }
+                Err(e) => {
+                    return Err(format!("onxd: producer task panicked: {e}"));
+                }
+            }
+        }
     }
 
     // Graceful shutdown: the flag stops the producer after its current tick
