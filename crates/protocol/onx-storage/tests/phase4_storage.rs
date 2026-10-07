@@ -8,6 +8,7 @@
 
 use onx_state_model::AccountState;
 use onx_stf::{apply_block, propose_block, Block, State};
+use std::io::BufRead;
 
 /// Placeholder signature entries for storage tests that don't exercise auth.
 /// `commit_block` stores (never verifies) the section; only non-emptiness
@@ -629,26 +630,54 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         let seed = 0xC0FFEEu64;
         let path = temp_db_path(&format!("crash{i}"));
 
-        let mut child = Command::new(probe)
-            .arg(&path)
-            .arg(num_blocks.to_string())
-            .arg(seed.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn crash probe");
-
-        // Kill at a random point: 1..40ms. Sometimes the probe finishes
-        // first — that exercises the already-complete path instead.
+        // Kill based on the probe's PROGRESS, not a fixed delay: read its
+        // stdout and SIGKILL after a random number of committed blocks.
+        // A fixed 1–40ms delay is machine-speed-dependent — on slow
+        // machines the kill always lands before block 1, and the test
+        // silently stops testing mid-chain crashes.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos() as u64;
-        let sleep_ms = 1 + (nanos.wrapping_add((i as u64).wrapping_mul(0x9E3779B97F4A7C15)) % 40);
-        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-        // SIGKILL on unix; best-effort if the child already exited.
-        let _ = child.kill();
-        let _ = child.wait();
+        // Target: 1..=num_blocks commits, or num_blocks+1 to let it finish
+        // (exercises the already-complete path).
+        let target_commits = 1
+            + (nanos.wrapping_add((i as u64).wrapping_mul(0x9E3779B97F4A7C15))
+                % (num_blocks as u64 + 1));
+        let mut child = Command::new(probe)
+            .arg(&path)
+            .arg(num_blocks.to_string())
+            .arg(seed.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn crash probe");
+        let stdout = child.stdout.take().expect("probe stdout piped");
+        let reader = std::io::BufReader::new(stdout);
+        let mut committed = 0u64;
+        let mut killed = false;
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break, // pipe closed: probe exited
+            };
+            if line.starts_with("committed seqno=") {
+                committed += 1;
+                if committed >= target_commits {
+                    // SIGKILL on unix; best-effort if the child already exited.
+                    let _ = child.kill();
+                    killed = true;
+                    break;
+                }
+            }
+        }
+        if !killed {
+            // Probe finished before the target (or exited early): wait for
+            // it; this exercises the already-complete path.
+            let _ = child.wait();
+        } else {
+            let _ = child.wait();
+        }
 
         // Reopen (this IS the recovery) and verify full-or-nothing.
         let store = ChainStore::open(&path)?;

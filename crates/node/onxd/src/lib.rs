@@ -515,17 +515,23 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     // a fully-committed state. Uncommitted mempool messages stay in
     // pending/ and are re-proposed on the next startup.
     shutdown.store(true, Ordering::Relaxed);
-    match producer_task.await {
-        Ok(Ok(stats)) => eprintln!(
-            "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
-            stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
-        ),
-        Ok(Err(e)) => eprintln!("onxd: producer exited with error: {e}"),
-        Err(e) => eprintln!("onxd: producer task panicked: {e}"),
-    }
+    let result = match producer_task.await {
+        Ok(Ok(stats)) => {
+            eprintln!(
+                "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
+                stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
+            );
+            Ok(())
+        }
+        // A producer that fails on its final tick after the shutdown signal
+        // is still a failure: propagate it as a non-zero exit, don't just
+        // log it.
+        Ok(Err(e)) => Err(format!("onxd: producer exited with error: {e}")),
+        Err(e) => Err(format!("onxd: producer task panicked: {e}")),
+    };
 
     metrics_task.abort();
-    Ok(())
+    result
 }
 
 #[cfg(test)]
