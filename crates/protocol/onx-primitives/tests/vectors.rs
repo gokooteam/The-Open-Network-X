@@ -357,3 +357,55 @@ fn ed25519_rfc8032_test_vector_1_raw_primitive() {
 fn hex_decode(s: &str) -> Vec<u8> {
     hex::decode(s).unwrap()
 }
+
+// --- Strict public-key validation: the `verify_strict` bar ---
+
+/// `decode_strict` accepts a genuine large-order key.
+#[test]
+fn strict_accepts_valid_large_order_key() {
+    let key = SecretKey::from_seed(&[7u8; 32]).unwrap().public_key();
+    let bytes = key.encode();
+    assert_eq!(PublicKey::decode_strict(&bytes).unwrap(), key);
+}
+
+/// `decode_strict` rejects the identity point (order 1): it is a canonical
+/// on-curve encoding, so `decode_exact` accepts it — the strict predicate
+/// is exactly the small-order check `verify_strict` applies.
+#[test]
+fn strict_rejects_identity_point() {
+    let mut identity = [0u8; 32];
+    identity[0] = 0x01;
+    assert!(PublicKey::decode_exact(&identity).is_ok());
+    assert_eq!(
+        PublicKey::decode_strict(&identity).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+}
+
+/// `decode_strict` rejects the all-zeros encoding (the order-2 point y=0):
+/// canonical and on-curve, hence accepted by `decode_exact`, but small-order.
+#[test]
+fn strict_rejects_order_two_point() {
+    let zeros = [0u8; 32];
+    assert!(PublicKey::decode_exact(&zeros).is_ok());
+    assert_eq!(
+        PublicKey::decode_strict(&zeros).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+}
+
+/// `decode_strict` propagates off-curve rejection: y=2 is a canonical
+/// encoding that fails the curve equation, rejected by both predicates.
+#[test]
+fn strict_rejects_off_curve_point() {
+    let mut off_curve = [0u8; 32];
+    off_curve[0] = 0x02;
+    assert_eq!(
+        PublicKey::decode_exact(&off_curve).unwrap_err(),
+        PrimitiveError::NonCanonicalEncoding
+    );
+    assert_eq!(
+        PublicKey::decode_strict(&off_curve).unwrap_err(),
+        PrimitiveError::NonCanonicalEncoding
+    );
+}

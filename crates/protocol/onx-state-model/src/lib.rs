@@ -20,8 +20,8 @@ pub use cell::{Cell, MAX_CELL_DATA_BYTES, MAX_CELL_REFS, ONX_CELL_HASH_V1_TAG};
 pub use contract_cells::ContractCellDags;
 pub use error::StateModelError;
 pub use genesis::{
-    derive_account_id, derive_validator_pubkey, parse_or_derive_account_id, parse_or_derive_pubkey,
-    GenesisDocument, GenesisValidator, GENESIS_MAGIC, GENESIS_VERSION, ONX_GENESIS_ADDR_V1,
-    ONX_GENESIS_V1, ONX_GENESIS_VALKEY_V1,
+    derive_account_id, derive_validator_pubkey, is_explicit_hex_key, parse_or_derive_account_id,
+    parse_or_derive_pubkey, GenesisDocument, GenesisValidator, GENESIS_MAGIC, GENESIS_VERSION,
+    ONX_GENESIS_ADDR_V1, ONX_GENESIS_V1, ONX_GENESIS_VALKEY_V1,
 };
 pub use tree::{MerkleProof, ShardStateTree, MAX_TRIE_VALUE_BYTES, MERKLE_PROOF_MAGIC};

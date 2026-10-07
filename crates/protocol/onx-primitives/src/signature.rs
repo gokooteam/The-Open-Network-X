@@ -48,6 +48,23 @@ impl PublicKey {
         Ok(PublicKey(key))
     }
 
+    /// Decodes a public key under the strict predicate: [`Self::decode_exact`]
+    /// plus rejection of small-order (torsion) points. This is the same bar
+    /// [`Self::verify`] applies to the key at verification time via
+    /// `verify_strict`, which rejects small-order keys because cofactorless
+    /// verification equations admit forgeries under them.
+    ///
+    /// Use this for any key that becomes a trust root — genesis validator
+    /// keys, and any key whose signatures are verified by parties other
+    /// than the signer — never for keys that merely need to parse.
+    pub fn decode_strict(bytes: &[u8]) -> Result<Self, PrimitiveError> {
+        let key = Self::decode_exact(bytes)?;
+        if key.0.is_weak() {
+            return Err(PrimitiveError::SmallOrderPublicKey);
+        }
+        Ok(key)
+    }
+
     pub fn encode(&self) -> [u8; 32] {
         self.0.to_bytes()
     }

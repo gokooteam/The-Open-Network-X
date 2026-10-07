@@ -45,7 +45,9 @@ fn write_genesis_toml(dir: &Path) -> PathBuf {
     }
     toml.push_str(&format!(
         "[[validators]]\npublic_key = \"{}\"\nstake = 1000\n\n",
-        addr_hex(0x11)
+        // Real deterministic key: explicit hex validator keys must clear the
+        // strict predicate (canonical, on-curve, large-order).
+        hex::encode(test_secret(0x11).public_key().encode())
     ));
     toml.push_str("[[workchains]]\nid = -1\nname = \"masterchain\"\nenabled = true\n");
     let path = dir.join("genesis.toml");

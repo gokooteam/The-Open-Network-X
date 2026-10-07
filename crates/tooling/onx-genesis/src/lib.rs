@@ -2,8 +2,8 @@
 use onx_data_structures::{ShardIdent, WorkchainIdent};
 use onx_primitives::PublicKey;
 use onx_state_model::{
-    parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, Cell, GenesisDocument,
-    GenesisValidator, StorageStat,
+    is_explicit_hex_key, parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, Cell,
+    GenesisDocument, GenesisValidator, StorageStat,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -177,8 +177,24 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
         return Err("onx-genesis failed: at least one validator is required".to_string());
     }
     let mut validators = Vec::with_capacity(config.validators.len());
-    for v in &config.validators {
+    for (idx, v) in config.validators.iter().enumerate() {
         let pubkey = parse_or_derive_pubkey(&v.public_key).map_err(|e| e.to_string())?;
+        // An explicit 64-hex-char key is real key material — the only form
+        // suitable for a real network — so it must clear the strict
+        // predicate: canonical encoding, on-curve, and large-order, the
+        // same bar `verify_strict` applies at verification time. A
+        // small-order or off-curve validator key would poison the trust
+        // root: once block headers are producer-signed, anyone could forge
+        // explorer-accepted headers under it. Label-derived keys are
+        // DEV-only (no known private key, can never sign) and pass through.
+        if is_explicit_hex_key(&v.public_key) {
+            PublicKey::decode_strict(&pubkey).map_err(|e| {
+                format!(
+                    "onx-genesis failed: validator #{idx} has invalid public_key \
+                     (must be a canonical, on-curve, large-order Ed25519 point): {e}"
+                )
+            })?;
+        }
         validators.push(GenesisValidator {
             pubkey,
             stake: v.stake,
@@ -205,12 +221,27 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
         let pubkey = match &b.public_key {
             Some(key_str) => {
                 let bytes = parse_or_derive_pubkey(key_str).map_err(|e| e.to_string())?;
-                PublicKey::decode_exact(&bytes).map_err(|e| {
-                    format!(
-                        "onx-genesis failed: balance {:?} has invalid public_key: {e}",
-                        b.address
-                    )
-                })?;
+                // Same rule as validator keys: explicit hex is real key
+                // material and must clear the strict predicate — a
+                // small-order balance key would lock funds forever
+                // (unspendable under `verify_strict`). Label-derived keys
+                // are DEV-only and pass through.
+                if is_explicit_hex_key(key_str) {
+                    PublicKey::decode_strict(&bytes).map_err(|e| {
+                        format!(
+                            "onx-genesis failed: balance {:?} has invalid public_key \
+                             (must be a canonical, on-curve, large-order Ed25519 point): {e}",
+                            b.address
+                        )
+                    })?;
+                } else {
+                    PublicKey::decode_exact(&bytes).map_err(|e| {
+                        format!(
+                            "onx-genesis failed: balance {:?} has invalid public_key: {e}",
+                            b.address
+                        )
+                    })?;
+                }
                 bytes
             }
             None => [0u8; 32],

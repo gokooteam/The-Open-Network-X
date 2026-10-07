@@ -48,7 +48,9 @@ fn write_contract_genesis_toml(dir: &Path) -> PathBuf {
         sender = addr_hex(0xa1),
         contract = addr_hex(0xc0),
         collector = addr_hex(0xcc),
-        val = addr_hex(0x11),
+        // Real deterministic key: explicit hex validator keys must clear the
+        // strict predicate (canonical, on-curve, large-order).
+        val = hex::encode(test_secret_key(0x11).public_key().encode()),
     );
     let path = dir.join("genesis.toml");
     std::fs::write(&path, toml).unwrap();

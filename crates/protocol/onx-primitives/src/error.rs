@@ -20,6 +20,13 @@ pub enum PrimitiveError {
     /// An Ed25519 public key or signature used a non-canonical point or
     /// scalar encoding (RFC 8032).
     NonCanonicalEncoding,
+    /// An Ed25519 public key decoded to a small-order (low-order / torsion)
+    /// curve point. Such keys are canonical encodings of valid points, so
+    /// they pass [`PrimitiveError::NonCanonicalEncoding`] checks, but they
+    /// fail the strict predicate: `verify_strict` rejects them because
+    /// cofactorless verification equations admit forgeries under
+    /// small-order keys.
+    SmallOrderPublicKey,
     /// A domain separation tag was missing, the wrong length, or did not
     /// match the expected protocol context.
     InvalidDomainTag,
@@ -43,6 +50,9 @@ impl fmt::Display for PrimitiveError {
             }
             PrimitiveError::NonCanonicalEncoding => {
                 write!(f, "non-canonical point or scalar encoding")
+            }
+            PrimitiveError::SmallOrderPublicKey => {
+                write!(f, "small-order Ed25519 public key (strict validation)")
             }
             PrimitiveError::InvalidDomainTag => write!(f, "invalid domain separation tag"),
             PrimitiveError::SignatureVerificationFailed => {

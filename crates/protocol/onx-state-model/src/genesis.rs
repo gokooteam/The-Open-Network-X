@@ -289,7 +289,7 @@ pub fn derive_validator_pubkey(label: &str) -> [u8; 32] {
 }
 
 fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !is_explicit_hex_key(s) {
         return None;
     }
     let mut out = [0u8; 32];
@@ -299,6 +299,16 @@ fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
         out[i] = (hi as u8) * 16 + (lo as u8);
     }
     Some(out)
+}
+
+/// Reports whether `s` is a 64-character hex literal — real key material —
+/// as opposed to a DEV label. This is the first branch of the three-way
+/// rule in [`parse_or_derive_pubkey`] / [`parse_or_derive_account_id`];
+/// keep the two in sync. Callers that must apply strict key validation
+/// (genesis validator keys) use this to tell "operator-supplied key
+/// material, validate it" apart from "derived dev key, cannot sign".
+pub fn is_explicit_hex_key(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// Maps a balance address string to an [`AccountId`]:
