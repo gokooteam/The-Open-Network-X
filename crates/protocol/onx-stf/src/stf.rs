@@ -380,8 +380,8 @@ fn wallet_receive(
     //     the account's address (ADR-0006). The reveal is stored, so the
     //     account is keyed from now on. An address that was not derived
     //     from any key can never satisfy this and stays unspendable.
-    // The all-zero pubkey is rejected explicitly in both cases: it is the
-    // Ed25519 identity point, for which a degenerate signature verifies
+    // The all-zero pubkey is rejected explicitly in both cases: it is an
+    // order-4 Ed25519 point, for which a degenerate signature verifies
     // under any message — keylessness is never left to the verifier.
     let effective_pubkey = if stored_pubkey == [0u8; 32] {
         if ext.pubkey == [0u8; 32] {

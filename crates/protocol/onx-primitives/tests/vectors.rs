@@ -386,11 +386,11 @@ fn strict_rejects_identity_point() {
     );
 }
 
-/// `decode_exact` rejects the all-zeros encoding (the order-2 point y=0):
+/// `decode_exact` rejects the all-zeros encoding (the order-4 point):
 /// canonical and on-curve, so it passes decompress and recompress-compare,
 /// but it is small-order.
 #[test]
-fn strict_rejects_order_two_point() {
+fn strict_rejects_order_four_point() {
     let zeros = [0u8; 32];
     assert_eq!(
         PublicKey::decode_exact(&zeros).unwrap_err(),

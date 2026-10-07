@@ -13,8 +13,8 @@ use onx_genesis::{build_genesis_document, Balance, GenesisConfig, Validator, Wor
 const VALID_KEY_HEX: &str = "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
 /// Identity point: canonical on-curve encoding, order 1.
 const IDENTITY_KEY_HEX: &str = "0100000000000000000000000000000000000000000000000000000000000000";
-/// All-zeros: the order-2 point (y = 0); canonical and on-curve.
-const ORDER_TWO_KEY_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
+/// All-zeros: the order-4 point; canonical and on-curve.
+const ORDER_FOUR_KEY_HEX: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 /// y = 2: canonical encoding that fails the curve equation.
 const OFF_CURVE_KEY_HEX: &str = "0200000000000000000000000000000000000000000000000000000000000000";
 
@@ -73,8 +73,8 @@ fn rejects_identity_point_validator_key() {
 
 #[test]
 fn rejects_small_order_validator_key() {
-    let err = build_genesis_document(&config_with_validator_key(ORDER_TWO_KEY_HEX))
-        .expect_err("order-2 point must be rejected");
+    let err = build_genesis_document(&config_with_validator_key(ORDER_FOUR_KEY_HEX))
+        .expect_err("order-4 (all-zeros) point must be rejected");
     assert!(
         err.contains("validator #0") && err.contains("large-order"),
         "error must name the validator and the rule, got: {err}"
@@ -163,7 +163,7 @@ fn rejects_small_order_balance_key() {
     // under `verify_strict`, so genesis must refuse to create it.
     for (name, key) in [
         ("identity", IDENTITY_KEY_HEX),
-        ("order-2", ORDER_TWO_KEY_HEX),
+        ("order-4", ORDER_FOUR_KEY_HEX),
         ("off-curve", OFF_CURVE_KEY_HEX),
     ] {
         let err = build_genesis_document(&config_with_balance_key(Some(key)))

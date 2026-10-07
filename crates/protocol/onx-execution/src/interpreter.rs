@@ -476,6 +476,14 @@ impl Interpreter {
                 }
                 let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                 let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
+                // Raw result before width/flavor application. `I128` is an exact
+                // i128; `U128` is an already-wrapped value in [0, 2^128) for
+                // results the i128 carrier cannot hold (wrap-flavor
+                // negatives at width 128, MIN / -1). F1/F2 hotfix.
+                enum Raw {
+                    I128(i128),
+                    U128(u128),
+                }
                 let result = match opcode {
                     // DIV returns only the quotient of the same true-floor
                     // division DIVMOD uses, so the two opcodes agree on q
@@ -484,22 +492,107 @@ impl Interpreter {
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        floored_divmod(a, b)
-                            .map(|(q, _)| q)
-                            .ok_or(ExceptionKind::IntegerOverflow)?
+                        if a == i128::MIN && b == -1 {
+                            // True quotient 2^127, unrepresentable as i128
+                            // (F2): route through the u128 carrier.
+                            match flavor {
+                                // Unsigned: 2^127 in [0, 2^width) only at
+                                // width 128.
+                                0 => {
+                                    if width == 128 {
+                                        Raw::U128(1u128 << 127)
+                                    } else {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                }
+                                // Signed: 2^127 >= 2^(width-1) for every
+                                // width <= 128.
+                                1 => return Err(ExceptionKind::IntegerOverflow),
+                                // Wrap: 2^127 mod 2^width (0 below 128).
+                                _ => Raw::U128(if width == 128 { 1u128 << 127 } else { 0 }),
+                            }
+                        } else {
+                            let (q, _) =
+                                floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
+                            Raw::I128(q)
+                        }
                     }
                     0x18 => {
                         if b < 0 || b >= width as i128 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a.checked_shl(b as u32)
-                            .ok_or(ExceptionKind::IntegerOverflow)?
+                        let r = a
+                            .checked_shl(b as u32)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        // F1: `checked_shl` only rejects shift amounts >=
+                        // 128; it silently discards shifted-out bits. A
+                        // lossless shift round-trips: (r >> b) == a.
+                        let lost_bits = b > 0 && (r >> b) != a;
+                        if lost_bits {
+                            match flavor {
+                                // Unsigned: t = a·2^b. Negative a → t < 0 →
+                                // raise. Non-negative a fits iff a < 2^(w-b);
+                                // the true product then goes through u128.
+                                0 => {
+                                    if a < 0 {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                    // b < width was checked above, so the
+                                    // subtraction is exact; checked for the
+                                    // arithmetic lint. shift in 1..=128.
+                                    let shift = (width as i128)
+                                        .checked_sub(b)
+                                        .ok_or(ExceptionKind::IntegerOverflow)?;
+                                    // a < 2^shift. shift in 1..=128; for
+                                    // shift >= 127 every non-negative i128 a
+                                    // fits (a ≤ 2^127 - 1 < 2^127 ≤ 2^shift).
+                                    let fits = if shift >= 127 {
+                                        true
+                                    } else {
+                                        let bound = 1i128
+                                            .checked_shl(shift as u32)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                                        a < bound
+                                    };
+                                    if !fits {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                    // t = a·2^b < 2^w ≤ 2^128: exact.
+                                    let t = (a as u128)
+                                        .checked_shl(b as u32)
+                                        .ok_or(ExceptionKind::IntegerOverflow)?;
+                                    Raw::U128(t)
+                                }
+                                // Wrap flavor keeps (a * 2^b) mod 2^width,
+                                // computed in two's-complement u128 so the
+                                // full product is exact before the modulo.
+                                2 => {
+                                    let shifted = (a as u128).wrapping_mul(1u128 << b as u32);
+                                    Raw::U128(if width == 128 {
+                                        shifted
+                                    } else {
+                                        // `width < 128` here, so the shift is
+                                        // exact; checked to satisfy the
+                                        // arithmetic lint.
+                                        let modulus = 1u128
+                                            .checked_shl(width as u32)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                                        shifted
+                                            .checked_rem(modulus)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?
+                                    })
+                                }
+                                _ => return Err(ExceptionKind::IntegerOverflow),
+                            }
+                        } else {
+                            Raw::I128(r)
+                        }
                     }
                     0x19 => {
                         if b < 0 || b >= width as i128 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a >> b
+                        Raw::I128(a >> b)
                     }
                     _ => unreachable!(),
                 };
@@ -508,11 +601,17 @@ impl Interpreter {
                 // unrepresentable as i128 — so each flavor handles its
                 // boundary widths directly. All arithmetic below is
                 // checked (never saturating): an unrepresentable result
-                // is IntegerOverflow, not a clamped value.
-                let result = match flavor {
+                // is IntegerOverflow, not a clamped value. F2: the wrap
+                // flavor never raises *on the result* — values it cannot
+                // hold as i128 go through the u128 carrier (spec §3.3).
+                // Operand range checks (shift amount, division by zero)
+                // precede flavor selection and raise for every flavor.
+                let value = match (result, flavor) {
+                    // Already wrapped into [0, 2^128): push as-is.
+                    (Raw::U128(u), _) => StackValue::from_u128(u),
                     // Unsigned, error on out-of-range: [0, 2^width).
-                    0 => {
-                        if result < 0 {
+                    (Raw::I128(q), 0) => {
+                        if q < 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
                         // For width >= 127, 2^width > i128::MAX, so every
@@ -521,38 +620,37 @@ impl Interpreter {
                             let bound = 1i128
                                 .checked_shl(width as u32)
                                 .ok_or(ExceptionKind::IntegerOverflow)?;
-                            if result >= bound {
+                            if q >= bound {
                                 return Err(ExceptionKind::IntegerOverflow);
                             }
                         }
-                        result
+                        StackValue::from_i128(q)
                     }
                     // Signed: [-2^(width-1), 2^(width-1)).
-                    1 => {
-                        if width == 128 {
+                    (Raw::I128(q), 1) => {
+                        let checked = if width == 128 {
                             // Exactly the i128 range: everything fits.
-                            result
+                            q
                         } else {
                             let limit = 1i128
                                 .checked_shl((width as u32).saturating_sub(1))
                                 .ok_or(ExceptionKind::IntegerOverflow)?;
                             // `limit` is a positive power of two, so the
                             // negation is exact.
-                            if result < limit.wrapping_neg() || result >= limit {
+                            if q < limit.wrapping_neg() || q >= limit {
                                 return Err(ExceptionKind::IntegerOverflow);
                             }
-                            result
-                        }
+                            q
+                        };
+                        StackValue::from_i128(checked)
                     }
                     // Wrap-unsigned: result mod 2^width into [0, 2^width).
-                    2 => {
+                    // Never raises.
+                    (Raw::I128(q), 2) => {
                         if width == 128 {
-                            // Wrapping a negative past 2^128 would exceed
-                            // i128::MAX: unrepresentable.
-                            if result < 0 {
-                                return Err(ExceptionKind::IntegerOverflow);
-                            }
-                            result
+                            // q mod 2^128 via two's-complement
+                            // reinterpretation: exact for every i128 q.
+                            StackValue::from_u128(q as u128)
                         } else if width == 127 {
                             // 2^127 is unrepresentable, but the wrap of a
                             // negative result always lands in [0, 2^127):
@@ -560,24 +658,23 @@ impl Interpreter {
                             // Exact for result < 0 (intermediates stay in
                             // [-1, 2^127 - 1]); checked to satisfy the
                             // arithmetic lint and fail closed regardless.
-                            if result < 0 {
-                                result
-                                    .checked_add(i128::MAX)
+                            StackValue::from_i128(if q < 0 {
+                                q.checked_add(i128::MAX)
                                     .and_then(|r| r.checked_add(1))
                                     .ok_or(ExceptionKind::IntegerOverflow)?
                             } else {
-                                result
-                            }
+                                q
+                            })
                         } else {
                             let modulus = 1i128
                                 .checked_shl(width as u32)
                                 .ok_or(ExceptionKind::IntegerOverflow)?;
-                            result.rem_euclid(modulus)
+                            StackValue::from_i128(q.rem_euclid(modulus))
                         }
                     }
                     _ => unreachable!(),
                 };
-                self.push(StackValue::from_i128(result))?;
+                self.push(value)?;
             }
             0x20 => {
                 // CONV width, signed

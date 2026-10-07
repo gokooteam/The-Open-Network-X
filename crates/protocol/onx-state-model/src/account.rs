@@ -104,9 +104,10 @@ pub enum AccountState {
         /// Ed25519 public key authorized to spend from this account.
         /// All zeros means *keyless*: the account can receive but never
         /// send (the STF rejects spends from keyless accounts explicitly —
-        /// the all-zero encoding is the Ed25519 identity point, for which
-        /// a degenerate signature verifies under *any* message, so it must
-        /// never be treated as a real key).
+        /// the all-zero encoding is an order-4 Ed25519 point, for which
+        /// degenerate signatures verify under *any* message on cofactored
+        /// verifiers, so it must never be treated as a real key;
+        /// `verify_strict` rejects it outright).
         pubkey: [u8; 32],
         /// Next expected transaction nonce. Starts at 0; incremented by
         /// one on every successful spend. A transaction is valid only if

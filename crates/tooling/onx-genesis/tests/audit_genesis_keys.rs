@@ -183,20 +183,37 @@ fn label_derived_validator_keys_stay_accepted() {
 }
 
 #[test]
-fn label_derived_balance_keys_stay_accepted() {
-    let rejected: Vec<_> = labels()
-        .filter(|l| build_genesis_document(&with_balance_key(l)).is_err())
-        .collect();
+fn label_derived_balance_keys_are_validated() {
+    // F4: balance keys clear `decode_exact` again, as on main — a
+    // label-derived key whose domain-hash output is off-curve is rejected,
+    // an on-curve one accepted. (Roughly half the labels land off-curve;
+    // main rejected exactly those.) Validator labels stay unvalidated
+    // DEV-only; see `label_derived_validator_keys_stay_accepted`.
+    use onx_primitives::PublicKey;
+    use onx_state_model::derive_validator_pubkey;
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for l in labels() {
+        let bytes = derive_validator_pubkey(&l);
+        let expect_ok = PublicKey::decode_exact(&bytes).is_ok();
+        let got_ok = build_genesis_document(&with_balance_key(&l)).is_ok();
+        assert_eq!(
+            got_ok, expect_ok,
+            "label {l:?}: decode_exact says {expect_ok}, builder says {got_ok}"
+        );
+        if got_ok {
+            accepted += 1;
+        } else {
+            rejected += 1;
+        }
+    }
     assert!(
-        rejected.is_empty(),
-        "{} of 256 BALANCE labels rejected (a label's hash is a curve point only ~1/2 the time): first {:?}",
-        rejected.len(),
-        &rejected[..rejected.len().min(8)]
+        accepted > 0 && rejected > 0,
+        "expected a mix of on/off-curve labels, got {accepted} accepted / {rejected} rejected"
     );
 }
 
 #[test]
-#[ignore = "recommended policy, not a stated claim of the branch"]
 fn recommended_policy_near_hex_strings_are_not_silently_derived() {
     let h = HONEST[0].1;
     let near_misses = [
