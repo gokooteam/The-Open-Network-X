@@ -226,7 +226,7 @@ fn auth_rejects_unordered_indices_directly() {
     // Defense in depth: verify_block_auth must reject unordered indices
     // even when called directly, bypassing decode_sig_section.
     let (header, entries, validators, chain_id) = golden_ok();
-    let mut two = vec![entries[0].clone(), entries[0].clone()]; // duplicate index 0
+    let mut two = vec![entries[0], entries[0]]; // duplicate index 0 (SigEntry is Copy)
     two[1].validator_index = 0;
     let err = verify_block_auth(&chain_id, &header, 0, &two, &validators).unwrap_err();
     assert!(

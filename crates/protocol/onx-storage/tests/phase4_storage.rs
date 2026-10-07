@@ -676,7 +676,7 @@ fn storage_rejects_v1_schema_with_cells_table() -> Result<(), StorageError> {
             err,
             StorageError::SchemaMismatch {
                 found: 1,
-                supported: 3
+                supported: 4
             }
         ),
         "expected SchemaMismatch {{ found: 1, supported: 3 }}, got: {err}"
