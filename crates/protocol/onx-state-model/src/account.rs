@@ -468,7 +468,16 @@ impl AccountState {
         }
 
         let expected_next_balance = if balance_delta >= 0 {
-            cur_balance.saturating_add(balance_delta as u128)
+            // Fail closed on overflow: saturating here would mint u128::MAX.
+            // Unreachable in practice (needs a balance > 2^127 nanos, versus
+            // a 5B-Onyx total supply), but the error is the correct behavior.
+            cur_balance
+                .checked_add(balance_delta as u128)
+                .ok_or_else(|| {
+                    StateModelError::InvalidStateTransition(format!(
+                        "balance addition overflow: {cur_balance} + {balance_delta}"
+                    ))
+                })?
         } else {
             // Guarded by the `BalanceUnderflow` early-return above:
             // `unsigned_abs() <= cur_balance` here, so this never saturates.

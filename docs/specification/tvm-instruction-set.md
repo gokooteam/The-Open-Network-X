@@ -150,7 +150,7 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x32` | `SUBBYTES` | — | `(Bytes, offset: Integer, len: Integer) -> (Bytes)` | `4 + ceil(len / 32)` | `MalformedCell` if `offset + len` exceeds the input length |
 | `0x33` | `BYTEEQ` | — | `(Bytes, Bytes) -> (bool)` | `1 + ceil(min(len1, len2) / 32)` | — |
 
-`0x17`–`0x1F`, `0x21`–`0x2F`, and `0x34`–`0x3F` are reserved.
+`0x1A`–`0x1F`, `0x21`–`0x2F`, and `0x34`–`0x3F` are reserved.
 
 **Floored division, stated exactly.** "Floored" in the table above is not a label awaiting a pin: it is `q = floor(a/b)` — the greatest integer less than or equal to the exact quotient — fully defined for negative divisors as well as positive ones. The remainder follows as `r = a − q·b`, so `sign(r) = sign(b)` or `r = 0` (this is TON's round-toward-negative-infinity convention). Examples: `7 DIVMOD 2 → (3, 1)`; `-7 DIVMOD 2 → (-4, 1)`; `7 DIVMOD -2 → (-4, -1)`; `-7 DIVMOD -2 → (3, -1)`. `DIV` (0x17) returns exactly `DIVMOD`'s quotient. See ADR-0030 for the correction history.
 

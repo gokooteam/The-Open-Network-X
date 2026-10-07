@@ -503,28 +503,79 @@ impl Interpreter {
                     }
                     _ => unreachable!(),
                 };
-                let limit = 1i128
-                    .checked_shl((width as u32).saturating_sub(1))
-                    .ok_or(ExceptionKind::IntegerOverflow)?;
-                let fits = match flavor {
+                // Width is 1..=128 (checked above). The shift-based limit
+                // computation breaks at the top end — 2^127 and 2^128 are
+                // unrepresentable as i128 — so each flavor handles its
+                // boundary widths directly. All arithmetic below is
+                // checked (never saturating): an unrepresentable result
+                // is IntegerOverflow, not a clamped value.
+                let result = match flavor {
+                    // Unsigned, error on out-of-range: [0, 2^width).
                     0 => {
-                        result >= 0
-                            && result
-                                < limit.checked_mul(2).ok_or(ExceptionKind::IntegerOverflow)?
+                        if result < 0 {
+                            return Err(ExceptionKind::IntegerOverflow);
+                        }
+                        // For width >= 127, 2^width > i128::MAX, so every
+                        // non-negative i128 fits and no bound check applies.
+                        if width < 127 {
+                            let bound = 1i128
+                                .checked_shl(width as u32)
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            if result >= bound {
+                                return Err(ExceptionKind::IntegerOverflow);
+                            }
+                        }
+                        result
                     }
-                    // `limit` is a positive power of two, so the negation is exact.
-                    1 => result >= limit.wrapping_neg() && result < limit,
-                    2 => true,
+                    // Signed: [-2^(width-1), 2^(width-1)).
+                    1 => {
+                        if width == 128 {
+                            // Exactly the i128 range: everything fits.
+                            result
+                        } else {
+                            let limit = 1i128
+                                .checked_shl((width as u32).saturating_sub(1))
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            // `limit` is a positive power of two, so the
+                            // negation is exact.
+                            if result < limit.wrapping_neg() || result >= limit {
+                                return Err(ExceptionKind::IntegerOverflow);
+                            }
+                            result
+                        }
+                    }
+                    // Wrap-unsigned: result mod 2^width into [0, 2^width).
+                    2 => {
+                        if width == 128 {
+                            // Wrapping a negative past 2^128 would exceed
+                            // i128::MAX: unrepresentable.
+                            if result < 0 {
+                                return Err(ExceptionKind::IntegerOverflow);
+                            }
+                            result
+                        } else if width == 127 {
+                            // 2^127 is unrepresentable, but the wrap of a
+                            // negative result always lands in [0, 2^127):
+                            // result + 2^127 with 2^127 = i128::MAX + 1.
+                            // Exact for result < 0 (intermediates stay in
+                            // [-1, 2^127 - 1]); checked to satisfy the
+                            // arithmetic lint and fail closed regardless.
+                            if result < 0 {
+                                result
+                                    .checked_add(i128::MAX)
+                                    .and_then(|r| r.checked_add(1))
+                                    .ok_or(ExceptionKind::IntegerOverflow)?
+                            } else {
+                                result
+                            }
+                        } else {
+                            let modulus = 1i128
+                                .checked_shl(width as u32)
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            result.rem_euclid(modulus)
+                        }
+                    }
                     _ => unreachable!(),
-                };
-                if !fits {
-                    return Err(ExceptionKind::IntegerOverflow);
-                }
-                let result = if flavor == 2 {
-                    let modulus = limit.checked_mul(2).ok_or(ExceptionKind::IntegerOverflow)?;
-                    result.rem_euclid(modulus)
-                } else {
-                    result
                 };
                 self.push(StackValue::from_i128(result))?;
             }

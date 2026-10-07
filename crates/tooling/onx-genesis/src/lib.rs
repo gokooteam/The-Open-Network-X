@@ -232,21 +232,21 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
                 // large-order. A small-order balance key would lock funds
                 // forever (unspendable under `verify_strict`); a
                 // non-canonical or off-curve key would fail verification
-                // outright. Label-derived keys are DEV-only and pass
-                // through.
+                // outright.
+                //
+                // Label-derived keys are DEV-only (no known private key, can
+                // never sign) and pass through UNVALIDATED. This matters:
+                // `derive_validator_pubkey` is a domain hash, so its output
+                // is pseudorandom bytes — most labels would fail the strict
+                // predicate (a random curve point is large-order only ~1/8
+                // of the time). Validating derived keys would reject most
+                // dev fixtures.
                 if is_explicit_hex_key(key_str) {
                     PublicKey::decode_strict(&bytes).map_err(|e| {
                         format!(
                             "onx-genesis failed: balance {:?} has invalid public_key \
                              (must be a canonical, on-curve, large-order Ed25519 point: \
                              recompressed bytes must match the input): {e}",
-                            b.address
-                        )
-                    })?;
-                } else {
-                    PublicKey::decode_exact(&bytes).map_err(|e| {
-                        format!(
-                            "onx-genesis failed: balance {:?} has invalid public_key: {e}",
                             b.address
                         )
                     })?;
