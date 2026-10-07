@@ -237,8 +237,8 @@ fn storage_fork_detected() -> Result<(), StorageError> {
     .expect("propose");
     assert_ne!(block_a.header.hash(), block_b.header.hash());
 
-    store.commit_block(&state, &block_a)?;
-    let err = store.commit_block(&state, &block_b).unwrap_err();
+    store.commit_block(&state, &block_a, &[])?;
+    let err = store.commit_block(&state, &block_b, &[]).unwrap_err();
     assert!(
         matches!(err, StorageError::ForkDetected { seqno: 1, .. }),
         "expected ForkDetected, got: {err}"
@@ -389,7 +389,7 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
         0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &[])?;
     let (head_seqno, head_hash) = store.head()?.expect("head");
     assert_eq!(head_seqno, 1);
 
@@ -413,7 +413,7 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
     assert_eq!(bad_block.header.seqno, 2);
     assert_eq!(bad_block.header.prev_hash, [0xAA; 32]);
 
-    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    let err = store.commit_block(&bad_state, &bad_block, &[]).unwrap_err();
     assert!(
         matches!(err, StorageError::HeadMismatch { .. }),
         "expected HeadMismatch, got: {err}"
@@ -449,7 +449,7 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
         0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &[])?;
 
     // State claims seqno 5 while the stored head is at 1. The proposed
     // block carries the real head hash as prev_hash — only the seqno half
@@ -471,7 +471,7 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
     assert_eq!(bad_block.header.seqno, 6);
     assert_eq!(bad_block.header.prev_hash, store.head()?.expect("head").1);
 
-    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    let err = store.commit_block(&bad_state, &bad_block, &[]).unwrap_err();
     assert!(
         matches!(err, StorageError::HeadMismatch { .. }),
         "expected HeadMismatch, got: {err}"
@@ -504,7 +504,7 @@ fn storage_load_state_rejects_tampered_root() -> Result<(), StorageError> {
         0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &[])?;
     // Sanity: the untampered database loads fine.
     assert!(store.load_state()?.is_some());
     drop(store);

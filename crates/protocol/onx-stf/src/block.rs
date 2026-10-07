@@ -34,6 +34,12 @@ impl BlockBody {
 
 /// A block header.
 ///
+/// Protocol version this node understands (ADR-0032). Validity is
+/// version-gated: `apply_block` rejects any block whose `protocol_version`
+/// differs — the version field IS the upgrade mechanism.
+/// Genesis declares v1; bump this when the header format changes.
+pub const PROTOCOL_VERSION: u32 = 1;
+
 /// Canonical encoding (160 bytes, big-endian, ADR-0032):
 /// `seqno u32be(4) || prev_hash(32) || msgs_root(32) || state_root(32) ||
 ///  lt u64be(8) || workchain i32be(4) || fee_collector(32) || msg_count u32be(4) ||
@@ -178,7 +184,10 @@ pub const SIG_ENTRY_BYTE_LEN: usize = 4 + 64;
 /// Encode a signature section:
 /// `count(u32be) || [validator_index(u32be) || sig(64)]*`.
 pub fn encode_sig_section(entries: &[SigEntry]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + entries.len() * SIG_ENTRY_BYTE_LEN);
+    // Capacity is a hint only: saturating arithmetic keeps the deny-level
+    // arithmetic_side_effects lint happy without changing semantics.
+    let cap = 4usize.saturating_add(entries.len().saturating_mul(SIG_ENTRY_BYTE_LEN));
+    let mut out = Vec::with_capacity(cap);
     out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
     for e in entries {
         out.extend_from_slice(&e.validator_index.to_be_bytes());
@@ -196,33 +205,42 @@ impl Block {
     /// holds more messages than fit in a `u32` (unreachable in
     /// practice; the check exists so the invariant is explicit rather
     /// than a silent truncation).
-    pub fn assemble(
-        seqno: u32,
-        prev_hash: [u8; 32],
-        lt: u64,
-        workchain: i32,
-        fee_collector: AccountId,
-        messages: Vec<ExternalMessage>,
-        state_root: [u8; 32],
-        protocol_version: u32,
-        block_time: u64,
-    ) -> Result<Self, StfError> {
-        let msg_count = checked_msg_count(messages.len())?;
-        let body = BlockBody { messages };
+    pub fn assemble(p: AssembleParams) -> Result<Self, StfError> {
+        let msg_count = checked_msg_count(p.messages.len())?;
+        let body = BlockBody {
+            messages: p.messages,
+        };
         let header = BlockHeader {
-            seqno,
-            prev_hash,
+            seqno: p.seqno,
+            prev_hash: p.prev_hash,
             msgs_root: body.msgs_root(),
-            state_root,
-            lt,
-            workchain,
-            fee_collector,
+            state_root: p.state_root,
+            lt: p.lt,
+            workchain: p.workchain,
+            fee_collector: p.fee_collector,
             msg_count,
-            protocol_version,
-            block_time,
+            protocol_version: p.protocol_version,
+            block_time: p.block_time,
         };
         Ok(Self { header, body })
     }
+}
+
+/// Parameters for [`Block::assemble`]: every header field except the two
+/// computed from the body (`msgs_root`, `msg_count`). A struct (rather than
+/// nine positional arguments) keeps the call sites readable now that the
+/// ADR-0032 fields (`protocol_version`, `block_time`) joined the header.
+#[derive(Debug, Clone)]
+pub struct AssembleParams {
+    pub seqno: u32,
+    pub prev_hash: [u8; 32],
+    pub lt: u64,
+    pub workchain: i32,
+    pub fee_collector: AccountId,
+    pub messages: Vec<ExternalMessage>,
+    pub state_root: [u8; 32],
+    pub protocol_version: u32,
+    pub block_time: u64,
 }
 
 #[cfg(test)]
@@ -298,17 +316,17 @@ mod tests {
             [0u8; 32],
             &secret,
         );
-        let block = Block::assemble(
-            1,
-            [0x11; 32],
-            7,
-            0,
-            AccountId::from_bytes([0x44; 32]),
-            vec![msg.clone()],
-            [0x33; 32],
-            1,
-            0,
-        )
+        let block = Block::assemble(AssembleParams {
+            seqno: 1,
+            prev_hash: [0x11; 32],
+            lt: 7,
+            workchain: 0,
+            fee_collector: AccountId::from_bytes([0x44; 32]),
+            messages: vec![msg.clone()],
+            state_root: [0x33; 32],
+            protocol_version: 1,
+            block_time: 0,
+        })
         .unwrap();
         assert_eq!(block.header.msg_count, 1);
         assert_eq!(

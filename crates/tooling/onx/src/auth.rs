@@ -20,7 +20,7 @@
 //!    genesis total stake.
 
 use onx_primitives::{PublicKey, Signature};
-use onx_stf::block::{BlockHeader, SigEntry, SIG_ENTRY_BYTE_LEN};
+use onx_stf::block::{BlockHeader, SigEntry, PROTOCOL_VERSION, SIG_ENTRY_BYTE_LEN};
 
 /// Errors in signature-section decoding or block authentication.
 /// All are fail-closed: a bad section or bad signature rejects the block.
@@ -42,6 +42,11 @@ pub enum AuthError {
     InsufficientStake { signed: u64, total: u64 },
     /// Empty validator set.
     EmptyValidatorSet,
+    /// Block declares a protocol version this node does not understand.
+    UnsupportedProtocolVersion { got: u32 },
+    /// `block_time` went backwards relative to the parent (ADR-0032:
+    /// monotonic, non-decreasing across sequence numbers).
+    BlockTimeRegression { parent: u64, block: u64 },
 }
 
 impl std::fmt::Display for AuthError {
@@ -71,6 +76,13 @@ impl std::fmt::Display for AuthError {
                 write!(f, "insufficient stake: {signed}/{total} signed (need >2/3)")
             }
             Self::EmptyValidatorSet => write!(f, "empty validator set"),
+            Self::UnsupportedProtocolVersion { got } => {
+                write!(f, "unsupported protocol version {got}")
+            }
+            Self::BlockTimeRegression { parent, block } => write!(
+                f,
+                "block_time went backwards: parent {parent}, block {block}"
+            ),
         }
     }
 }
@@ -136,19 +148,48 @@ pub struct GenesisValidatorRef {
 ///
 /// - `chain_id`: 32-byte genesis hash the signatures bind.
 /// - `header`: the parsed 160-byte header.
+/// - `parent_block_time`: the parent block's `block_time` (0 for block 1,
+///   whose parent is genesis). `header.block_time` must be >= it.
 /// - `entries`: the decoded signature section.
 /// - `validators`: genesis validators in canonical order.
 ///
 /// Returns the total stake of valid signers on success. Fails closed on
-/// any malformed input, bad key, bad signature, or insufficient stake.
+/// any malformed input, bad key, bad signature, unordered indices,
+/// version mismatch, time regression, or insufficient stake.
+///
+/// Canonicality (strictly ascending indices) is checked here independently
+/// of `decode_sig_section`, so direct callers cannot bypass it.
 pub fn verify_block_auth(
     chain_id: &[u8; 32],
     header: &BlockHeader,
+    parent_block_time: u64,
     entries: &[SigEntry],
     validators: &[GenesisValidatorRef],
 ) -> Result<u64, AuthError> {
     if validators.is_empty() {
         return Err(AuthError::EmptyValidatorSet);
+    }
+    // Version-gated validity (ADR-0032): defense in depth alongside the
+    // STF's own check in `apply_block`.
+    if header.protocol_version != PROTOCOL_VERSION {
+        return Err(AuthError::UnsupportedProtocolVersion {
+            got: header.protocol_version,
+        });
+    }
+    // Monotonic block_time (ADR-0032): non-decreasing across seqnos. The
+    // STF stays pure — time is a header input checked here, in the
+    // acceptance layer, not execution state.
+    if header.block_time < parent_block_time {
+        return Err(AuthError::BlockTimeRegression {
+            parent: parent_block_time,
+            block: header.block_time,
+        });
+    }
+    // Canonical entry order: strictly ascending validator indices.
+    for pair in entries.windows(2) {
+        if pair[1].validator_index <= pair[0].validator_index {
+            return Err(AuthError::UnorderedIndices);
+        }
     }
     let preimage = header.sign_bytes(chain_id);
     let mut signed_stake: u64 = 0;

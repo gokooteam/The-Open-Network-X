@@ -98,7 +98,7 @@ fn replay(genesis_path: &Path, blocks_dir: &Path, data_dir: &Path) -> Result<(),
             stake: v.stake,
         })
         .collect();
-    validators.sort_by(|a, b| a.pubkey.cmp(&b.pubkey));
+    validators.sort_by_key(|a| a.pubkey);
     for path in &files {
         let name = path
             .file_name()
@@ -109,8 +109,30 @@ fn replay(genesis_path: &Path, blocks_dir: &Path, data_dir: &Path) -> Result<(),
         let block = signed.block;
         // Authenticated headers (ADR-0032): verify signatures in the
         // acceptance layer, outside the STF, before executing.
-        onx::auth::verify_block_auth(&chain_id, &block.header, &signed.sig_entries, &validators)
-            .map_err(|e| format!("{name}: auth: {e}"))?;
+        // Parent block_time for monotonicity: genesis (block 1's parent)
+        // has block_time 0; otherwise read the committed parent header.
+        let parent_block_time = if block.header.seqno <= 1 {
+            0
+        } else {
+            let parent_seqno = block.header.seqno - 1;
+            let parent_hash = store
+                .block_hash_for_seqno(parent_seqno)
+                .map_err(|e| format!("storage: {e}"))?
+                .ok_or_else(|| format!("{name}: parent block {parent_seqno} not committed"))?;
+            store
+                .get_block_header(&parent_hash)
+                .map_err(|e| format!("storage: {e}"))?
+                .ok_or_else(|| format!("{name}: parent block {parent_seqno} header missing"))?
+                .block_time
+        };
+        onx::auth::verify_block_auth(
+            &chain_id,
+            &block.header,
+            parent_block_time,
+            &signed.sig_entries,
+            &validators,
+        )
+        .map_err(|e| format!("{name}: auth: {e}"))?;
         let header_hash = block.header.hash();
 
         // Idempotent resume: already committed → skip; conflicting hash → fork.

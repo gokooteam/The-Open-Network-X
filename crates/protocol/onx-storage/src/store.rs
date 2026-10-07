@@ -513,10 +513,23 @@ impl ChainStore {
         let wtxn = self.db.begin_write()?;
         {
             let mut meta = wtxn.open_table(META)?;
-            if let Some(existing) = meta.get(b"genesis_hash".as_slice())? {
-                let existing_hash = hash32_from_value(existing.value(), "genesis_hash")?;
+            let existing_hash: Option<[u8; 32]> = match meta.get(b"genesis_hash".as_slice())? {
+                Some(v) => Some(hash32_from_value(v.value(), "genesis_hash")?),
+                None => None,
+            };
+            if let Some(existing_hash) = existing_hash {
                 if existing_hash == genesis_hash {
-                    return Ok(()); // idempotent re-init
+                    // Idempotent re-init — but backfill genesis_doc for
+                    // databases initialized before ONXBLK05 step 5 added it
+                    // (TRAP 4): the startup signing-key check needs the
+                    // canonical genesis bytes.
+                    let needs_backfill = meta.get(b"genesis_doc".as_slice())?.is_none();
+                    if needs_backfill {
+                        meta.insert(b"genesis_doc".as_slice(), doc.to_bytes().as_slice())?;
+                    }
+                    drop(meta);
+                    wtxn.commit()?;
+                    return Ok(());
                 }
                 return Err(StorageError::Corrupt(
                     "database already initialized with a different genesis".to_string(),
@@ -1637,5 +1650,39 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// ONXBLK05 TRAP 4: databases initialized before step 5 have no
+    /// `genesis_doc` key. Re-running `init_genesis` with the same genesis
+    /// (the idempotent path) must backfill it, or the startup signing-key
+    /// check fails on upgraded nodes.
+    #[test]
+    fn init_genesis_backfills_genesis_doc() {
+        let path = temp_db_path("genesis-doc-backfill");
+        let _ = std::fs::remove_file(&path);
+        let doc = test_genesis();
+        {
+            let store = ChainStore::open(&path).expect("open");
+            store.init_genesis(&doc).expect("init_genesis");
+            assert!(store.genesis_document().expect("read").is_some());
+        } // drop the store to release the file lock
+
+        // Simulate a pre-step-5 database: delete the key directly.
+        {
+            let db = redb::Database::open(&path).expect("reopen");
+            let wtxn = db.begin_write().expect("wtxn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.remove(b"genesis_doc".as_slice()).expect("remove");
+            }
+            wtxn.commit().expect("commit");
+        } // drop the raw handle
+
+        // Idempotent re-init backfills it.
+        let store = ChainStore::open(&path).expect("reopen store");
+        assert!(store.genesis_document().expect("read").is_none());
+        store.init_genesis(&doc).expect("re-init");
+        let backfilled = store.genesis_document().expect("read").expect("backfilled");
+        assert_eq!(backfilled.to_bytes(), doc.to_bytes());
     }
 }

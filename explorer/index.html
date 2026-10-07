@@ -371,7 +371,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
           <table>
             <thead><tr><th>Check</th><th>Rule</th><th>Where the rule comes from</th></tr></thead>
             <tbody>
-              <tr><td>File structure</td><td>Magic <code>ONXBLK04</code>, a 160-byte header, length-prefixed messages, a message count that matches the header, no trailing bytes. A file is accepted here exactly when <code>onx replay</code> would decode it.</td><td><code>crates/tooling/onx/src/blockfile.rs</code></td></tr>
+              <tr><td>File structure</td><td>Magic <code>ONXBLK05</code>, a 160-byte header, a signature section (count + validator-index/signature entries, strictly ascending indices), length-prefixed messages, a message count that matches the header, no trailing bytes. A file is accepted here exactly when <code>onx replay</code> would decode it.</td><td><code>crates/tooling/onx/src/blockfile.rs</code></td></tr>
               <tr><td>Message structure</td><td>Kind 0 (transfer) or 1 (contract call), payload of at most 65,535 bytes, no payload on transfers.</td><td><code>docs/adr/0002</code>, <code>onx-stf/src/message.rs</code></td></tr>
               <tr><td>Hashes</td><td>SHA-256 over a 32-byte zero-padded domain tag followed by the bytes: block hash <code>ONX_BLOCK_HDR_V1</code>, message hash <code>ONX_MSG_EXT_V1</code>, message root <code>ONX_MSGS_ROOT_V1</code>.</td><td><code>docs/specification/protocol-primitives.md</code> §4.5</td></tr>
               <tr><td>Chain links</td><td>Each <code>prev_hash</code> is the hash of the previous block, logical time strictly increases, and the workchain never changes.</td><td><code>onx-stf/src/stf.rs</code> (<code>apply_block</code>)</td></tr>
@@ -392,7 +392,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
             <li>Balances, whether a sender could afford a message, deliveries, bounces and contract execution. Block files carry no receipts, so these need execution.</li>
             <li>State roots, unless you paste <code>onx replay</code> output. Run <code>onx replay --genesis &lt;genesis.toml&gt; --blocks &lt;blocks dir&gt; --data-dir &lt;empty dir&gt;</code> on your own machine.</li>
             <li>Ed25519 edge cases. The node verifies with ed25519-dalek <code>verify_strict</code>, which also rejects small-order keys. Your browser applies standard RFC 8032 verification. For any block the node accepted, the two agree.</li>
-            <li>Validator signatures and finality. ONX has no consensus layer yet: blocks come from a single producer.</li>
+            <li>Validator signatures and finality. Blocks carry producer signatures (ADR-0032), which are decoded and displayed but <em>not</em> verified here against the pinned genesis keys yet. ONX has no consensus layer yet: blocks come from a single producer.</li>
           </ul>
         </div>
       </details>
@@ -415,7 +415,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
             <li><code>pollSeconds</code>: optional. How often to look for new blocks.</li>
             <li><code>labels</code>: optional names for known accounts, shown as off-chain names.</li>
           </ul>
-          <p>A source is never trusted. Every byte is verified here, so a source cannot alter a signed message or break a hash link without it showing. Until ONX has validator signatures, a source could still serve a different sequence of blocks; state roots are confirmed only against <code>onx replay</code> output.</p>
+          <p>A source is never trusted. Every byte is verified here, so a source cannot alter a signed message or break a hash link without it showing. Blocks now carry validator signatures (ADR-0032), decoded and displayed but not yet cryptographically verified here — a source could still serve a different sequence of blocks; state roots are confirmed only against <code>onx replay</code> output.</p>
         </div>
       </details>
     </section>

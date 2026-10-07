@@ -1,3 +1,4 @@
+use crate::block::PROTOCOL_VERSION;
 use onx_data_structures::AccountId;
 use onx_state_model::StateModelError;
 use std::fmt;
@@ -56,6 +57,10 @@ pub enum StfError {
     MalformedMessage { expected_len: usize, got_len: usize },
     /// Block header bytes are not the canonical length.
     MalformedHeader { expected_len: usize, got_len: usize },
+    /// Block declares a protocol version this node does not understand.
+    /// Version-gated validity (ADR-0032): the version field IS the upgrade
+    /// mechanism, so an unknown version fails closed, never "best effort".
+    UnsupportedProtocolVersion { got: u32 },
     /// Header `msg_count` does not match the number of body messages.
     MsgCountMismatch { header: u32, body: usize },
     /// Block body holds more messages than fit in a `u32` msg_count.
@@ -178,6 +183,10 @@ impl fmt::Display for StfError {
             } => write!(
                 f,
                 "malformed block header: expected {expected_len} bytes, got {got_len}"
+            ),
+            Self::UnsupportedProtocolVersion { got } => write!(
+                f,
+                "unsupported protocol version {got} (this node understands v{PROTOCOL_VERSION})"
             ),
             Self::MsgCountMismatch { header, body } => write!(
                 f,

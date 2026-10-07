@@ -15,7 +15,7 @@ use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
 use onx_stf::block::SigEntry;
-use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
+use onx_stf::{propose_block, AssembleParams, Block, ExternalMessage, MsgKind, State};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -464,17 +464,17 @@ fn replay_rejects_invalid_message_block() {
         &test_secret_key(0xaa),
     )];
     let prev = &blocks[2];
-    let evil = Block::assemble(
-        4,
-        prev.header.hash(),
-        prev.header.lt + 1,
-        -1,
-        account_id(0xaa),
-        evil_msgs,
-        [0xff; 32], // garbage claimed root: must not mask the message error
-        1,
-        0,
-    )
+    let evil = Block::assemble(AssembleParams {
+        seqno: 4,
+        prev_hash: prev.header.hash(),
+        lt: prev.header.lt + 1,
+        workchain: -1,
+        fee_collector: account_id(0xaa),
+        messages: evil_msgs,
+        state_root: [0xff; 32], // garbage claimed root: must not mask the message error
+        protocol_version: 1,
+        block_time: 0,
+    })
     .expect("evil block has one message");
     let blocks_dir = dir.join("blocks");
     write_block_files(&blocks_dir, &blocks, &chain_id);

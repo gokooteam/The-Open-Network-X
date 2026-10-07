@@ -181,6 +181,7 @@ mod tests {
     use super::*;
     use onx_data_structures::AccountId;
     use onx_stf::message::{ExternalMessage, MsgKind};
+    use onx_stf::AssembleParams;
 
     fn sample_block() -> Block {
         // Pure encode/decode round-trip: the signature is opaque bytes here
@@ -197,17 +198,17 @@ mod tests {
             pubkey: [0u8; 32],
             signature: [0xAB; 64],
         };
-        Block::assemble(
-            1,
-            [9u8; 32],
-            1,
-            -1,
-            AccountId::from_bytes([3u8; 32]),
-            vec![msg],
-            [7u8; 32],
-            1,
-            1_790_000_000,
-        )
+        Block::assemble(AssembleParams {
+            seqno: 1,
+            prev_hash: [9u8; 32],
+            lt: 1,
+            workchain: -1,
+            fee_collector: AccountId::from_bytes([3u8; 32]),
+            messages: vec![msg],
+            state_root: [7u8; 32],
+            protocol_version: 1,
+            block_time: 1_790_000_000,
+        })
         .expect("sample block assembles")
     }
 

@@ -106,15 +106,16 @@ fn canonical_validators(store: &ChainStore) -> Result<Vec<onx_primitives::Public
                 .map_err(|e| TickError::Fatal(format!("producer: bad genesis key: {e}")))
         })
         .collect::<Result<_, _>>()?;
-    keys.sort_by(|a, b| a.encode().cmp(&b.encode()));
+    keys.sort_by_key(|a| a.encode());
     Ok(keys)
 }
 
 /// Sign a block with the producer's key (ONXBLK05).
 ///
-/// Returns the signature section entries. If no signing key is configured,
-/// returns an empty section (the block is unsigned — verification will
-/// reject it; this is the pre-key transitional state).
+/// Returns the signature section entries. A signing key is REQUIRED:
+/// an unsigned block would be rejected by every verifier (replay fails
+/// closed on empty/insufficient stake), so producing one is never useful —
+/// fail here with a clear error instead of emitting a dead block.
 ///
 /// `validators` is the canonical (pubkey-sorted) genesis validator list;
 /// `validator_index` is the signer's position in it.
@@ -125,7 +126,11 @@ fn sign_block(
     validators: &[onx_primitives::PublicKey],
 ) -> Result<Vec<SigEntry>, String> {
     let Some(secret) = signing_key else {
-        return Ok(vec![]);
+        return Err(
+            "no signing key configured: block production requires --signing-key \
+             (an unsigned block would be rejected by every verifier)"
+                .to_string(),
+        );
     };
     let pubkey = secret.public_key();
     let index = validators

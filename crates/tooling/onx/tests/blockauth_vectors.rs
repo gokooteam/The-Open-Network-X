@@ -8,10 +8,10 @@
 
 use onx::auth::{decode_sig_section, encode_sig_section, verify_block_auth, GenesisValidatorRef};
 use onx::blockfile::{decode_block_file, BLOCK_FILE_MAGIC};
-use onx_stf::block::{BlockHeader, SigEntry, BLOCK_HEADER_BYTE_LEN};
-use std::collections::HashMap;
+use onx_stf::block::{BlockHeader, BLOCK_HEADER_BYTE_LEN};
+use std::collections::BTreeMap;
 
-fn vectors() -> HashMap<String, serde_json::Value> {
+fn vectors() -> BTreeMap<String, serde_json::Value> {
     let path = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../reference/vectors/blockauth.json"
@@ -20,7 +20,7 @@ fn vectors() -> HashMap<String, serde_json::Value> {
     serde_json::from_str(&text).expect("blockauth.json must parse")
 }
 
-fn hex_val(v: &HashMap<String, serde_json::Value>, key: &str) -> Vec<u8> {
+fn hex_val(v: &BTreeMap<String, serde_json::Value>, key: &str) -> Vec<u8> {
     hex::decode(v[key].as_str().expect("hex string")).expect("valid hex")
 }
 
@@ -90,7 +90,7 @@ fn rust_verifies_python_signature() {
     }];
 
     let chain_id = [0xAAu8; 32];
-    let stake = verify_block_auth(&chain_id, &header, &entries, &validators)
+    let stake = verify_block_auth(&chain_id, &header, 0, &entries, &validators)
         .expect("Python signature verifies");
     assert_eq!(stake, 1000);
 }
@@ -144,7 +144,7 @@ fn rust_rejects_python_reject_vectors() {
         validator_index: 0,
         sig,
     }];
-    assert!(verify_block_auth(&chain_id, &header, &entries, &validators).is_err());
+    assert!(verify_block_auth(&chain_id, &header, 0, &entries, &validators).is_err());
 
     // Tampered header.
     let mut tampered = header_hex.clone();
@@ -156,11 +156,81 @@ fn rust_rejects_python_reject_vectors() {
         validator_index: 0,
         sig: sig2,
     }];
-    assert!(verify_block_auth(&chain_id, &th, &entries2, &validators).is_err());
+    assert!(verify_block_auth(&chain_id, &th, 0, &entries2, &validators).is_err());
 
     // Unordered sig section.
     let sec = encode_sig_section(&entries2);
     let mut dup = sec.clone();
     dup.extend_from_slice(&sec[4..]); // duplicate entry -> not strictly ascending
     assert!(decode_sig_section(&dup).is_err());
+}
+
+/// Helper: a valid header + entries from the golden vectors, with the
+/// validator list the Python reference used.
+fn golden_ok() -> (
+    BlockHeader,
+    Vec<onx_stf::block::SigEntry>,
+    Vec<GenesisValidatorRef>,
+    [u8; 32],
+) {
+    let v = vectors();
+    let header = BlockHeader::from_bytes(&hex_val(&v, "header_seq1_hex")).unwrap();
+    let mut sig = [0u8; 64];
+    sig.copy_from_slice(&hex_val(&v, "signature_seq1_hex"));
+    let entries = vec![onx_stf::block::SigEntry {
+        validator_index: 0,
+        sig,
+    }];
+    let pubkey_hex = v["fixture_validator_pubkey"].as_str().unwrap();
+    let mut pubkey = [0u8; 32];
+    pubkey.copy_from_slice(&hex::decode(pubkey_hex).unwrap());
+    let validators = vec![GenesisValidatorRef {
+        pubkey,
+        stake: 1000,
+    }];
+    let chain_id = [0xAAu8; 32];
+    (header, entries, validators, chain_id)
+}
+
+#[test]
+fn auth_rejects_wrong_protocol_version() {
+    let (mut header, entries, validators, chain_id) = golden_ok();
+    header.protocol_version = 2;
+    let err = verify_block_auth(&chain_id, &header, 0, &entries, &validators).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            onx::auth::AuthError::UnsupportedProtocolVersion { got: 2 }
+        ),
+        "expected UnsupportedProtocolVersion, got: {err}"
+    );
+}
+
+#[test]
+fn auth_rejects_block_time_regression() {
+    let (header, entries, validators, chain_id) = golden_ok();
+    // Golden block_time is 0x6ab13b80; a parent ahead of it must fail.
+    let parent = header.block_time + 1;
+    let err = verify_block_auth(&chain_id, &header, parent, &entries, &validators).unwrap_err();
+    assert!(
+        matches!(err, onx::auth::AuthError::BlockTimeRegression { .. }),
+        "expected BlockTimeRegression, got: {err}"
+    );
+    // Equal is fine (monotonic = non-decreasing).
+    verify_block_auth(&chain_id, &header, header.block_time, &entries, &validators)
+        .expect("equal block_time is monotonic");
+}
+
+#[test]
+fn auth_rejects_unordered_indices_directly() {
+    // Defense in depth: verify_block_auth must reject unordered indices
+    // even when called directly, bypassing decode_sig_section.
+    let (header, entries, validators, chain_id) = golden_ok();
+    let mut two = vec![entries[0].clone(), entries[0].clone()]; // duplicate index 0
+    two[1].validator_index = 0;
+    let err = verify_block_auth(&chain_id, &header, 0, &two, &validators).unwrap_err();
+    assert!(
+        matches!(err, onx::auth::AuthError::UnorderedIndices),
+        "expected UnorderedIndices, got: {err}"
+    );
 }
