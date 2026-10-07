@@ -371,7 +371,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
           <table>
             <thead><tr><th>Check</th><th>Rule</th><th>Where the rule comes from</th></tr></thead>
             <tbody>
-              <tr><td>File structure</td><td>Magic <code>ONXBLK04</code>, a 148-byte header, length-prefixed messages, a message count that matches the header, no trailing bytes. A file is accepted here exactly when <code>onx replay</code> would decode it.</td><td><code>crates/tooling/onx/src/blockfile.rs</code></td></tr>
+              <tr><td>File structure</td><td>Magic <code>ONXBLK04</code>, a 160-byte header, length-prefixed messages, a message count that matches the header, no trailing bytes. A file is accepted here exactly when <code>onx replay</code> would decode it.</td><td><code>crates/tooling/onx/src/blockfile.rs</code></td></tr>
               <tr><td>Message structure</td><td>Kind 0 (transfer) or 1 (contract call), payload of at most 65,535 bytes, no payload on transfers.</td><td><code>docs/adr/0002</code>, <code>onx-stf/src/message.rs</code></td></tr>
               <tr><td>Hashes</td><td>SHA-256 over a 32-byte zero-padded domain tag followed by the bytes: block hash <code>ONX_BLOCK_HDR_V1</code>, message hash <code>ONX_MSG_EXT_V1</code>, message root <code>ONX_MSGS_ROOT_V1</code>.</td><td><code>docs/specification/protocol-primitives.md</code> §4.5</td></tr>
               <tr><td>Chain links</td><td>Each <code>prev_hash</code> is the hash of the previous block, logical time strictly increases, and the workchain never changes.</td><td><code>onx-stf/src/stf.rs</code> (<code>apply_block</code>)</td></tr>
@@ -422,7 +422,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
   </main>
 
   <footer>
-    <span>Reads <code>ONXBLK04</code> block files and <code>ONXG</code> v1 genesis documents.</span>
+    <span>Reads <code>ONXBLK05</code> block files and <code>ONXG</code> v1 genesis documents.</span>
     <span>Built against ONX commit <code>8acfcc8</code>.</span>
   </footer>
 </div>
@@ -552,8 +552,8 @@ window.ONX_CONFIG = {
   });
 
   const FORMAT = Object.freeze({
-    BLOCK_MAGIC: 'ONXBLK04',   // crates/tooling/onx/src/blockfile.rs
-    HEADER_LEN: 148,           // crates/protocol/onx-stf/src/block.rs
+    BLOCK_MAGIC: 'ONXBLK05',   // crates/tooling/onx/src/blockfile.rs
+    HEADER_LEN: 160,           // crates/protocol/onx-stf/src/block.rs
     MSG_PREFIX_LEN: 141,       // chain_id .. msg_len, onx-stf/src/message.rs
     MSG_MIN_WIRE: 237,         // 141 + pubkey 32 + signature 64
     MSG_MAX_PAYLOAD: 65535,    // MAX_MESSAGE_BYTES
@@ -647,9 +647,10 @@ window.ONX_CONFIG = {
   }
 
   // ------------------------------------------------------- block header
-  // SPEC: onx-stf/src/block.rs, 148 bytes:
+  // SPEC: onx-stf/src/block.rs, 160 bytes (ADR-0032):
   // seqno u32 | prev_hash 32 | msgs_root 32 | state_root 32 | lt u64 |
-  // workchain i32 | fee_collector 32 | msg_count u32
+  // workchain i32 | fee_collector 32 | msg_count u32 |
+  // protocol_version u32 | block_time u64
   function decodeHeader(b, base) {
     if (b.length !== FORMAT.HEADER_LEN) throw new DecodeError(`header is ${b.length} bytes, expected ${FORMAT.HEADER_LEN}`, base);
     const at = (o, n) => b.subarray(o, o + n);
@@ -662,6 +663,8 @@ window.ONX_CONFIG = {
       workchain: i32(b, 108),
       feeCollector: at(112, 32),
       msgCount: u32(b, 144),
+      protocolVersion: u32(b, 148),
+      blockTime: ubig(b, 152, 8),
     };
     const fields = [];
     field(fields, 'seqno', base + 0, at(0, 4), String(header.seqno), 'u32, block number');
@@ -672,6 +675,8 @@ window.ONX_CONFIG = {
     field(fields, 'workchain', base + 108, at(108, 4), String(header.workchain), 'i32: -1 masterchain, 0 basic');
     field(fields, 'fee_collector', base + 112, at(112, 32), hex(header.feeCollector), 'receives the validator half of fees');
     field(fields, 'msg_count', base + 144, at(144, 4), String(header.msgCount), 'u32');
+    field(fields, 'protocol_version', base + 148, at(148, 4), String(header.protocolVersion), 'u32, version-gated validity (ADR-0032)');
+    field(fields, 'block_time', base + 152, at(152, 8), header.blockTime.toString(), 'u64 unix seconds, monotonic');
     return { header, fields };
   }
 
@@ -730,7 +735,7 @@ window.ONX_CONFIG = {
   // ----------------------------------------------------------- block file
   // SPEC: crates/tooling/onx/src/blockfile.rs (decode_block_file) and
   // onx-storage/src/encoding.rs (decode_body):
-  // "ONXBLK04" | header 148 | count u32 | ( len u32 | message )*
+  // "ONXBLK05" | header 160 | sig_section | count u32 | ( len u32 | message )*, sig_section = count u32 | ( validator_index u32 | sig 64 )*
   function decodeBlockFile(b) {
     const fields = [];
     const layout = [];
@@ -750,7 +755,37 @@ window.ONX_CONFIG = {
     fields.push(...hf);
     layout.push({ kind: 'head', label: 'header', offset: 8, size: FORMAT.HEADER_LEN });
 
-    const base = 8 + FORMAT.HEADER_LEN;
+    // Signature section (ADR-0032): count u32 | [validator_index u32 | sig 64]*.
+    // Decoded and displayed; signature *verification* needs the genesis
+    // validator keys, which the explorer pins separately.
+    let base = 8 + FORMAT.HEADER_LEN;
+    let afterHeader = b.subarray(base);
+    if (afterHeader.length < 4) throw new DecodeError(`truncated signature section: ${afterHeader.length} bytes`, base);
+    const sigCount = u32(afterHeader, 0);
+    if (4 + sigCount * 68 > afterHeader.length) {
+      throw new DecodeError(`signature section claims ${sigCount} entries but holds only ${afterHeader.length} bytes`, base);
+    }
+    field(fields, 'sig count', base, afterHeader.subarray(0, 4), String(sigCount), 'u32, number of validator signatures');
+    layout.push({ kind: 'meta', label: 'sig count', offset: base, size: 4 });
+    const sigEntries = [];
+    let sigOff = 4;
+    for (let i = 0; i < sigCount; i++) {
+      const idx = u32(afterHeader, sigOff);
+      const sig = afterHeader.subarray(sigOff + 4, sigOff + 68);
+      sigEntries.push({ validatorIndex: idx, sig: hex(sig) });
+      field(fields, `sig[${i}].validator_index`, base + sigOff, afterHeader.subarray(sigOff, sigOff + 4), String(idx), 'u32, position in pubkey-sorted genesis list');
+      field(fields, `sig[${i}].sig`, base + sigOff + 4, sig, hex(sig), 'Ed25519 over pad32("ONX_BLOCK_SIG_V1") ‖ chain_id ‖ block_hash');
+      sigOff += 68;
+    }
+    // Canonical order: strictly ascending indices.
+    for (let i = 1; i < sigEntries.length; i++) {
+      if (sigEntries[i].validatorIndex <= sigEntries[i-1].validatorIndex) {
+        throw new DecodeError(`signature section indices not strictly ascending`, base);
+      }
+    }
+    layout.push({ kind: 'meta', label: 'signatures', offset: base, size: sigOff });
+    base += sigOff;
+
     const body = b.subarray(base);
     if (body.length < 4) throw new DecodeError(`truncated block body: ${body.length} bytes, need at least 4`, base);
     const count = u32(body, 0);
@@ -1061,13 +1096,13 @@ window.ONX_CONFIG = {
       const complete = fromStart && !!G;
 
       check(checks, 'decode', 'File structure', 'pass',
-        `${FORMAT.BLOCK_MAGIC}, 148-byte header, ${d.messages.length} message${d.messages.length === 1 ? '' : 's'}, ${d.size} bytes with nothing left over`);
+        `${FORMAT.BLOCK_MAGIC}, 160-byte header, ${d.messages.length} message${d.messages.length === 1 ? '' : 's'}, ${d.size} bytes with nothing left over`);
       const expectedName = `block-${String(s).padStart(8, '0')}.blk`;
       if (d.name && d.name !== expectedName) {
         check(checks, 'name', 'File name', 'warn', `named ${d.name}; onx replay orders files by name and would expect ${expectedName}`);
       }
       if (d.conflicts) check(checks, 'conflict', 'Conflicting block', 'fail', `another loaded file (${d.conflicts.join(', ')}) holds a different block ${s}`);
-      check(checks, 'hash', 'Block hash', 'info', `SHA-256(pad32("ONX_BLOCK_HDR_V1") ‖ 148-byte header) = ${hex(d.hash)}`);
+      check(checks, 'hash', 'Block hash', 'info', `SHA-256(pad32("ONX_BLOCK_HDR_V1") ‖ 160-byte header) = ${hex(d.hash)}`);
       check(checks, 'msgs_root', 'Message root',
         equal(d.msgsRootComputed, d.header.msgsRoot) ? 'pass' : 'fail',
         equal(d.msgsRootComputed, d.header.msgsRoot)
