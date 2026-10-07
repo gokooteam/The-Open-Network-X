@@ -19,7 +19,12 @@ address = "onx:bob"
 amount = 2000000
 
 [[validators]]
-public_key = "validator-01"
+# Rekeyed 2026-10-07 (was the DEV label "validator-01", whose derived key has
+# no known private key and could never sign): this is the public key of
+# test_secret_key(0x11) = SecretKey::from_seed(&[0x11; 32]) — a public,
+# deterministic test key, so fixture blocks can actually be signed (ONXBLK05).
+# TEST-ONLY: never use this key on a real network.
+public_key = "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
 stake = 1000
 
 [[workchains]]
