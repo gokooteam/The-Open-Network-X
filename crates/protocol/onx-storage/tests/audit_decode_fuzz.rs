@@ -81,7 +81,7 @@ fn stf_and_storage_decoders_never_panic() {
             0 => mutate(&mut rng, ext_message(&mut Rng(i as u64 + 1))),
             1 => mutate(&mut rng, body(&mut Rng(i as u64 + 7))),
             _ => {
-                let n = [0usize, 147, 148, 149, rng.below(400)][rng.below(5)];
+                let n = [0usize, 159, 160, 161, rng.below(400)][rng.below(5)];
                 let raw = rng.bytes(n);
                 mutate(&mut rng, raw)
             }

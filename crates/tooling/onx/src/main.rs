@@ -88,13 +88,29 @@ fn replay(genesis_path: &Path, blocks_dir: &Path, data_dir: &Path) -> Result<(),
     files.sort();
 
     // 4. Execute + persist, one block at a time.
+    // Canonical validator order for signature verification (ADR-0032):
+    // position in the pubkey-sorted genesis list.
+    let mut validators: Vec<onx::auth::GenesisValidatorRef> = doc
+        .validators
+        .iter()
+        .map(|v| onx::auth::GenesisValidatorRef {
+            pubkey: v.pubkey,
+            stake: v.stake,
+        })
+        .collect();
+    validators.sort_by(|a, b| a.pubkey.cmp(&b.pubkey));
     for path in &files {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let bytes = std::fs::read(path).map_err(|e| format!("{name}: read: {e}"))?;
-        let block = decode_block_file(&bytes).map_err(|e| format!("{name}: {e}"))?;
+        let signed = decode_block_file(&bytes).map_err(|e| format!("{name}: {e}"))?;
+        let block = signed.block;
+        // Authenticated headers (ADR-0032): verify signatures in the
+        // acceptance layer, outside the STF, before executing.
+        onx::auth::verify_block_auth(&chain_id, &block.header, &signed.sig_entries, &validators)
+            .map_err(|e| format!("{name}: auth: {e}"))?;
         let header_hash = block.header.hash();
 
         // Idempotent resume: already committed → skip; conflicting hash → fork.

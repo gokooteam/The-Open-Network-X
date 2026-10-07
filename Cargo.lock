@@ -1218,6 +1218,7 @@ dependencies = [
  "onx-state-model",
  "onx-stf",
  "onx-storage",
+ "serde_json",
 ]
 
 [[package]]

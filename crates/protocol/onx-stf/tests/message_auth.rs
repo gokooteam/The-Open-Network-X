@@ -142,7 +142,7 @@ fn apply_msgs(
     collector: AccountId,
     lt: u64,
 ) -> Result<State, StfError> {
-    let block = propose_block(state, msgs, lt, collector)?;
+    let block = propose_block(state, msgs, lt, collector, 1, 0)?;
     Ok(apply_block(state, &block)
         .expect("a block that proposed must apply")
         .0)

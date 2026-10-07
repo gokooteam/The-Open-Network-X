@@ -107,8 +107,16 @@ impl PublicKey {
         signature: &Signature,
     ) -> Result<(), PrimitiveError> {
         let domain_message = domain_separated_message(tag, message);
+        self.verify_raw(&domain_message, signature)
+    }
+
+    /// Verifies `signature` over `message` with NO additional domain
+    /// separation. Use only when `message` is already domain-separated
+    /// (e.g. the ONXBLK05 block-signing preimage, which starts with
+    /// `pad32("ONX_BLOCK_SIG_V1")` per ADR-0032).
+    pub fn verify_raw(&self, message: &[u8], signature: &Signature) -> Result<(), PrimitiveError> {
         self.0
-            .verify_strict(&domain_message, &signature.0)
+            .verify_strict(message, &signature.0)
             .map_err(|_| PrimitiveError::SignatureVerificationFailed)
     }
 }
@@ -147,7 +155,14 @@ impl SecretKey {
     /// tag is always prepended before signing (§4.5).
     pub fn sign(&self, tag: &DomainTag, message: &[u8]) -> Signature {
         let domain_message = domain_separated_message(tag, message);
-        Signature(self.0.sign(&domain_message))
+        self.sign_raw(&domain_message)
+    }
+
+    /// Signs `message` with NO additional domain separation. Use only when
+    /// `message` is already domain-separated (e.g. the ONXBLK05
+    /// block-signing preimage per ADR-0032).
+    pub fn sign_raw(&self, message: &[u8]) -> Signature {
+        Signature(self.0.sign(message))
     }
 }
 

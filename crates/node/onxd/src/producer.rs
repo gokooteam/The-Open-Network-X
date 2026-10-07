@@ -188,7 +188,13 @@ fn propose_block_caught(
         // dry-run, i.e. inside the containment boundary.
         #[cfg(test)]
         maybe_inject_propose_panic(&messages);
-        propose_block(state, messages, lt, fee_collector)
+        // ONXBLK05: protocol_version 1; block_time is wall-clock at proposal
+        // (producer policy: never stamp ahead of its own clock).
+        let block_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        propose_block(state, messages, lt, fee_collector, 1, block_time)
     }))
 }
 
@@ -334,7 +340,7 @@ fn run_tick(
     atomic_write_block_file(
         &cfg.blocks_dir,
         block.header.seqno,
-        &encode_block_file(&block),
+        &encode_block_file(&block, &[]),
     )
     .map_err(TickError::Fatal)?;
 
@@ -649,11 +655,11 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
         let path = blocks_dir.join(block_file_name(seqno));
         let needs_write = match fs::read(&path) {
             Ok(bytes) => match decode_block_file(&bytes) {
-                Ok(block) => {
+                Ok(signed) => {
                     let committed = store
                         .block_hash_for_seqno(seqno)
                         .map_err(|e| format!("producer: block hash lookup failed: {e}"))?;
-                    committed != Some(block.header.hash())
+                    committed != Some(signed.block.header.hash())
                 }
                 Err(_) => true, // undecodable: rewrite
             },
@@ -675,7 +681,7 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
             .map_err(|e| format!("producer: body lookup failed: {e}"))?
             .ok_or_else(|| format!("producer: missing body for seqno {seqno}"))?;
         let block = Block { header, body };
-        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block))?;
+        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block, &[]))?;
         regenerated += 1;
         eprintln!("producer: regenerated block file for seqno {seqno}");
     }

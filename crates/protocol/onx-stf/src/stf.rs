@@ -113,6 +113,8 @@ pub fn propose_block(
     messages: Vec<ExternalMessage>,
     lt: u64,
     fee_collector: AccountId,
+    protocol_version: u32,
+    block_time: u64,
 ) -> Result<Block, StfError> {
     let seqno = state.seqno.checked_add(1).ok_or(StfError::BadSeqno {
         expected: 0,
@@ -143,6 +145,8 @@ pub fn propose_block(
         fee_collector,
         messages,
         state_root,
+        protocol_version,
+        block_time,
     )
 }
 

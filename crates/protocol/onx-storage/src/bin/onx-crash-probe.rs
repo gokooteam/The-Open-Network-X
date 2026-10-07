@@ -48,7 +48,7 @@ fn main() {
     while state.seqno < num_blocks {
         let next_seqno = state.seqno + 1;
         let msgs = test_block_txs(seed, next_seqno, &accounts, state.chain_id);
-        let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector)
+        let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector, 1, 0)
             .expect("propose must succeed");
         store
             .commit_block(&state, &block)

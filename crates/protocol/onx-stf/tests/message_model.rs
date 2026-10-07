@@ -104,7 +104,7 @@ fn apply_msgs(
     collector: AccountId,
     lt: u64,
 ) -> Result<(State, Receipts), StfError> {
-    let block = propose_block(state, msgs, lt, collector)?;
+    let block = propose_block(state, msgs, lt, collector, 1, 0)?;
     apply_block(state, &block)
 }
 

@@ -83,6 +83,8 @@ fn run_chain_to(store: &ChainStore, num_blocks: u32, seed: u64) -> Result<[u8; 3
             test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
+            1,
+            0,
         )
         .expect("propose must succeed");
         store.commit_block(&state, &block)?;
@@ -132,6 +134,8 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
             test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
+            1,
+            0,
         )
         .expect("propose");
         // Pure in-memory expectation.
@@ -187,6 +191,8 @@ fn storage_idempotent_recommit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
 
@@ -216,6 +222,8 @@ fn storage_fork_detected() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     let block_b = propose_block(
@@ -223,6 +231,8 @@ fn storage_fork_detected() -> Result<(), StorageError> {
         test_block_txs(999, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_ne!(block_a.header.hash(), block_b.header.hash());
@@ -255,6 +265,8 @@ fn storage_rejects_bad_block_atomically() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     // Tamper with the claimed post-state root: the STF must reject it, and
@@ -299,6 +311,8 @@ fn storage_dirty_set_complete() -> Result<(), StorageError> {
             gen.block_txs(seed, n, &accounts),
             test_block_lt(n),
             collector,
+            1,
+            0,
         )
         .expect("propose");
         let (expected, _) = apply_block(&state, &block).expect("apply");
@@ -371,6 +385,8 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     store.commit_block(&state0, &block1)?;
@@ -390,6 +406,8 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
         test_block_txs_with_nonces(8, 2, &accounts, &nonces, chain_id()),
         2,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_eq!(bad_block.header.seqno, 2);
@@ -427,6 +445,8 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     store.commit_block(&state0, &block1)?;
@@ -444,6 +464,8 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
         test_block_txs_with_nonces(8, 6, &accounts, &nonces, chain_id()),
         6,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_eq!(bad_block.header.seqno, 6);
@@ -478,6 +500,8 @@ fn storage_load_state_rejects_tampered_root() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     store.commit_block(&state0, &block1)?;

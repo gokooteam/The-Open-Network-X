@@ -171,7 +171,7 @@ fn apply_one(
     collector: AccountId,
     lt: u64,
 ) -> Result<(State, Receipts), StfError> {
-    let block = propose_block(state, vec![msg], lt, collector)?;
+    let block = propose_block(state, vec![msg], lt, collector, 1, 0)?;
     let (next, receipts) = apply_block(state, &block)?;
     Ok((next, receipts))
 }
@@ -441,7 +441,7 @@ fn tvm_zero_fee_contract_call_rejected() {
         b"increment".to_vec(),
         &secret,
     );
-    let err = propose_block(&state, vec![msg], 1, collector).expect_err("must fail");
+    let err = propose_block(&state, vec![msg], 1, collector, 1, 0).expect_err("must fail");
     assert!(
         matches!(err, StfError::ZeroFeeContractCall),
         "unexpected: {err}"
@@ -523,7 +523,7 @@ fn tvm_contract_call_is_deterministic_across_processes() {
     let run_once = || {
         let mut s = state.clone();
         for i in 0..2u64 {
-            let block = propose_block(&s, vec![mk(i)], i + 1, collector).unwrap();
+            let block = propose_block(&s, vec![mk(i)], i + 1, collector, 1, 0).unwrap();
             let (next, _) = apply_block(&s, &block).unwrap();
             s = next;
         }
@@ -535,7 +535,7 @@ fn tvm_contract_call_is_deterministic_across_processes() {
     let mut b = state.clone();
     for i in 0..2u64 {
         for s in [&mut a, &mut b] {
-            let block = propose_block(s, vec![mk(i)], i + 1, collector).unwrap();
+            let block = propose_block(s, vec![mk(i)], i + 1, collector, 1, 0).unwrap();
             let (next, _) = apply_block(s, &block).unwrap();
             *s = next;
         }

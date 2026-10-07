@@ -73,7 +73,7 @@ def make_header(seqno=1, block_time=1_790_000_000):
         lt=1000 + seqno,
         workchain=WORKCHAIN,
         fee_collector=FEE_COLLECTOR,
-        msg_count=2,
+        msg_count=0,
         protocol_version=1,
         block_time=block_time,
     )

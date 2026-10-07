@@ -6,7 +6,7 @@
 //! | Table           | Key                  | Value                          |
 //! |-----------------|----------------------|--------------------------------|
 //! | `accounts`      | account id `[u8;32]` | `AccountState` bytes           |
-//! | `block_headers` | block hash `[u8;32]` | 148-byte canonical header      |
+//! | `block_headers` | block hash `[u8;32]` | 160-byte canonical header      |
 //! | `block_bodies`  | block hash `[u8;32]` | `encode_body` bytes            |
 //! | `seqno_to_hash` | seqno `u32` BE       | block hash `[u8;32]`           |
 //! | `state_roots`   | seqno `u32` BE       | state root `[u8;32]`           |
@@ -962,6 +962,8 @@ mod tests {
             test_block_txs(7, 1, &accounts, state.chain_id),
             test_block_lt(1),
             test_fee_collector(),
+            1,
+            0,
         )
         .expect("propose_block");
         store.commit_block(&state, &block).expect("commit_block");
@@ -1343,6 +1345,8 @@ mod tests {
             test_block_txs(7, 1, &accounts, state.chain_id),
             test_block_lt(1),
             test_fee_collector(),
+            1,
+            0,
         )
         .expect("propose_block");
 
