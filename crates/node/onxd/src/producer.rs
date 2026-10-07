@@ -547,12 +547,7 @@ fn propose_robust(
                 eprintln!(
                     "producer: propose_block rejected filtered candidates ({e}); isolating offending message(s)"
                 );
-                match find_first_bad_prefix(
-                    state,
-                    &candidates,
-                    lt,
-                    fee_collector,
-                ) {
+                match find_first_bad_prefix(state, &candidates, lt, fee_collector) {
                     Err(()) => {
                         // A bisection probe panicked: this is not a
                         // rejection — switch to panic isolation for the
