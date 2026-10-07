@@ -275,8 +275,8 @@ impl WalletMirror {
             }
             stored_pubkey
         };
-        // Belt-and-braces, mirroring the wallet: the all-zero pubkey is the
-        // Ed25519 identity point and must never authorize anything.
+        // Belt-and-braces, mirroring the wallet: the all-zero pubkey is an
+        // order-4 Ed25519 point and must never authorize anything.
         if effective_pubkey == [0u8; 32] {
             return Verdict::Reject("effective pubkey is all zeros");
         }

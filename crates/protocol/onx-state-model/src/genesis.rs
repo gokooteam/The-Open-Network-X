@@ -108,8 +108,13 @@ impl GenesisDocument {
                 "genesis requires at least one account".to_string(),
             ));
         }
-        // Byte-equality is sound here: PublicKey::decode_exact enforces canonical
-        // encodings, so one curve point has exactly one accepted byte encoding.
+        // F5: byte-equality here is a duplicate check on the raw bytes the
+        // builder stored, nothing more. This layer never decodes keys —
+        // canonicality is enforced upstream in `onx-genesis`
+        // (`PublicKey::decode_exact`), so by the time a document reaches
+        // `new`, distinct byte strings are distinct keys only if the
+        // builder validated them. Do not read a soundness claim into this
+        // comment that the code cannot keep.
         validators.sort_by_key(|a| a.pubkey);
         for pair in validators.windows(2) {
             if pair[0].pubkey == pair[1].pubkey {
@@ -317,7 +322,9 @@ pub fn is_explicit_hex_key(s: &str) -> bool {
 
 /// Rejects strings that look like a botched key literal before they can
 /// silently become a DEV label (a validator/account nobody can sign for).
-/// Called by [`parse_or_derive_pubkey`] and [`parse_or_derive_account_id`].
+/// Called by [`parse_or_derive_pubkey`] and [`parse_or_derive_account_id`]
+/// for every input; the label allowlist in [`validate_label`] runs
+/// afterwards on the label path only.
 fn reject_key_lookalike(s: &str, what: &str) -> Result<(), StateModelError> {
     if s.len() != s.trim().len() {
         return Err(StateModelError::InvalidGenesis(format!(
@@ -341,6 +348,43 @@ fn reject_key_lookalike(s: &str, what: &str) -> Result<(), StateModelError> {
     Ok(())
 }
 
+/// F3: the label allowlist. Anything that is not an explicit 64-hex key
+/// must be label-shaped — non-empty ASCII `[a-z0-9][a-z0-9._:-]{0,47}` —
+/// or it is rejected loudly instead of silently becoming a DEV label.
+/// This closes the holes the blocklist missed: BOM/zero-width characters,
+/// internal whitespace, Cyrillic lookalikes, 59/69-hex and 128-hex
+/// keypairs, base64, and empty strings (all fail the charset/length gate).
+/// All-hex strings are rejected at any length: a 32-hex string is a
+/// truncated key, not a name.
+fn validate_label(s: &str, what: &str) -> Result<(), StateModelError> {
+    fn invalid(s: &str, what: &str, why: &str) -> StateModelError {
+        StateModelError::InvalidGenesis(format!(
+            "{what} {s:?} is not a valid DEV label ({why}); labels are non-empty \
+             ASCII `[a-z0-9][a-z0-9._:-]{{0,47}}`"
+        ))
+    }
+    let mut bytes = s.bytes();
+    let first_ok = matches!(bytes.next(), Some(b) if b.is_ascii_lowercase() || b.is_ascii_digit());
+    let rest_ok = s.len() <= 48
+        && s.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b':' | b'-')
+        });
+    if !first_ok || !rest_ok {
+        return Err(invalid(s, what, "charset/length"));
+    }
+    // All-hex strings of key-like length are key material, not names: a
+    // 32-hex string is a truncated key. Short hex words ("beef", "cafe")
+    // stay valid labels.
+    if s.len() >= 16 && s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid(
+            s,
+            what,
+            "all-hex strings are key material, not names",
+        ));
+    }
+    Ok(())
+}
+
 /// Maps a balance address string to an [`AccountId`]:
 /// 64 hex chars are decoded literally (real key material);
 /// a 64-char non-hex string is rejected as a probable typo;
@@ -359,23 +403,27 @@ pub fn parse_or_derive_account_id(s: &str) -> Result<AccountId, StateModelError>
             }
         }
     }
+    validate_label(s, "address")?;
     Ok(derive_account_id(s))
 }
 
 /// Maps a validator key string to 32 bytes: same rule as
 /// [`parse_or_derive_account_id`], including lookalike rejection.
-pub fn parse_or_derive_pubkey(s: &str) -> Result<[u8; 32], StateModelError> {
-    reject_key_lookalike(s, "validator key")?;
+/// `what` names the field for error messages (F8: balance-key errors must
+/// not say "validator key").
+pub fn parse_or_derive_pubkey(s: &str, what: &str) -> Result<[u8; 32], StateModelError> {
+    reject_key_lookalike(s, what)?;
     if s.len() == 64 {
         match decode_hex_32(s) {
             Some(bytes) => return Ok(bytes),
             None => {
                 return Err(StateModelError::InvalidGenesis(format!(
-                    "validator key looks like hex (64 chars) but is not valid hex: {s}"
+                    "{what} looks like hex (64 chars) but is not valid hex: {s}"
                 )))
             }
         }
     }
+    validate_label(s, what)?;
     Ok(derive_validator_pubkey(s))
 }
 
@@ -548,18 +596,22 @@ mod tests {
     fn key_lookalikes_are_rejected_before_label_derivation() {
         // 0x-prefixed keys: strip the prefix instead of deriving a label.
         assert!(parse_or_derive_pubkey(
-            "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
+            "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+            "validator key"
         )
         .is_err());
         // Near-64-length alnum strings: almost certainly a mistyped key.
-        assert!(parse_or_derive_pubkey(&"ab".repeat(31)).is_err()); // 62 chars
-        assert!(
-            parse_or_derive_pubkey(&"ab".repeat(32).chars().take(63).collect::<String>()).is_err()
-        ); // 63 chars
-        assert!(parse_or_derive_pubkey(&format!("{}a", "ab".repeat(32))).is_err()); // 65 chars
-                                                                                    // Stray whitespace: the key would not match what the operator meant.
+        assert!(parse_or_derive_pubkey(&"ab".repeat(31), "validator key").is_err()); // 62 chars
         assert!(parse_or_derive_pubkey(
-            " 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
+            &"ab".repeat(32).chars().take(63).collect::<String>(),
+            "validator key"
+        )
+        .is_err()); // 63 chars
+        assert!(parse_or_derive_pubkey(&format!("{}a", "ab".repeat(32)), "validator key").is_err()); // 65 chars
+                                                                                                     // Stray whitespace: the key would not match what the operator meant.
+        assert!(parse_or_derive_pubkey(
+            " 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29",
+            "validator key"
         )
         .is_err());
         // Same rule for account addresses.
@@ -570,10 +622,57 @@ mod tests {
     }
 
     #[test]
+    fn label_allowlist_rejects_key_material_lookalikes() {
+        // F3: the cases the old blocklist missed must not silently become
+        // DEV labels. Each is either non-allowlist charset/length or
+        // all-hex key material.
+        let honest = "3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29";
+        let bad = [
+            format!("\u{feff}{honest}"),                               // BOM + key
+            format!("{honest}\u{200b}"),                               // key + zero-width space
+            format!("{} {}", &honest[..32], &honest[32..]),            // internal space
+            format!("{}\n{}", &honest[..32], &honest[32..]),           // internal newline
+            honest.replacen('a', "\u{430}", 1),                        // Cyrillic а for a
+            honest[..59].to_string(),                                  // 59 hex chars
+            honest[..32].to_string(),    // 32 hex chars (truncated key)
+            format!("{honest}{honest}"), // 128 hex (keypair)
+            "O0vqf8zr".repeat(5).chars().take(44).collect::<String>(), // base64-shaped
+            String::new(),               // empty: unfilled template field
+            "0x1234".to_string(),        // short 0x-prefixed
+            "UPPERCASE".to_string(),     // uppercase not in allowlist
+            "a".repeat(49),              // over the 48-char cap
+        ];
+        for s in &bad {
+            assert!(
+                parse_or_derive_pubkey(s, "validator key").is_err(),
+                "lookalike accepted as label: {s:?}"
+            );
+            assert!(
+                parse_or_derive_account_id(s).is_err(),
+                "lookalike accepted as address label: {s:?}"
+            );
+        }
+        // The allowlist itself: ordinary labels still derive.
+        for s in [
+            "validator-01",
+            "alice",
+            "dev-key-1",
+            "a",
+            "a.b_c:d-e",
+            &"x".repeat(48),
+        ] {
+            assert!(
+                parse_or_derive_pubkey(s, "validator key").is_ok(),
+                "valid label rejected: {s:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plain_labels_still_derive() {
         // Ordinary labels are unaffected by lookalike rejection.
         assert_eq!(
-            parse_or_derive_pubkey("validator-01").unwrap(),
+            parse_or_derive_pubkey("validator-01", "validator key").unwrap(),
             derive_validator_pubkey("validator-01")
         );
         assert!(parse_or_derive_account_id("onx:alice").is_ok());

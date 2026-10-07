@@ -194,9 +194,26 @@ impl StackValue {
         StackValue::Integer(bytes)
     }
 
+    pub fn from_u128(val: u128) -> Self {
+        // Unsigned 128-bit carrier for wrap-flavor results in [0, 2^128):
+        // the high 128 bits are zero, never a sign extension.
+        let mut bytes = [0u8; 32];
+        bytes[16..32].copy_from_slice(&val.to_be_bytes());
+        StackValue::Integer(bytes)
+    }
+
     pub fn to_i128(&self) -> Result<i128, ExceptionKind> {
         match self {
             StackValue::Integer(bytes) => {
+                // Fail closed (P1-minimal): the low 128 bits are only a
+                // faithful i128 when the high 128 bits are the sign
+                // extension of bit 127. A 256-bit value that does not fit
+                // raises IntegerOverflow instead of silently truncating to
+                // its low bits (which made CMP(2^127, 0) return -1).
+                let sign_fill = if bytes[16] & 0x80 == 0 { 0x00 } else { 0xFF };
+                if bytes[..16].iter().any(|&b| b != sign_fill) {
+                    return Err(ExceptionKind::IntegerOverflow);
+                }
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(&bytes[16..32]);
                 Ok(i128::from_be_bytes(arr))

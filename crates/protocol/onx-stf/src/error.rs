@@ -70,7 +70,7 @@ pub enum StfError {
     /// message revealed none. A key-derived account can spend by revealing
     /// the pubkey that hashes to its address (ADR-0006); an address that
     /// was not derived from any key stays unspendable. The all-zero
-    /// encoding is the Ed25519 identity point, for which a degenerate
+    /// encoding is an order-4 Ed25519 point, for which a degenerate
     /// signature verifies under any message — so keylessness is checked
     /// explicitly, never left to the signature verifier's edge behavior.
     SenderHasNoKey(AccountId),

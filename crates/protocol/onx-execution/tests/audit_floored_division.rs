@@ -472,7 +472,6 @@ fn spec_fit(q: i128, width: u32, flavor: u8) -> Spec {
 }
 
 #[test]
-#[ignore = "pre-existing (main): width 127/128 limit computation, interpreter.rs 478-488; not claimed by the branch"]
 fn div_width_flavor_matches_spec_including_widths_127_and_128() {
     let mut wrong = Vec::new();
     for width in [1u16, 2, 7, 8, 63, 64, 65, 126, 127, 128] {
@@ -617,7 +616,6 @@ fn arithmetic_family_never_panics_on_boundary_grid() {
 }
 
 #[test]
-#[ignore = "pre-existing (main): same width 127/128 limit computation as DIV; not claimed by the branch"]
 fn shifts_share_the_width_limit_computation() {
     // LSHIFT (0x18) / RSHIFT (0x19) go through the same width/flavor block
     // as DIV (interpreter.rs 478-500). Signed width 128 must accept small values.

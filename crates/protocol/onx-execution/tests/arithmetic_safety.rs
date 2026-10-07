@@ -93,6 +93,31 @@ fn pop_i128(stack: &[StackValue], idx: usize) -> i128 {
     }
 }
 
+fn pop_u128(stack: &[StackValue], idx: usize) -> u128 {
+    match &stack[idx] {
+        StackValue::Integer(bytes) => {
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(&bytes[16..32]);
+            // Raw low 128 bits as unsigned: the wrap flavor's carrier.
+            u128::from_be_bytes(arr)
+        }
+        other => panic!("expected Integer at stack[{idx}], got {other:?}"),
+    }
+}
+
+/// Success expecting a raw u128 stack value (for wrap-flavor results at
+/// width 128 that exceed i128::MAX). Compares the pushed bytes, not a
+/// truncated i128.
+fn expect_success_u128(program: Vec<u8>) -> u128 {
+    let (result, stack) = run_program(program);
+    assert!(
+        matches!(result, ExecutionResult::Success { .. }),
+        "expected success, got {result:?}"
+    );
+    assert_eq!(stack.len(), 1);
+    pop_u128(&stack, 0)
+}
+
 // ---------------------------------------------------------------------------
 // DIVMOD (0x14): the chain-halt class — i128::MIN / -1 panics in plain `/`.
 // ---------------------------------------------------------------------------
@@ -385,13 +410,135 @@ fn div_width128_unsigned_rejects_negative_result() {
 }
 
 #[test]
-fn div_width128_wrap_unsigned_rejects_negative_result() {
-    // Flavor 2 wraps into [0, 2^128); a negative would wrap past i128::MAX.
+fn div_width128_wrap_unsigned_wraps_negative_result() {
+    // Flavor 2 never raises (spec §3.3): -7/2 floors to -4, and
+    // -4 mod 2^128 = 2^128 - 4.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x17, -7, 2, 128, 2)),
+        u128::MAX - 3 // 2^128 - 4
+    );
+    assert_eq!(expect_success_u128(arith_program_wf(0x17, 7, 2, 128, 2)), 3);
+    // -1 RSHIFT 1 floors to -1; wrapped at width 128 that is 2^128 - 1.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x19, -1, 1, 128, 2)),
+        u128::MAX
+    );
+}
+
+#[test]
+fn div_min_div_neg_one_width128_flavors() {
+    // MIN / -1 has true quotient 2^127 (F2).
+    // Unsigned 128 holds it exactly.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 0)),
+        1u128 << 127
+    );
+    // Signed: 2^127 is out of range at every width.
     expect_exception(
-        arith_program_wf(0x17, -7, 2, 128, 2),
+        arith_program_wf(0x17, i128::MIN, -1, 128, 1),
         ExceptionKind::IntegerOverflow,
     );
-    assert_eq!(expect_success_i128(arith_program_wf(0x17, 7, 2, 128, 2)), 3);
+    expect_exception(
+        arith_program_wf(0x17, i128::MIN, -1, 64, 1),
+        ExceptionKind::IntegerOverflow,
+    );
+    // Unsigned below 128: 2^127 >= 2^width.
+    expect_exception(
+        arith_program_wf(0x17, i128::MIN, -1, 64, 0),
+        ExceptionKind::IntegerOverflow,
+    );
+    // Wrap: 2^127 mod 2^128 = 2^127; mod 2^64 = 0.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 2)),
+        1u128 << 127
+    );
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 64, 2)),
+        0
+    );
+}
+
+#[test]
+fn lshift_lost_bits_raise_at_width128() {
+    // F1 regressions: the old `checked_shl` silently discarded shifted-out
+    // bits (only rejecting amounts >= 128).
+    // Signed flavor: any lost bits mean the true product is outside
+    // [-2^127, 2^127) — always IntegerOverflow here.
+    for (a, b) in [(1i128, 127i128), (2, 127), (4, 126), (i128::MAX, 1)] {
+        expect_exception(
+            arith_program_wf(0x18, a, b, 128, 1),
+            ExceptionKind::IntegerOverflow,
+        );
+        // Narrow widths raise for both flavors (true product >> 2^64).
+        expect_exception(
+            arith_program_wf(0x18, a, b, 64, 0),
+            ExceptionKind::IntegerOverflow,
+        );
+        expect_exception(
+            arith_program_wf(0x18, a, b, 64, 1),
+            ExceptionKind::IntegerOverflow,
+        );
+    }
+    // Unsigned flavor at width 128 keeps true products in [0, 2^128):
+    // 1<<127 = 2^127 and (2^127-1)<<1 = 2^128-2 succeed; 2<<127 and
+    // 4<<126 hit exactly 2^128 and raise.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 0)),
+        1u128 << 127
+    );
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x18, i128::MAX, 1, 128, 0)),
+        u128::MAX - 1
+    );
+    for (a, b) in [(2i128, 127i128), (4, 126)] {
+        expect_exception(
+            arith_program_wf(0x18, a, b, 128, 0),
+            ExceptionKind::IntegerOverflow,
+        );
+    }
+    // Wrap flavor keeps the low bits instead.
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 2)),
+        1u128 << 127
+    );
+    assert_eq!(
+        expect_success_u128(arith_program_wf(0x18, 2, 127, 128, 2)),
+        0
+    );
+}
+
+#[test]
+fn lshift_loses_bits_at_narrow_widths() {
+    // 2^100 << 63 loses bits at every width: flavors 0/1 raise.
+    // (2^100 itself fits i128, so the operand loads fine.)
+    let mut operand = vec![0x08u8, 1]; // PUSHINT, signed
+    let mut bytes = [0u8; 32];
+    let bit: u32 = 100;
+    bytes[(31 - bit / 8) as usize] |= 1 << (bit % 8);
+    operand.extend(bytes);
+    for width in [64u16, 127, 128] {
+        for flavor in [0u8, 1] {
+            let mut p = operand.clone();
+            p.extend(pushint(63));
+            p.extend([0x18, (width >> 8) as u8, (width & 0xff) as u8, flavor]);
+            expect_exception(p, ExceptionKind::IntegerOverflow);
+        }
+    }
+}
+
+#[test]
+fn oversize_operand_fails_closed() {
+    // P1-minimal: a 256-bit operand (2^200) raises IntegerOverflow at load
+    // instead of silently truncating to its low 128 bits (which was 0,
+    // making ADD return the other operand unchanged).
+    let mut prog = vec![0x08u8, 1]; // PUSHINT, signed flag
+    let mut bytes = [0u8; 32];
+    let bit: u32 = 200;
+    bytes[(31 - bit / 8) as usize] |= 1 << (bit % 8);
+    prog.extend(bytes);
+    prog.extend(pushint(0));
+    prog.extend([0x10, 0, 64, 1]); // ADD, width 64, flavor 1
+    expect_exception(prog, ExceptionKind::IntegerOverflow);
 }
 
 #[test]

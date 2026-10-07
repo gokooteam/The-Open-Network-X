@@ -179,7 +179,8 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
     }
     let mut validators = Vec::with_capacity(config.validators.len());
     for (idx, v) in config.validators.iter().enumerate() {
-        let pubkey = parse_or_derive_pubkey(&v.public_key).map_err(|e| e.to_string())?;
+        let pubkey =
+            parse_or_derive_pubkey(&v.public_key, "validator key").map_err(|e| e.to_string())?;
         // An explicit 64-hex-char key is real key material — the only form
         // suitable for a real network — so it must clear the full strict
         // predicate in `PublicKey::decode_exact`: canonical encoding (the
@@ -224,33 +225,28 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
         // code and data cells are embedded in its state.
         let pubkey = match &b.public_key {
             Some(key_str) => {
-                let bytes = parse_or_derive_pubkey(key_str).map_err(|e| e.to_string())?;
-                // Same rule as validator keys: explicit hex is real key
-                // material and must clear the full strict predicate in
-                // `PublicKey::decode_exact` — canonical encoding
-                // (recompressed bytes match the input), on-curve,
-                // large-order. A small-order balance key would lock funds
-                // forever (unspendable under `verify_strict`); a
-                // non-canonical or off-curve key would fail verification
-                // outright.
-                //
-                // Label-derived keys are DEV-only (no known private key, can
-                // never sign) and pass through UNVALIDATED. This matters:
-                // `derive_validator_pubkey` is a domain hash, so its output
-                // is pseudorandom bytes — most labels would fail the strict
-                // predicate (a random curve point is large-order only ~1/8
-                // of the time). Validating derived keys would reject most
-                // dev fixtures.
-                if is_explicit_hex_key(key_str) {
-                    PublicKey::decode_strict(&bytes).map_err(|e| {
-                        format!(
-                            "onx-genesis failed: balance {:?} has invalid public_key \
-                             (must be a canonical, on-curve, large-order Ed25519 point: \
-                             recompressed bytes must match the input): {e}",
-                            b.address
-                        )
-                    })?;
-                }
+                let bytes =
+                    parse_or_derive_pubkey(key_str, "balance key").map_err(|e| e.to_string())?;
+                // F4: every balance key clears `decode_exact` — canonical
+                // encoding, on-curve, large-order — exactly as main did
+                // before PR #10. Label-derived keys are domain-hash output
+                // (pseudorandom bytes); about half are off-curve and must
+                // be rejected here, otherwise genesis carries unverifiable
+                // keys that the `Balance.public_key` doc, the STF, and the
+                // mempool all assume cannot exist. (The old comment's "1/8"
+                // rationale confused the torsion-free fraction with the
+                // small-order fraction: only 8 of ~2^255 points are
+                // small-order, so the large-order check itself rejects
+                // essentially no random label — it is the on-curve check
+                // that does the work.)
+                PublicKey::decode_exact(&bytes).map_err(|e| {
+                    format!(
+                        "onx-genesis failed: balance {:?} has invalid public_key \
+                         (must be a canonical, on-curve, large-order Ed25519 point: \
+                         recompressed bytes must match the input): {e}",
+                        b.address
+                    )
+                })?;
                 bytes
             }
             None => [0u8; 32],
