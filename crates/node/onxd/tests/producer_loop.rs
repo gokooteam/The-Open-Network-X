@@ -5,8 +5,11 @@
 //! All tests drive the real loop and the real store; no mocks.
 //! Submissions are external messages dropped as `*.msg` files.
 
+use onx::auth::{verify_block_auth, GenesisValidatorRef};
+use onx::blockfile::{block_file_name, decode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
+use onx_stf::block::PROTOCOL_VERSION;
 use onx_stf::{derive_address, propose_block, ExternalMessage, MsgKind, State};
 use onx_storage::ChainStore;
 use onxd::mempool::Mempool;
@@ -910,6 +913,15 @@ fn cargo_bin() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
+/// Wall-clock seconds since the Unix epoch, for bracketing block_time in
+/// acceptance tests.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
 fn onx_binary() -> PathBuf {
     let target_dir = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -991,6 +1003,117 @@ fn e2e_producer_output_replays_through_onx_binary() {
     assert_eq!(
         replay_root, daemon_root,
         "replay of the daemon's blocks reproduces the daemon's root"
+    );
+}
+
+/// Queue step 3 acceptance ("then block 1"): the signed block-1 file the
+/// real producer emits carries this node's protocol version and a sane
+/// block_time, its signature section verifies in the acceptance layer, and
+/// the real `onx replay` binary reproduces the daemon's state root from it.
+/// This is the smallest possible proof that a signed-header chain can be
+/// born: genesis → one signed transfer → one verified block.
+#[test]
+fn signed_block_1_carries_version_time_and_valid_signature() {
+    let mut h = Harness::new("block1-accept");
+    let mut wallet = TestWallet::new(h.chain_id);
+    h.drop_msg(&wallet.sign(0xaa, 0xab, 1000, 10));
+
+    let t0 = unix_now();
+    let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
+    shutdown.store(true, Ordering::Relaxed);
+    let stats = handle
+        .join()
+        .expect("producer thread")
+        .expect("producer ok");
+    let t1 = unix_now();
+    assert!(stats.blocks_produced >= 1);
+    assert_eq!(stats.msgs_committed, 1, "the transfer committed");
+
+    // 1. The block file decodes; the header carries this node's protocol
+    //    version and a wall-clock block_time stamped during this run —
+    //    not zero, not stale, never ahead of the node's own clock,
+    //    non-decreasing vs genesis whose block_time is 0.
+    let bytes =
+        std::fs::read(h.blocks_dir().join(block_file_name(1))).expect("block-00000001.blk exists");
+    let signed = decode_block_file(&bytes).expect("block 1 decodes");
+    assert_eq!(signed.block.header.seqno, 1);
+    assert_eq!(
+        signed.block.header.protocol_version, PROTOCOL_VERSION,
+        "header carries this node's protocol version"
+    );
+    assert!(
+        signed.block.header.block_time >= t0,
+        "block_time was stamped during this run, not stale"
+    );
+    assert!(
+        signed.block.header.block_time <= t1,
+        "producer never stamps ahead of its own clock"
+    );
+    assert_eq!(
+        signed.block.body.messages.len(),
+        1,
+        "block 1 carries the dropped transfer explicitly"
+    );
+    assert_eq!(
+        signed.sig_entries.len(),
+        1,
+        "single-validator chain: block 1 carries exactly one signature entry"
+    );
+
+    // 2. The acceptance layer verifies the producer's real signature
+    //    against the genesis validators (placeholder/dummy sigs fail here).
+    let config = onx_genesis::parse_config(&h.genesis_toml).unwrap();
+    let doc = onx_genesis::build_genesis_document(&config).unwrap();
+    let mut validators: Vec<GenesisValidatorRef> = doc
+        .validators
+        .iter()
+        .map(|v| GenesisValidatorRef {
+            pubkey: v.pubkey,
+            stake: v.stake,
+        })
+        .collect();
+    validators.sort_by_key(|v| v.pubkey);
+    let signed_stake = verify_block_auth(
+        &h.chain_id,
+        &signed.block.header,
+        0, // genesis is block 1's parent; its block_time is 0
+        &signed.sig_entries,
+        &validators,
+    )
+    .expect("block 1 auth verifies");
+    assert!(signed_stake > 0, "signer stake counted");
+
+    // 3. Independent replay: the real `onx replay` binary, from genesis on
+    //    a fresh data dir, reproduces the daemon's root for block 1.
+    h.reopen();
+    let daemon_root = h.final_root_hex();
+    let replay_data = h.dir.join("replay-data");
+    let out = Command::new(onx_binary())
+        .args([
+            "replay",
+            "--genesis",
+            h.genesis_toml.to_str().unwrap(),
+            "--blocks",
+            h.blocks_dir().to_str().unwrap(),
+            "--data-dir",
+            replay_data.to_str().unwrap(),
+        ])
+        .output()
+        .expect("failed to run onx replay");
+    assert!(
+        out.status.success(),
+        "onx replay failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let replay_root = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find_map(|l| l.strip_prefix("final_state_root="))
+        .expect("replay printed final_state_root")
+        .trim()
+        .to_string();
+    assert_eq!(
+        replay_root, daemon_root,
+        "independent replay of block 1 reproduces the daemon's root"
     );
 }
 
