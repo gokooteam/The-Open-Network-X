@@ -182,6 +182,17 @@ fn div_by_zero_still_integer_overflow() {
             arith_program_wf(0x19, 1, -1, 128, flavor),
             ExceptionKind::IntegerOverflow,
         );
+        // The §3.3 shift rule (`b >= width` raises) is pinned below width
+        // 128 too: a mutation relaxing the guard to `b >= 128` would let
+        // `0 LSHIFT 64` at width 64 through (`checked_shl` succeeds on 0).
+        expect_exception(
+            arith_program_wf(0x18, 0, 64, 64, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+        expect_exception(
+            arith_program_wf(0x19, 1, 64, 64, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
     }
 }
 

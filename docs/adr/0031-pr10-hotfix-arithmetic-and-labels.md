@@ -82,10 +82,12 @@ completeness; validator labels remain DEV-only by convention, unenforced.)
   from the spec's Integer model and must be revisited by the Wave 4
   integer-model work — it is a containment bulkhead, not the final
   semantics.
-- The 70 regressed vectors are restored to spec values (independently
-  verified: auditor's Python model, 77,112 vectors across widths 1–128 ×
-  all flavors × edge operands, 0 mismatches; DIVMOD floor oracle 3,289/3,289
-  in-range vectors).
+- The 70 regressed vectors are restored to spec values. Verification runs
+  (all ours unless noted): DIVMOD floor oracle 3,289/3,289 in-range vectors,
+  0 mismatches; Ed25519 strict predicate 21,076/21,076 encodings, 0
+  mismatches; the external auditor additionally scored an independent
+  77,112-vector model (widths 1–128 × all flavors × edge operands),
+  0 mismatches.
 - `DIV`/`DIVMOD` by zero still raises for every flavor (spec §5 test 2);
   the "modulo never raises" claim is narrowed to result reduction, per §3.3.
 
@@ -124,4 +126,5 @@ completeness; validator labels remain DEV-only by convention, unenforced.)
 - `crates/protocol/onx-state-model/src/genesis.rs`: label boundary vectors
   (15- vs 16-hex, 48-char cap, uppercase-after-first, `ed25519:<32 hex>`).
 - `cargo fmt --check` clean; `cargo clippy --workspace --all-targets`
-  clean on the pinned toolchain (1.98.1).
+  clean on the pinned toolchain (1.98.1, our run; the auditor could only
+  run 1.97.0 and confirmed `onx-execution` clean there).

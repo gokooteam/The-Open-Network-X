@@ -653,7 +653,8 @@ mod tests {
             String::new(),               // empty: unfilled template field
             "0x1234".to_string(),        // short 0x-prefixed
             "UPPERCASE".to_string(),     // uppercase not in allowlist
-            "a".repeat(49),              // over the 48-char cap
+            "z".repeat(49),              // over the 48-char cap; "z" is not hex, so only
+                                         // the cap (not the all-hex rule) can reject it
         ];
         for s in &bad {
             assert!(

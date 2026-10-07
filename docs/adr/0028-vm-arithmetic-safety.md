@@ -27,6 +27,7 @@ The audit also had to answer two questions before any fix: which `ExceptionKind`
 ## Non-goals (explicit)
 
 - **The 257-bit integer-model correction is a LATER wave behind the deploy gate.** The interpreter still computes on `i128` while the spec's `Integer` kind is `[-2^256, 2^256 - 1]`; `StackValue::from_i128`/`to_i128` still truncate to the low 128 bits; the baseline arithmetic family's `width`/`flavor` operands are still accepted-but-unenforced (e.g. `ADD` does not check the declared width, `CONV`/`STBITS` do not range-check the value). None of that is changed here — those are consensus-semantic changes owned by the integer-model wave, not safety fixes.
+  - *Note (2026-10-07):* the `to_i128` truncation claim above is superseded by ADR-0031 — `to_i128` now fails closed with `IntegerOverflow` instead of truncating. The 257-bit model itself remains a later wave.
 - No Python reference changes (`reference/` untouched — later wave).
 
 ## Implementation
