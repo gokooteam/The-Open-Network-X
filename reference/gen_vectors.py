@@ -61,7 +61,52 @@ EXPECTED = {
 }
 
 VECTORS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors")
-VECTOR_FILES = ["genesis.json", "blocks.json", "expectations.json"]
+VECTOR_FILES = ["genesis.json", "blocks.json", "expectations.json", "divmod.json"]
+
+# ---------------------------------------------------------------- divmod
+# DIVMOD (0x14) / DIV (0x17) vectors, derived from the SPEC
+# (docs/specification/tvm-instruction-set.md §4.3, ADR-0030) — not from the
+# Rust code. True floor division: q = floor(a/b), r = a - q*b, with
+# sign(r) == sign(b) or r == 0. b = 0 and MIN/-1 raise IntegerOverflow.
+# Python's divmod() is floored by language definition, so it is an
+# independent implementation of the formula; the invariant is then asserted
+# independently below. (TVM execution stays a deliberate non-goal of this
+# reference; these are spec-derived arithmetic cases, not an interpreter.)
+I128_MIN = -(1 << 127)
+DIVMOD_CASES = [
+    (7, 2),
+    (-7, 2),
+    (7, -2),
+    (-7, -2),
+    (0, -1),
+    (I128_MIN, -1),  # quotient 2^127 unrepresentable -> IntegerOverflow
+    (7, 0),          # -> IntegerOverflow
+]
+
+
+def divmod_doc():
+    cases = []
+    for a, b in DIVMOD_CASES:
+        if b == 0 or (a == I128_MIN and b == -1):
+            cases.append({"a": str(a), "b": str(b), "error": "IntegerOverflow"})
+            continue
+        q, r = divmod(a, b)
+        assert a == q * b + r, f"invariant a == q*b + r failed for ({a}, {b})"
+        assert abs(r) < abs(b), f"invariant |r| < |b| failed for ({a}, {b})"
+        assert r == 0 or (r < 0) == (b < 0), (
+            f"invariant sign(r) == sign(b) failed for ({a}, {b})"
+        )
+        cases.append({"a": str(a), "b": str(b), "q": str(q), "r": str(r)})
+    return {
+        "semantics": (
+            "DIVMOD (0x14): q = floor(a/b), r = a - q*b; "
+            "sign(r) == sign(b) or r == 0. b = 0 and MIN/-1 raise "
+            "IntegerOverflow. Per docs/specification/tvm-instruction-set.md "
+            "§4.3 and ADR-0030."
+        ),
+        "integer_bits": 128,
+        "cases": cases,
+    }
 
 
 def xorshift64(state):
@@ -190,6 +235,9 @@ def generate(out_dir):
         f.write("\n")
     with open(os.path.join(out_dir, "expectations.json"), "w") as f:
         json.dump(expectations, f, indent=2)
+        f.write("\n")
+    with open(os.path.join(out_dir, "divmod.json"), "w") as f:
+        json.dump(divmod_doc(), f, indent=2)
         f.write("\n")
     print(f"vectors written to {out_dir}")
     print(f"  genesis root: {h(genesis_root)}")

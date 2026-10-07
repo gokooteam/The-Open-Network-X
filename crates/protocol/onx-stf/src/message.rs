@@ -114,7 +114,8 @@ pub struct ExternalMessage {
 impl ExternalMessage {
     /// Canonical encoding of the signed body (big-endian, strict).
     pub fn body_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(EXT_BODY_PREFIX_LEN + self.message.len());
+        // Capacity hint only; under-reserving just grows the Vec.
+        let mut out = Vec::with_capacity(EXT_BODY_PREFIX_LEN.saturating_add(self.message.len()));
         out.extend_from_slice(&self.chain_id);
         out.extend_from_slice(&self.from.to_bytes());
         out.extend_from_slice(&Uint64(self.nonce).encode());
@@ -155,7 +156,11 @@ impl ExternalMessage {
         if msg_len > MAX_MESSAGE_BYTES {
             return Err(StfError::MessageTooLarge { len: msg_len });
         }
-        let expected_len = EXT_BODY_PREFIX_LEN + msg_len + 32;
+        // `msg_len <= MAX_MESSAGE_BYTES` (checked above), so this is bounded by
+        // `EXT_BODY_PREFIX_LEN + 65_535 + 32`: saturation unreachable.
+        let expected_len = EXT_BODY_PREFIX_LEN
+            .saturating_add(msg_len)
+            .saturating_add(32);
         if bytes.len() != expected_len {
             return Err(StfError::MalformedMessage {
                 expected_len,
@@ -236,7 +241,8 @@ impl ExternalMessage {
     /// Canonical wire encoding: body followed by the 64-byte signature.
     pub fn to_bytes(&self) -> Vec<u8> {
         let body = self.body_bytes();
-        let mut out = Vec::with_capacity(body.len() + Signature::BYTE_LEN);
+        // Capacity hint only.
+        let mut out = Vec::with_capacity(body.len().saturating_add(Signature::BYTE_LEN));
         out.extend_from_slice(&body);
         out.extend_from_slice(&self.signature);
         out
@@ -254,7 +260,10 @@ impl ExternalMessage {
                 got_len: bytes.len(),
             });
         }
-        let body_len = bytes.len() - Signature::BYTE_LEN;
+        // Guarded by the `MIN_WIRE_LEN` check above (`bytes.len() >=
+        // `EXT_BODY_PREFIX_LEN + 32 + Signature::BYTE_LEN`), so this never
+        // saturates.
+        let body_len = bytes.len().saturating_sub(Signature::BYTE_LEN);
         let mut msg = Self::body_from_bytes(&bytes[..body_len])?;
         msg.signature.copy_from_slice(&bytes[body_len..]);
         Ok(msg)
@@ -304,7 +313,17 @@ impl InternalMessage {
     /// `src(32) || dest(32) || value u128be(16) || fee u128be(16) ||`
     /// `payload_len u32be(4) || payload || is_bounce(1) || origin(32)`.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(32 + 32 + 16 + 16 + 4 + self.payload.len() + 1 + 32);
+        // Capacity hint only: `32+32+16+16+4+payload+1+32`.
+        let mut out = Vec::with_capacity(
+            32usize
+                .saturating_add(32)
+                .saturating_add(16)
+                .saturating_add(16)
+                .saturating_add(4)
+                .saturating_add(self.payload.len())
+                .saturating_add(1)
+                .saturating_add(32),
+        );
         out.extend_from_slice(&self.src.to_bytes());
         out.extend_from_slice(&self.dest.to_bytes());
         out.extend_from_slice(&Uint128(self.value_nanos).encode());
@@ -329,7 +348,8 @@ impl InternalMessage {
 /// `domain_hash(ONX_MSGS_ROOT_V1, msg[0].hash() || msg[1].hash() || ...)`.
 /// The empty body commits to `domain_hash(ONX_MSGS_ROOT_V1, b"")`.
 pub fn msgs_root(messages: &[ExternalMessage]) -> [u8; 32] {
-    let mut preimage = Vec::with_capacity(messages.len() * 32);
+    // Capacity hint only.
+    let mut preimage = Vec::with_capacity(messages.len().saturating_mul(32));
     for msg in messages {
         preimage.extend_from_slice(&msg.hash());
     }

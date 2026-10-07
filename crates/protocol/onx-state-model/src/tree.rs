@@ -26,7 +26,8 @@ pub const MAX_TRIE_VALUE_BYTES: usize = 128 * MAX_CELL_REFS;
 /// byte `depth/8`, bit `7 - (depth%8)` (big-endian within the byte).
 fn key_bit(key: &[u8; 32], depth: usize) -> usize {
     debug_assert!(depth < 256, "trie depth exceeds 256-bit key");
-    ((key[depth / 8] >> (7 - (depth % 8))) & 1) as usize
+    // `depth % 8 <= 7`, so this never saturates; explicit per the arithmetic lint.
+    ((key[depth / 8] >> 7usize.saturating_sub(depth % 8)) & 1) as usize
 }
 
 /// One node of the incremental Merkle trie.
@@ -180,7 +181,9 @@ impl ShardStateTree {
         }
         let mut built = 0u64;
         let new_root = Self::insert_at(&self.trie_root, &key, &value, 0, &mut built)?;
-        self.trie_cells_built += built;
+        // Diagnostic counter: saturating is behavior-identical in practice
+        // (u64 counts cells; overflow would need exabytes of trie).
+        self.trie_cells_built = self.trie_cells_built.saturating_add(built);
         self.trie_root = new_root;
         self.accounts.insert(account_id, state);
         Ok(())
@@ -197,7 +200,9 @@ impl ShardStateTree {
     ) -> Result<Rc<TrieNode>, StateModelError> {
         if node.is_empty_node() {
             let leaf = TrieNode::build_leaf(key, value)?;
-            *built += 1 + leaf.chunks.len() as u64;
+            *built = (*built)
+                .saturating_add(1)
+                .saturating_add(leaf.chunks.len() as u64);
             return Ok(Rc::new(leaf));
         }
         if let Some(node_key) = node.leaf_key() {
@@ -208,7 +213,9 @@ impl ShardStateTree {
                 if candidate.cell.hash() == node.cell.hash() {
                     return Ok(Rc::clone(node));
                 }
-                *built += 1 + candidate.chunks.len() as u64;
+                *built = (*built)
+                    .saturating_add(1)
+                    .saturating_add(candidate.chunks.len() as u64);
                 return Ok(Rc::new(candidate));
             }
             // Different key: expand the leaf into a branch chain down to
@@ -228,7 +235,7 @@ impl ShardStateTree {
         };
         let bit = key_bit(key, depth);
         let old_child = if bit == 0 { left } else { right };
-        let new_child = Self::insert_at(old_child, key, value, depth + 1, built)?;
+        let new_child = Self::insert_at(old_child, key, value, depth.saturating_add(1), built)?;
         if Rc::ptr_eq(&new_child, old_child) {
             return Ok(Rc::clone(node));
         }
@@ -239,7 +246,7 @@ impl ShardStateTree {
         };
         let cell = Cell::new(vec![], vec![new_left.cell.hash(), new_right.cell.hash()])
             .expect("branch cell: empty data with 2 refs is valid");
-        *built += 1;
+        *built = (*built).saturating_add(1);
         Ok(Rc::new(TrieNode {
             cell,
             left: Some(new_left),
@@ -262,7 +269,7 @@ impl ShardStateTree {
             .expect("expand_leaf called on a leaf node");
         let mut split = depth;
         while split < 256 && key_bit(&old_key, split) == key_bit(key, split) {
-            split += 1;
+            split = split.saturating_add(1);
         }
         if split >= 256 {
             // Unreachable: the keys are distinct (the caller checked), so
@@ -272,7 +279,9 @@ impl ShardStateTree {
             ));
         }
         let new_leaf = TrieNode::build_leaf(key, value)?;
-        *built += 1 + new_leaf.chunks.len() as u64;
+        *built = (*built)
+            .saturating_add(1)
+            .saturating_add(new_leaf.chunks.len() as u64);
         let new_leaf = Rc::new(new_leaf);
 
         // Branch at the split bit, leaves on their bit-sides.
@@ -302,7 +311,7 @@ impl ShardStateTree {
     fn make_branch(left: Rc<TrieNode>, right: Rc<TrieNode>, built: &mut u64) -> Rc<TrieNode> {
         let cell = Cell::new(vec![], vec![left.cell.hash(), right.cell.hash()])
             .expect("branch cell: empty data with 2 refs is valid");
-        *built += 1;
+        *built = (*built).saturating_add(1);
         Rc::new(TrieNode {
             cell,
             left: Some(left),
@@ -484,15 +493,15 @@ fn build_trie_cells(
     }
 
     let byte_idx = bit_depth / 8;
-    let bit_idx = 7 - (bit_depth % 8);
+    let bit_idx = 7usize.saturating_sub(bit_depth % 8); // `% 8 <= 7`: never saturates
 
     let (left, right): (Vec<_>, Vec<_>) = items
         .iter()
         .cloned()
         .partition(|(key, _)| (key[byte_idx] & (1 << bit_idx)) == 0);
 
-    let left_cell = build_trie_cells(&left, bit_depth + 1, cell_map)?;
-    let right_cell = build_trie_cells(&right, bit_depth + 1, cell_map)?;
+    let left_cell = build_trie_cells(&left, bit_depth.saturating_add(1), cell_map)?;
+    let right_cell = build_trie_cells(&right, bit_depth.saturating_add(1), cell_map)?;
 
     let branch_cell = Cell::new(vec![], vec![left_cell.hash(), right_cell.hash()])?;
     let hash = branch_cell.hash();
@@ -545,10 +554,16 @@ fn collect_proof_path(
         // this depth selects the path child. Bit layout must match
         // `build_trie_cells`.
         let byte_idx = bit_depth / 8;
-        let bit_idx = 7 - (bit_depth % 8);
+        let bit_idx = 7usize.saturating_sub(bit_depth % 8); // `% 8 <= 7`: never saturates
         let bit = (target_key[byte_idx] >> bit_idx) & 1;
         let child_hash = cell.cell_refs()[bit as usize];
-        return collect_proof_path(cell_map, &child_hash, target_key, bit_depth + 1, out);
+        return collect_proof_path(
+            cell_map,
+            &child_hash,
+            target_key,
+            bit_depth.saturating_add(1),
+            out,
+        );
     }
 
     Err(StateModelError::InvalidMerkleProof(
@@ -647,10 +662,10 @@ impl MerkleProof {
                 // Branch: the key bit at this depth selects the path child.
                 // Bit layout must match `build_trie_cells`.
                 let byte_idx = bit_depth / 8;
-                let bit_idx = 7 - (bit_depth % 8);
+                let bit_idx = 7usize.saturating_sub(bit_depth % 8); // `% 8 <= 7`: never saturates
                 let bit = (self.target_key[byte_idx] >> bit_idx) & 1;
                 current = cell.cell_refs()[bit as usize];
-                bit_depth += 1;
+                bit_depth = bit_depth.saturating_add(1);
                 continue;
             }
 
@@ -688,15 +703,15 @@ impl MerkleProof {
         let mut target_key = [0u8; 32];
         target_key.copy_from_slice(&cursor[..32]);
         cursor = &cursor[32..];
-        offset += 32;
+        offset = offset.saturating_add(32);
 
         let mut root_hash = [0u8; 32];
         root_hash.copy_from_slice(&cursor[..32]);
         cursor = &cursor[32..];
-        offset += 32;
+        offset = offset.saturating_add(32);
 
         let (proof_boc, consumed) = BagOfCells::from_bytes(cursor)?;
-        offset += consumed;
+        offset = offset.saturating_add(consumed); // `consumed <= cursor.len()`: never saturates
 
         let proof = Self {
             magic_bytes,

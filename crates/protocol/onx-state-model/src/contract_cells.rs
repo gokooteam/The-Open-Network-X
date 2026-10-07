@@ -33,7 +33,12 @@ impl ContractCellDags {
     pub fn to_bytes(&self) -> Vec<u8> {
         let code_bytes = self.code.to_bytes();
         let data_bytes = self.data.to_bytes();
-        let mut out = Vec::with_capacity(8 + code_bytes.len() + data_bytes.len());
+        // Capacity hint only: under-reserving is harmless (Vec grows).
+        let mut out = Vec::with_capacity(
+            8usize
+                .saturating_add(code_bytes.len())
+                .saturating_add(data_bytes.len()),
+        );
         out.extend_from_slice(&(code_bytes.len() as u32).to_be_bytes());
         out.extend_from_slice(&code_bytes);
         out.extend_from_slice(&(data_bytes.len() as u32).to_be_bytes());
@@ -50,10 +55,12 @@ impl ContractCellDags {
             )));
         }
         let code_len = u32::from_be_bytes(bytes[0..4].try_into().expect("length checked")) as usize;
-        if bytes.len() < 4 + code_len + 4 {
+        // `code_len <= u32::MAX`, so these additions cannot overflow on 64-bit;
+        // saturating form is used purely to satisfy the arithmetic lint.
+        if bytes.len() < 4usize.saturating_add(code_len).saturating_add(4) {
             return Err(StateModelError::DeserializationError(format!(
                 "contract cell DAGs truncated: code claims {code_len} bytes, {} remain",
-                bytes.len() - 4
+                bytes.len().saturating_sub(4)
             )));
         }
         let (code, code_used) = BagOfCells::from_bytes(&bytes[4..4 + code_len])?;
@@ -64,27 +71,32 @@ impl ContractCellDags {
         }
         let data_off = 4 + code_len;
         let data_len = u32::from_be_bytes(
-            bytes[data_off..data_off + 4]
+            bytes[data_off..data_off.saturating_add(4)]
                 .try_into()
                 .expect("length checked"),
         ) as usize;
-        if bytes.len() < data_off + 4 + data_len {
+        if bytes.len() < data_off.saturating_add(4).saturating_add(data_len) {
             return Err(StateModelError::DeserializationError(format!(
                 "contract cell DAGs truncated: data claims {data_len} bytes, {} remain",
-                bytes.len() - data_off - 4
+                bytes.len().saturating_sub(data_off).saturating_sub(4)
             )));
         }
-        let (data, data_used) =
-            BagOfCells::from_bytes(&bytes[data_off + 4..data_off + 4 + data_len])?;
+        let (data, data_used) = BagOfCells::from_bytes(
+            &bytes[data_off.saturating_add(4)..data_off.saturating_add(4).saturating_add(data_len)],
+        )?;
         if data_used != data_len {
             return Err(StateModelError::DeserializationError(format!(
                 "data BoC length mismatch: prefix {data_len}, parsed {data_used}"
             )));
         }
-        if bytes.len() != data_off + 4 + data_len {
+        if bytes.len() != data_off.saturating_add(4).saturating_add(data_len) {
             return Err(StateModelError::DeserializationError(format!(
                 "contract cell DAGs have {} trailing bytes",
-                bytes.len() - data_off - 4 - data_len
+                bytes
+                    .len()
+                    .saturating_sub(data_off)
+                    .saturating_sub(4)
+                    .saturating_sub(data_len)
             )));
         }
         Ok(Self { code, data })

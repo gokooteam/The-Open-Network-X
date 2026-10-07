@@ -108,6 +108,8 @@ impl GenesisDocument {
                 "genesis requires at least one account".to_string(),
             ));
         }
+        // Byte-equality is sound here: PublicKey::decode_exact enforces canonical
+        // encodings, so one curve point has exactly one accepted byte encoding.
         validators.sort_by_key(|a| a.pubkey);
         for pair in validators.windows(2) {
             if pair[0].pubkey == pair[1].pubkey {
@@ -289,23 +291,64 @@ pub fn derive_validator_pubkey(label: &str) -> [u8; 32] {
 }
 
 fn decode_hex_32(s: &str) -> Option<[u8; 32]> {
-    if s.len() != 64 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if !is_explicit_hex_key(s) {
         return None;
     }
     let mut out = [0u8; 32];
     for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
         let hi = (chunk[0] as char).to_digit(16).unwrap();
         let lo = (chunk[1] as char).to_digit(16).unwrap();
-        out[i] = (hi as u8) * 16 + (lo as u8);
+        // Hex digits: `hi, lo <= 15`, so `hi * 16 + lo <= 255`; the saturating
+        // ops never saturate, they just satisfy the arithmetic lint.
+        out[i] = (hi as u8).saturating_mul(16).saturating_add(lo as u8);
     }
     Some(out)
+}
+
+/// Reports whether `s` is a 64-character hex literal — real key material —
+/// as opposed to a DEV label. This is the first branch of the three-way
+/// rule in [`parse_or_derive_pubkey`] / [`parse_or_derive_account_id`];
+/// keep the two in sync. Callers that must apply strict key validation
+/// (genesis validator keys) use this to tell "operator-supplied key
+/// material, validate it" apart from "derived dev key, cannot sign".
+pub fn is_explicit_hex_key(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Rejects strings that look like a botched key literal before they can
+/// silently become a DEV label (a validator/account nobody can sign for).
+/// Called by [`parse_or_derive_pubkey`] and [`parse_or_derive_account_id`].
+fn reject_key_lookalike(s: &str, what: &str) -> Result<(), StateModelError> {
+    if s.len() != s.trim().len() {
+        return Err(StateModelError::InvalidGenesis(format!(
+            "{what} has leading/trailing whitespace; remove it or the key will not match: {s:?}"
+        )));
+    }
+    if s.starts_with("0x") || s.starts_with("0X") {
+        return Err(StateModelError::InvalidGenesis(format!(
+            "{what} looks like a 0x-prefixed key; strip the 0x prefix (64 hex chars, no prefix): {s:?}"
+        )));
+    }
+    // 64-char handled by the caller; nearby lengths of alnum text are
+    // almost certainly a mistyped key, not a label anyone meant.
+    if s.len() != 64 && (60..=68).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return Err(StateModelError::InvalidGenesis(format!(
+            "{what} is {len} alphanumeric chars — looks like a mistyped 64-hex-char key, not a label: {s:?}",
+            len = s.len(),
+        )));
+    }
+    Ok(())
 }
 
 /// Maps a balance address string to an [`AccountId`]:
 /// 64 hex chars are decoded literally (real key material);
 /// a 64-char non-hex string is rejected as a probable typo;
+/// key lookalikes (0x prefix, near-64 lengths, stray whitespace) are
+/// rejected before they can silently become labels;
 /// anything else is a label, derived deterministically.
 pub fn parse_or_derive_account_id(s: &str) -> Result<AccountId, StateModelError> {
+    reject_key_lookalike(s, "address")?;
     if s.len() == 64 {
         match decode_hex_32(s) {
             Some(bytes) => return Ok(AccountId::from_bytes(bytes)),
@@ -319,9 +362,10 @@ pub fn parse_or_derive_account_id(s: &str) -> Result<AccountId, StateModelError>
     Ok(derive_account_id(s))
 }
 
-/// Maps a validator key string to 32 bytes: same three-way rule as
-/// [`parse_or_derive_account_id`].
+/// Maps a validator key string to 32 bytes: same rule as
+/// [`parse_or_derive_account_id`], including lookalike rejection.
 pub fn parse_or_derive_pubkey(s: &str) -> Result<[u8; 32], StateModelError> {
+    reject_key_lookalike(s, "validator key")?;
     if s.len() == 64 {
         match decode_hex_32(s) {
             Some(bytes) => return Ok(bytes),
@@ -498,5 +542,40 @@ mod tests {
         let alice = derive_account_id("onx:alice");
         doc2.accounts.insert(alice, AccountState::Uninitialized);
         assert_ne!(doc.genesis_hash(), doc2.genesis_hash());
+    }
+
+    #[test]
+    fn key_lookalikes_are_rejected_before_label_derivation() {
+        // 0x-prefixed keys: strip the prefix instead of deriving a label.
+        assert!(parse_or_derive_pubkey(
+            "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
+        )
+        .is_err());
+        // Near-64-length alnum strings: almost certainly a mistyped key.
+        assert!(parse_or_derive_pubkey(&"ab".repeat(31)).is_err()); // 62 chars
+        assert!(
+            parse_or_derive_pubkey(&"ab".repeat(32).chars().take(63).collect::<String>()).is_err()
+        ); // 63 chars
+        assert!(parse_or_derive_pubkey(&format!("{}a", "ab".repeat(32))).is_err()); // 65 chars
+                                                                                    // Stray whitespace: the key would not match what the operator meant.
+        assert!(parse_or_derive_pubkey(
+            " 3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
+        )
+        .is_err());
+        // Same rule for account addresses.
+        assert!(parse_or_derive_account_id(
+            "0x3b6a27bcceb6a42d62a3a8d02a6f0d73653215771de243a63ac048a18b59da29"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn plain_labels_still_derive() {
+        // Ordinary labels are unaffected by lookalike rejection.
+        assert_eq!(
+            parse_or_derive_pubkey("validator-01").unwrap(),
+            derive_validator_pubkey("validator-01")
+        );
+        assert!(parse_or_derive_account_id("onx:alice").is_ok());
     }
 }

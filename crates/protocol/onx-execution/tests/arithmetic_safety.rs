@@ -54,9 +54,14 @@ fn pushbytes(bytes: &[u8]) -> Vec<u8> {
 /// Builds `(a, b) -> op` for the width/flavor-parameterized arithmetic family
 /// (0x10-0x15, 0x17-0x19): operands then `opcode, width_hi, width_lo, flavor`.
 fn arith_program(opcode: u8, a: i128, b: i128) -> Vec<u8> {
+    arith_program_wf(opcode, a, b, 64, 1)
+}
+
+/// Variant of [`arith_program`] with explicit width and flavor.
+fn arith_program_wf(opcode: u8, a: i128, b: i128, width: u16, flavor: u8) -> Vec<u8> {
     let mut program = pushint(a);
     program.extend(pushint(b));
-    program.extend([opcode, 0, 64, 1]); // width = 64, flavor = signed
+    program.extend([opcode, (width >> 8) as u8, (width & 0xff) as u8, flavor]);
     program
 }
 
@@ -128,16 +133,19 @@ fn div_by_zero_still_integer_overflow() {
 }
 
 #[test]
-fn divmod_is_floored_with_nonnegative_remainder() {
-    // Spec §4.2: (a, b) -> (a div b, a mod b) with a = q*b + r and
-    // 0 <= r < |b|. Pinned by ADR-0028 for negative divisors too.
+fn divmod_is_true_floor() {
+    // Spec §4.3 / ADR-0030: q = floor(a/b), r = a - q*b, with
+    // sign(r) == sign(b) or r == 0. ADR-0028's Euclidean pin was wrong:
+    // 7 DIVMOD -2 -> (-4, -1) (was (-3, 1)); -7 DIVMOD -2 -> (3, -1)
+    // (was (4, 1)).
     for (a, b, q, r) in [
-        (-7i128, 2i128, -4i128, 1i128),
-        (7, -2, -3, 1),
-        (-7, -2, 4, 1),
-        (7, 2, 3, 1),
+        (7i128, 2i128, 3i128, 1i128),
+        (-7, 2, -4, 1),
+        (7, -2, -4, -1),
+        (-7, -2, 3, -1),
         (-8, 2, -4, 0),
         (0, -5, 0, 0),
+        (0, -1, 0, 0),
     ] {
         let (result, stack) = run_program(arith_program(0x14, a, b));
         assert!(
@@ -148,17 +156,19 @@ fn divmod_is_floored_with_nonnegative_remainder() {
         let got_q = pop_i128(&stack, 0);
         let got_r = pop_i128(&stack, 1);
         assert_eq!((got_q, got_r), (q, r), "DIVMOD({a}, {b})");
-        // The invariant the spec pins, checked independently of the table.
+        // The invariant the spec pins, checked independently of the table:
+        // a = q*b + r, |r| < |b|, sign(r) == sign(b) or r == 0.
         assert_eq!(a, got_q.wrapping_mul(b).wrapping_add(got_r));
-        assert!((0..b.abs()).contains(&got_r));
+        assert!(got_r.unsigned_abs() < b.unsigned_abs());
+        assert!(got_r == 0 || (got_r < 0) == (b < 0));
     }
 }
 
 #[test]
 fn div_opcode_matches_divmod_quotient() {
     // 0x17 DIV returns only the quotient; it must agree with DIVMOD's
-    // floored quotient (the old truncating `checked_div` did not).
-    for (a, b, q) in [(-7i128, 2i128, -4i128), (7, -2, -3), (-7, -2, 4), (7, 2, 3)] {
+    // true-floor quotient (the old truncating `checked_div` did not).
+    for (a, b, q) in [(7i128, 2i128, 3i128), (-7, 2, -4), (7, -2, -4), (-7, -2, 3)] {
         let (result, stack) = run_program(arith_program(0x17, a, b));
         assert!(
             matches!(result, ExecutionResult::Success { .. }),
@@ -322,5 +332,116 @@ fn stack_depth_cap_holds_under_pushint_flood() {
         interpreter.stack.len() <= 1023,
         "stack exceeded cap: {}",
         interpreter.stack.len()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Width-boundary regression tests (0x17-0x19): 2^127 / 2^128 are
+// unrepresentable as i128, so the width-127/128 limit paths are special.
+// The old shift-based limit made EVERY width-128 op and every width-127
+// unsigned-flavor op raise IntegerOverflow.
+// ---------------------------------------------------------------------------
+
+fn expect_success_i128(program: Vec<u8>) -> i128 {
+    let (result, stack) = run_program(program);
+    assert!(
+        matches!(result, ExecutionResult::Success { .. }),
+        "expected success, got {result:?}"
+    );
+    assert_eq!(stack.len(), 1);
+    pop_i128(&stack, 0)
+}
+
+#[test]
+fn div_width128_signed_accepts_full_i128_range() {
+    // Signed 128 == the i128 range: extremes must succeed exactly.
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, -7, 2, 128, 1)),
+        -4
+    );
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, i128::MIN, 1, 128, 1)),
+        i128::MIN
+    );
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, i128::MAX, 1, 128, 1)),
+        i128::MAX
+    );
+}
+
+#[test]
+fn div_width128_unsigned_rejects_negative_result() {
+    // Unsigned 128: negative quotients are unrepresentable.
+    expect_exception(
+        arith_program_wf(0x17, -7, 2, 128, 0),
+        ExceptionKind::IntegerOverflow,
+    );
+    // Non-negative quotients fit (2^128 > i128::MAX, no upper check needed).
+    assert_eq!(expect_success_i128(arith_program_wf(0x17, 7, 2, 128, 0)), 3);
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, i128::MAX, 1, 128, 0)),
+        i128::MAX
+    );
+}
+
+#[test]
+fn div_width128_wrap_unsigned_rejects_negative_result() {
+    // Flavor 2 wraps into [0, 2^128); a negative would wrap past i128::MAX.
+    expect_exception(
+        arith_program_wf(0x17, -7, 2, 128, 2),
+        ExceptionKind::IntegerOverflow,
+    );
+    assert_eq!(expect_success_i128(arith_program_wf(0x17, 7, 2, 128, 2)), 3);
+}
+
+#[test]
+fn div_width127_unsigned_flavors_no_longer_reject_everything() {
+    // Width 127, flavor 0: [0, 2^127); every non-negative i128 fits.
+    assert_eq!(expect_success_i128(arith_program_wf(0x17, 7, 2, 127, 0)), 3);
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, i128::MAX, 1, 127, 0)),
+        i128::MAX
+    );
+    expect_exception(
+        arith_program_wf(0x17, -7, 2, 127, 0),
+        ExceptionKind::IntegerOverflow,
+    );
+    // Width 127, flavor 2: wrap of a negative lands in [0, 2^127),
+    // always representable: -7 mod 2^127 == 2^127 - 7.
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, -7, 2, 127, 2)),
+        i128::MAX - 3 // floor(-7/2) = -4; -4 mod 2^127 = 2^127 - 4
+    );
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, i128::MIN, 1, 127, 2)),
+        0
+    );
+}
+
+#[test]
+fn shift_width128_signed_succeeds() {
+    // 0x18 SHL at width 128 used to die in the limit computation.
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x18, 1, 100, 128, 1)),
+        1i128 << 100
+    );
+    // Shift-amount bound still enforced at width 128.
+    expect_exception(
+        arith_program_wf(0x18, 1, 128, 128, 1),
+        ExceptionKind::IntegerOverflow,
+    );
+}
+
+#[test]
+fn div_width64_unsigned_bound_still_enforced() {
+    // Narrow widths keep their exact bounds: 2^64 - 1 is the max for
+    // flavor 0 at width 64, so i128::MAX / 1 must still fail.
+    expect_exception(
+        arith_program_wf(0x17, i128::MAX, 1, 64, 0),
+        ExceptionKind::IntegerOverflow,
+    );
+    assert_eq!(
+        expect_success_i128(arith_program_wf(0x17, u64::MAX as i128, 1, 64, 0)),
+        u64::MAX as i128
     );
 }

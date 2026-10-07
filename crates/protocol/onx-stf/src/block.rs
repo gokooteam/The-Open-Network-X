@@ -87,12 +87,18 @@ impl BlockHeader {
                 got_len: bytes.len(),
             });
         }
-        let u32_at = |o: usize| u32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
-        let u64_at = |o: usize| u64::from_be_bytes(bytes[o..o + 8].try_into().unwrap());
-        let i32_at = |o: usize| i32::from_be_bytes(bytes[o..o + 4].try_into().unwrap());
+        // All call sites pass small constant offsets into the 148-byte header
+        // (length checked above); saturation is unreachable. Explicit per the
+        // crate's `arithmetic_side_effects` policy.
+        let u32_at =
+            |o: usize| u32::from_be_bytes(bytes[o..o.saturating_add(4)].try_into().unwrap());
+        let u64_at =
+            |o: usize| u64::from_be_bytes(bytes[o..o.saturating_add(8)].try_into().unwrap());
+        let i32_at =
+            |o: usize| i32::from_be_bytes(bytes[o..o.saturating_add(4)].try_into().unwrap());
         let h32_at = |o: usize| {
             let mut h = [0u8; 32];
-            h.copy_from_slice(&bytes[o..o + 32]);
+            h.copy_from_slice(&bytes[o..o.saturating_add(32)]);
             h
         };
         Ok(Self {
