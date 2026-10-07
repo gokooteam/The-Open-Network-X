@@ -1,0 +1,121 @@
+{
+  "adr": "ADR-0034",
+  "constants": {
+    "GAS_PER_NANO": 1000,
+    "MAX_GAS_PER_MESSAGE": 10000000,
+    "MAX_GAS_PER_BLOCK": 100000000,
+    "BLOCK_CAP_IS_N_MESSAGE_CAPS": 10
+  },
+  "message_gas_limit": [
+    {
+      "fee_nanos": "0",
+      "gas_limit": 0
+    },
+    {
+      "fee_nanos": "1",
+      "gas_limit": 1000
+    },
+    {
+      "fee_nanos": "5000",
+      "gas_limit": 5000000
+    },
+    {
+      "fee_nanos": "9999",
+      "gas_limit": 9999000
+    },
+    {
+      "fee_nanos": "10000",
+      "gas_limit": 10000000
+    },
+    {
+      "fee_nanos": "10001",
+      "gas_limit": 10000000
+    },
+    {
+      "fee_nanos": "100000",
+      "gas_limit": 10000000
+    },
+    {
+      "fee_nanos": "1000000000",
+      "gas_limit": 10000000
+    },
+    {
+      "fee_nanos": "18446744073709551615",
+      "gas_limit": 10000000
+    },
+    {
+      "fee_nanos": "340282366920938463463374607431768211455",
+      "gas_limit": 10000000
+    }
+  ],
+  "accumulate_block_gas": [
+    {
+      "current_total": 0,
+      "additional": 0,
+      "ok": true,
+      "new_total": 0
+    },
+    {
+      "current_total": 0,
+      "additional": 1000,
+      "ok": true,
+      "new_total": 1000
+    },
+    {
+      "current_total": 1000,
+      "additional": 2000,
+      "ok": true,
+      "new_total": 3000
+    },
+    {
+      "current_total": 99999999,
+      "additional": 1,
+      "ok": true,
+      "new_total": 100000000
+    },
+    {
+      "current_total": 100000000,
+      "additional": 0,
+      "ok": true,
+      "new_total": 100000000
+    },
+    {
+      "current_total": 100000000,
+      "additional": 1,
+      "ok": false,
+      "error": "BlockGasExceeded",
+      "used": 100000001,
+      "cap": 100000000
+    },
+    {
+      "current_total": 0,
+      "additional": 100000001,
+      "ok": false,
+      "error": "BlockGasExceeded",
+      "used": 100000001,
+      "cap": 100000000
+    },
+    {
+      "current_total": 90000000,
+      "additional": 10000000,
+      "ok": true,
+      "new_total": 100000000
+    },
+    {
+      "current_total": 90000000,
+      "additional": 10000001,
+      "ok": false,
+      "error": "BlockGasExceeded",
+      "used": 100000001,
+      "cap": 100000000
+    },
+    {
+      "current_total": 18446744073709551615,
+      "additional": 18446744073709551615,
+      "ok": false,
+      "error": "BlockGasExceeded",
+      "used": 18446744073709551615,
+      "cap": 100000000
+    }
+  ]
+}

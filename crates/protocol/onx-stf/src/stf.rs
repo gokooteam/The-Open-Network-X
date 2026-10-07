@@ -45,6 +45,46 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// the delivery.
 pub const GAS_PER_NANO: u64 = 1_000;
 
+/// Maximum gas any single message execution may consume (ADR-0034).
+/// The VM gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)`.
+/// Consensus rule: all nodes derive the identical limit from the same fee.
+pub const MAX_GAS_PER_MESSAGE: u64 = 10_000_000;
+
+/// Maximum total gas across all message deliveries in one block (ADR-0034).
+/// `apply_messages` fails closed with `StfError::BlockGasExceeded` when the
+/// running total would exceed this. Consensus rule: a block is valid iff the
+/// sum of per-delivery `gas_used` is `<= MAX_GAS_PER_BLOCK`.
+pub const MAX_GAS_PER_BLOCK: u64 = 100_000_000;
+
+/// Compute the VM gas limit for a message's contract execution (ADR-0034).
+/// The fee buys gas at `GAS_PER_NANO`, saturating at `u64::MAX`, then the
+/// per-message cap `MAX_GAS_PER_MESSAGE` clamps it. Pure function of the
+/// fee — all nodes derive the identical limit.
+fn message_gas_limit(fee_nanos: u128) -> u64 {
+    (fee_nanos
+        .saturating_mul(GAS_PER_NANO as u128)
+        .min(u64::MAX as u128) as u64)
+        .min(MAX_GAS_PER_MESSAGE)
+}
+
+/// Accumulate one delivery's gas into the block total (ADR-0034).
+/// Returns the new total, or `BlockGasExceeded` if it would pass
+/// `MAX_GAS_PER_BLOCK`. Pure function — the consensus rule in one place.
+fn accumulate_block_gas(current_total: u64, additional: u64) -> Result<u64, StfError> {
+    // `saturating_add`: the true total is bounded by
+    // max_deliveries * MAX_GAS_PER_MESSAGE << u64::MAX, so saturation only
+    // triggers on a corrupted receipt — and a saturated total is still
+    // correctly > cap. The reported `used` stays exact in all reachable cases.
+    let new_total = current_total.saturating_add(additional);
+    if new_total > MAX_GAS_PER_BLOCK {
+        return Err(StfError::BlockGasExceeded {
+            used: new_total,
+            cap: MAX_GAS_PER_BLOCK,
+        });
+    }
+    Ok(new_total)
+}
+
 /// Domain tag for the flat hash of a contract call's inbound payload
 /// bytes, carried as the VM message's `body_cell_hash`. The interpreter
 /// does not yet read the message — this commits to the delivered bytes so
@@ -282,6 +322,11 @@ fn apply_messages(
     let mut processed: BTreeSet<[u8; 32]> = BTreeSet::new();
     let max_deliveries = externals.len().saturating_mul(MAX_DELIVERIES_PER_EXTERNAL);
     let mut done = 0usize;
+    // ADR-0034: per-block gas cap. Running total of per-delivery `gas_used`;
+    // the block is invalid (fail-closed) if the total would exceed
+    // MAX_GAS_PER_BLOCK. Checked incrementally so we fail fast, but the rule
+    // is on the total: sum(gas_used) <= MAX_GAS_PER_BLOCK.
+    let mut block_gas_used: u64 = 0;
     while let Some((msg, idx)) = queue.pop_front() {
         // Bounded by the `TooManyDeliveries` check below: `done` never gets
         // near `usize::MAX`; saturation unreachable.
@@ -292,6 +337,7 @@ fn apply_messages(
             });
         }
         let receipt = deliver(tree, msg, lt, workchain, &mut queue, idx, &mut processed)?;
+        block_gas_used = accumulate_block_gas(block_gas_used, receipt.gas_used)?;
         applied[idx].deliveries.push(receipt);
     }
     Ok(applied)
@@ -728,7 +774,8 @@ struct ContractExecOutput {
 ///   interpreter's data is the contract's new state.
 /// - `ExecutionContext.gen_utime` is derived from the block lt — the VM
 ///   never sees wall-clock time.
-/// - Gas limit is `fee_nanos * GAS_PER_NANO` (saturating at `u64::MAX`).
+/// - Gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)`
+///   (ADR-0034; saturating at `u64::MAX` before the cap).
 #[allow(clippy::too_many_arguments)]
 fn try_execute_contract(
     code: &Cell,
@@ -743,10 +790,10 @@ fn try_execute_contract(
         .cloned()
         .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"));
 
-    let gas_limit = msg
-        .fee_nanos
-        .saturating_mul(GAS_PER_NANO as u128)
-        .min(u64::MAX as u128) as u64;
+    // ADR-0034: per-message gas cap. The fee still buys gas at
+    // GAS_PER_NANO, but no single message may exceed MAX_GAS_PER_MESSAGE.
+    // (Fee mechanics unchanged: the full fee_nanos is debited regardless.)
+    let gas_limit = message_gas_limit(msg.fee_nanos);
     // gen_utime is NOT wall-clock: it is the block's logical time,
     // saturated into u32. Feeding real time here would break determinism.
     let context = ExecutionContext {
@@ -1080,5 +1127,87 @@ mod tests {
             ),
             "expected UnsupportedProtocolVersion, got: {err:?}"
         );
+    }
+
+    // ADR-0034 gas caps.
+
+    #[test]
+    fn gas_cap_constants_are_as_specified() {
+        assert_eq!(MAX_GAS_PER_MESSAGE, 10_000_000);
+        assert_eq!(MAX_GAS_PER_BLOCK, 100_000_000);
+        // Block cap is an exact multiple of the message cap (10 max-gas
+        // messages fit in a block).
+        assert_eq!(MAX_GAS_PER_BLOCK, MAX_GAS_PER_MESSAGE * 10);
+    }
+
+    #[test]
+    fn message_gas_limit_clamps_at_per_message_cap() {
+        // Below the cap: fee * GAS_PER_NANO passes through.
+        assert_eq!(message_gas_limit(0), 0);
+        assert_eq!(message_gas_limit(1), GAS_PER_NANO);
+        assert_eq!(message_gas_limit(5_000), 5_000 * GAS_PER_NANO);
+        // At the cap boundary: 10_000 nanos * 1_000 = 10_000_000 = cap.
+        assert_eq!(message_gas_limit(10_000), MAX_GAS_PER_MESSAGE);
+        // Above the cap: clamped.
+        assert_eq!(message_gas_limit(10_001), MAX_GAS_PER_MESSAGE);
+        assert_eq!(message_gas_limit(100_000), MAX_GAS_PER_MESSAGE);
+        assert_eq!(message_gas_limit(1_000_000_000), MAX_GAS_PER_MESSAGE);
+        // Saturation: u128::MAX fee saturates the multiply, then clamps.
+        assert_eq!(message_gas_limit(u128::MAX), MAX_GAS_PER_MESSAGE);
+    }
+
+    #[test]
+    fn accumulate_block_gas_accepts_up_to_cap() {
+        // Empty block: zero gas is fine.
+        assert_eq!(accumulate_block_gas(0, 0).unwrap(), 0);
+        // Normal accumulation.
+        assert_eq!(accumulate_block_gas(0, 1_000).unwrap(), 1_000);
+        assert_eq!(accumulate_block_gas(1_000, 2_000).unwrap(), 3_000);
+        // Exactly at the cap: valid.
+        assert_eq!(
+            accumulate_block_gas(MAX_GAS_PER_BLOCK - 1, 1).unwrap(),
+            MAX_GAS_PER_BLOCK
+        );
+        assert_eq!(
+            accumulate_block_gas(MAX_GAS_PER_BLOCK, 0).unwrap(),
+            MAX_GAS_PER_BLOCK
+        );
+    }
+
+    #[test]
+    fn accumulate_block_gas_rejects_over_cap() {
+        // One unit over the cap: invalid.
+        let err = accumulate_block_gas(MAX_GAS_PER_BLOCK, 1).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StfError::BlockGasExceeded { used, cap }
+                if used == MAX_GAS_PER_BLOCK + 1 && cap == MAX_GAS_PER_BLOCK
+            ),
+            "expected BlockGasExceeded, got: {err:?}"
+        );
+        // Large overshoot.
+        let err = accumulate_block_gas(0, MAX_GAS_PER_BLOCK + 1).unwrap_err();
+        assert!(
+            matches!(err, StfError::BlockGasExceeded { .. }),
+            "expected BlockGasExceeded, got: {err:?}"
+        );
+        // Saturation path: u64::MAX total is still > cap, still rejected.
+        let err = accumulate_block_gas(u64::MAX, u64::MAX).unwrap_err();
+        assert!(
+            matches!(err, StfError::BlockGasExceeded { .. }),
+            "expected BlockGasExceeded on saturation, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn block_gas_error_displays() {
+        let err = StfError::BlockGasExceeded {
+            used: 101,
+            cap: 100,
+        };
+        let s = format!("{err}");
+        assert!(s.contains("101"), "display should name used: {s}");
+        assert!(s.contains("100"), "display should name cap: {s}");
     }
 }

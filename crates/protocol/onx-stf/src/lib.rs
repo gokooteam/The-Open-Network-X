@@ -73,3 +73,5 @@ pub use state::State;
 /// Gas economics for contract execution: 1_000 gas per nano-Onyxii of declared fee.
 pub use stf::GAS_PER_NANO;
 pub use stf::{apply_block, propose_block, AppliedMessage, DeliveryReceipt, Receipts};
+/// Protocol gas caps (ADR-0034): per-message and per-block.
+pub use stf::{MAX_GAS_PER_BLOCK, MAX_GAS_PER_MESSAGE};

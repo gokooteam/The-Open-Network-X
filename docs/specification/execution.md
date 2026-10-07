@@ -66,6 +66,10 @@ Workchains other than the basic workchain may adopt a different VM entirely (`WH
 
 - Every operation category in §3.3 has an associated deterministic gas cost; the cost function itself (concrete per-operation prices) is deferred to the same future "TVM Instruction Set" artifact as the opcode encoding (§3.1), since pricing is meaningless without a concrete instruction set to price. This document requires only that such a function exist, be identical across independent nodes, and be evaluated exactly once per operation actually executed (no separate "estimation pass" that could diverge from actual execution).
 - A fixed, per-execution gas limit is provided by the caller (populated from message/account fee data per `transactions.md`); exceeding it raises `ExceptionKind::OutOfGas` at the exact operation that would exceed it, not before or after.
+- **Protocol gas caps (ADR-0034, Wave 4):** two consensus constants bound execution at the message and block level:
+  - `MAX_GAS_PER_MESSAGE = 10_000_000`: the per-execution gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)` (`GAS_PER_NANO = 1_000`; the multiply saturates at `u64::MAX` before the clamp). The fee itself is still debited in full — only the execution budget is clamped. All nodes derive the identical limit from the same fee.
+  - `MAX_GAS_PER_BLOCK = 100_000_000`: the sum of per-delivery `gas_used` over all messages in a block must not exceed this; a block whose total would exceed it is invalid (fail-closed). The producer's `propose_block` enforces the same rule on its dry-run, so it cannot construct an over-cap block.
+  - Rationale: bounds single-message and total block execution time; the per-message cap is the prerequisite for `code_refs` (which would otherwise add unbounded memory via call-stack growth).
 - Exception kinds (closed set; a conforming implementation must not raise any exception outside this list without an ONX specification amendment):
   - `OutOfGas` — the gas limit was reached.
   - `IntegerOverflow` — an unsigned/signed arithmetic or conversion result did not fit its declared width (§3.3, rule 2–3).
