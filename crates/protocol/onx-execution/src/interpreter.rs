@@ -602,8 +602,10 @@ impl Interpreter {
                 // boundary widths directly. All arithmetic below is
                 // checked (never saturating): an unrepresentable result
                 // is IntegerOverflow, not a clamped value. F2: the wrap
-                // flavor never raises — values it cannot hold as i128 go
-                // through the u128 carrier (spec §3.3).
+                // flavor never raises *on the result* — values it cannot
+                // hold as i128 go through the u128 carrier (spec §3.3).
+                // Operand range checks (shift amount, division by zero)
+                // precede flavor selection and raise for every flavor.
                 let value = match (result, flavor) {
                     // Already wrapped into [0, 2^128): push as-is.
                     (Raw::U128(u), _) => StackValue::from_u128(u),

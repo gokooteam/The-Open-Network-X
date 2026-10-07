@@ -354,8 +354,9 @@ fn reject_key_lookalike(s: &str, what: &str) -> Result<(), StateModelError> {
 /// This closes the holes the blocklist missed: BOM/zero-width characters,
 /// internal whitespace, Cyrillic lookalikes, 59/69-hex and 128-hex
 /// keypairs, base64, and empty strings (all fail the charset/length gate).
-/// All-hex strings are rejected at any length: a 32-hex string is a
-/// truncated key, not a name.
+/// All-hex strings of key-like length (16+) are key material, not names:
+/// a 32-hex string is a truncated key. Short hex words ("beef", "cafe")
+/// stay valid labels.
 fn validate_label(s: &str, what: &str) -> Result<(), StateModelError> {
     fn invalid(s: &str, what: &str, why: &str) -> StateModelError {
         StateModelError::InvalidGenesis(format!(
@@ -381,6 +382,18 @@ fn validate_label(s: &str, what: &str) -> Result<(), StateModelError> {
             what,
             "all-hex strings are key material, not names",
         ));
+    }
+    // Prefixed truncated keys (`ed25519:<32 hex>`) are key material with a
+    // scheme prefix, not labels: reject a trailing all-hex run of key-like
+    // length after a colon.
+    if let Some((_, tail)) = s.rsplit_once(':') {
+        if tail.len() >= 16 && tail.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid(
+                s,
+                what,
+                "colon-prefixed hex run is key material, not a name",
+            ));
+        }
     }
     Ok(())
 }
@@ -666,6 +679,33 @@ mod tests {
                 "valid label rejected: {s:?}"
             );
         }
+    }
+
+    #[test]
+    fn label_allowlist_boundary_vectors() {
+        // Boundary pins for the three thresholds a mutation pass showed
+        // were untested: the 16-hex key-material cutoff, the 48-char cap,
+        // and the lowercase-only charset.
+        // 15 hex chars: a short hex word, still a label.
+        assert!(parse_or_derive_pubkey("abcdef123456789", "validator key").is_ok());
+        // 16 hex chars: key-like length, rejected.
+        assert!(parse_or_derive_pubkey("abcdef1234567890", "validator key").is_err());
+        assert!(parse_or_derive_account_id("abcdef1234567890").is_err());
+        // Uppercase after the first character: charset is lowercase-only.
+        assert!(parse_or_derive_pubkey("devAlice", "validator key").is_err());
+        assert!(parse_or_derive_account_id("devAlice").is_err());
+        // Digit first is fine; uppercase first is not.
+        assert!(parse_or_derive_pubkey("1dev", "validator key").is_ok());
+        assert!(parse_or_derive_pubkey("Dev", "validator key").is_err());
+        // Prefixed truncated keys are key material, not labels.
+        assert!(parse_or_derive_pubkey(
+            "ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d736",
+            "validator key"
+        )
+        .is_err());
+        assert!(parse_or_derive_account_id("ed25519:3b6a27bcceb6a42d62a3a8d02a6f0d736").is_err());
+        // ...but ordinary colon labels still derive.
+        assert!(parse_or_derive_account_id("onx:alice").is_ok());
     }
 
     #[test]

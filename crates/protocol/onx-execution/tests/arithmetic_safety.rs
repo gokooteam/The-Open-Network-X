@@ -93,29 +93,31 @@ fn pop_i128(stack: &[StackValue], idx: usize) -> i128 {
     }
 }
 
-fn pop_u128(stack: &[StackValue], idx: usize) -> u128 {
-    match &stack[idx] {
-        StackValue::Integer(bytes) => {
-            let mut arr = [0u8; 16];
-            arr.copy_from_slice(&bytes[16..32]);
-            // Raw low 128 bits as unsigned: the wrap flavor's carrier.
-            u128::from_be_bytes(arr)
-        }
-        other => panic!("expected Integer at stack[{idx}], got {other:?}"),
-    }
-}
-
 /// Success expecting a raw u128 stack value (for wrap-flavor results at
 /// width 128 that exceed i128::MAX). Compares the pushed bytes, not a
 /// truncated i128.
-fn expect_success_u128(program: Vec<u8>) -> u128 {
+fn expect_success_u128(program: Vec<u8>, expected: u128) {
     let (result, stack) = run_program(program);
     assert!(
         matches!(result, ExecutionResult::Success { .. }),
         "expected success, got {result:?}"
     );
     assert_eq!(stack.len(), 1);
-    pop_u128(&stack, 0)
+    // Pin the FULL 32-byte representation, not just the low half: the u128
+    // carrier must be zero-padded, never sign-extended. A mutation rewriting
+    // `from_u128` as sign-extended `from_i128` pushes 2^127 with a 0xFF high
+    // half (reads back as -2^127) and must fail here.
+    match &stack[0] {
+        StackValue::Integer(bytes) => {
+            assert_eq!(
+                &bytes[0..16],
+                &[0u8; 16],
+                "u128 carrier high half must be zero-padded"
+            );
+            assert_eq!(&bytes[16..32], &expected.to_be_bytes());
+        }
+        other => panic!("expected Integer at stack[0], got {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -153,8 +155,34 @@ fn divmod_by_zero_still_integer_overflow() {
 
 #[test]
 fn div_by_zero_still_integer_overflow() {
-    // 0x17 DIV keeps the same zero-divisor mapping as DIVMOD.
+    // 0x17 DIV keeps the same zero-divisor mapping as DIVMOD — for every
+    // flavor, including wrap (spec §3.3: range checks precede flavor).
     expect_exception(arith_program(0x17, 5, 0), ExceptionKind::IntegerOverflow);
+    for flavor in [0u8, 1, 2] {
+        expect_exception(
+            arith_program_wf(0x17, 5, 0, 128, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+        expect_exception(
+            arith_program_wf(0x17, -7, 0, 64, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+    }
+    // Same for LSHIFT/RSHIFT: bad shift amounts raise in every flavor.
+    for flavor in [0u8, 1, 2] {
+        expect_exception(
+            arith_program_wf(0x18, 1, -1, 128, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+        expect_exception(
+            arith_program_wf(0x18, 1, 128, 128, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+        expect_exception(
+            arith_program_wf(0x19, 1, -1, 128, flavor),
+            ExceptionKind::IntegerOverflow,
+        );
+    }
 }
 
 #[test]
@@ -411,28 +439,23 @@ fn div_width128_unsigned_rejects_negative_result() {
 
 #[test]
 fn div_width128_wrap_unsigned_wraps_negative_result() {
-    // Flavor 2 never raises (spec §3.3): -7/2 floors to -4, and
-    // -4 mod 2^128 = 2^128 - 4.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x17, -7, 2, 128, 2)),
-        u128::MAX - 3 // 2^128 - 4
+    // Flavor 2 never raises on the result (spec §3.3): -7/2 floors to -4,
+    // and -4 mod 2^128 = 2^128 - 4. (Operand range checks — e.g. division
+    // by zero — still raise for every flavor.)
+    expect_success_u128(
+        arith_program_wf(0x17, -7, 2, 128, 2),
+        u128::MAX - 3, // 2^128 - 4
     );
-    assert_eq!(expect_success_u128(arith_program_wf(0x17, 7, 2, 128, 2)), 3);
+    expect_success_u128(arith_program_wf(0x17, 7, 2, 128, 2), 3);
     // -1 RSHIFT 1 floors to -1; wrapped at width 128 that is 2^128 - 1.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x19, -1, 1, 128, 2)),
-        u128::MAX
-    );
+    expect_success_u128(arith_program_wf(0x19, -1, 1, 128, 2), u128::MAX);
 }
 
 #[test]
 fn div_min_div_neg_one_width128_flavors() {
     // MIN / -1 has true quotient 2^127 (F2).
     // Unsigned 128 holds it exactly.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 0)),
-        1u128 << 127
-    );
+    expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 0), 1u128 << 127);
     // Signed: 2^127 is out of range at every width.
     expect_exception(
         arith_program_wf(0x17, i128::MIN, -1, 128, 1),
@@ -448,14 +471,8 @@ fn div_min_div_neg_one_width128_flavors() {
         ExceptionKind::IntegerOverflow,
     );
     // Wrap: 2^127 mod 2^128 = 2^127; mod 2^64 = 0.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 2)),
-        1u128 << 127
-    );
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 64, 2)),
-        0
-    );
+    expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 128, 2), 1u128 << 127);
+    expect_success_u128(arith_program_wf(0x17, i128::MIN, -1, 64, 2), 0);
 }
 
 #[test]
@@ -482,14 +499,8 @@ fn lshift_lost_bits_raise_at_width128() {
     // Unsigned flavor at width 128 keeps true products in [0, 2^128):
     // 1<<127 = 2^127 and (2^127-1)<<1 = 2^128-2 succeed; 2<<127 and
     // 4<<126 hit exactly 2^128 and raise.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 0)),
-        1u128 << 127
-    );
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x18, i128::MAX, 1, 128, 0)),
-        u128::MAX - 1
-    );
+    expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 0), 1u128 << 127);
+    expect_success_u128(arith_program_wf(0x18, i128::MAX, 1, 128, 0), u128::MAX - 1);
     for (a, b) in [(2i128, 127i128), (4, 126)] {
         expect_exception(
             arith_program_wf(0x18, a, b, 128, 0),
@@ -497,14 +508,8 @@ fn lshift_lost_bits_raise_at_width128() {
         );
     }
     // Wrap flavor keeps the low bits instead.
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 2)),
-        1u128 << 127
-    );
-    assert_eq!(
-        expect_success_u128(arith_program_wf(0x18, 2, 127, 128, 2)),
-        0
-    );
+    expect_success_u128(arith_program_wf(0x18, 1, 127, 128, 2), 1u128 << 127);
+    expect_success_u128(arith_program_wf(0x18, 2, 127, 128, 2), 0);
 }
 
 #[test]
@@ -539,6 +544,43 @@ fn oversize_operand_fails_closed() {
     prog.extend(pushint(0));
     prog.extend([0x10, 0, 64, 1]); // ADD, width 64, flavor 1
     expect_exception(prog, ExceptionKind::IntegerOverflow);
+}
+
+#[test]
+fn to_i128_rejects_bad_sign_extension_not_just_huge_values() {
+    // The subtle case: high half all zero but bit 127 set (the encoding of
+    // 2^127 as *unsigned*). A mutation moving the sign check from byte 16
+    // to byte 0 accepts this as a non-negative value; the correct check
+    // demands the high half be the sign extension of the low half.
+    let mut bad = [0u8; 32];
+    bad[16] = 0x80; // bit 127 set, high half zero -> not a sign extension
+    let mut prog = vec![0x08u8, 1];
+    prog.extend(bad);
+    prog.extend(pushint(0));
+    prog.extend([0x10, 0, 64, 1]); // ADD reads both operands via to_i128
+    expect_exception(prog, ExceptionKind::IntegerOverflow);
+
+    // Control: proper sign extensions still load. -1 (all 0xFF) + 0 = -1.
+    let mut prog = vec![0x08u8, 1];
+    prog.extend([0xffu8; 32]);
+    prog.extend(pushint(0));
+    prog.extend([0x10, 0, 64, 1]);
+    assert_eq!(expect_success_i128(prog), -1);
+}
+
+#[test]
+fn lshift_unsigned_bound_is_exact_at_shift_127() {
+    // The unsigned fits-check `a < 2^(w-b)` is exact only with the bound
+    // `shift >= 127`. Widening it to `>= 126` lets 2^126 << 2 through, and
+    // `u128::checked_shl` does NOT catch the overflow (it wraps to 0):
+    // true product 2^128 is outside [0, 2^128) and must raise.
+    expect_exception(
+        arith_program_wf(0x18, 1 << 126, 2, 128, 0),
+        ExceptionKind::IntegerOverflow,
+    );
+    // Boundary controls: 2^126 << 1 = 2^127 fits; (2^127 - 1) << 1 fits.
+    expect_success_u128(arith_program_wf(0x18, 1 << 126, 1, 128, 0), 1u128 << 127);
+    expect_success_u128(arith_program_wf(0x18, i128::MAX, 1, 128, 0), u128::MAX - 1);
 }
 
 #[test]
