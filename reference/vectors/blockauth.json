@@ -1,0 +1,50 @@
+{
+  "fixture_validator_pubkey": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+  "fixture_validator_seed_hint": "test_secret_key(0x11) = [0x11; 32] (TEST ONLY)",
+  "header_seq1_hex": "0000000100000000000000000000000000000000000000000000000000000000000000001111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222200000000000003e9fffffffffcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc0000000200000001000000006ab13b80",
+  "header_len": 160,
+  "header_fields": {
+    "seqno": {
+      "offset": 0,
+      "len": 4,
+      "hex": "00000001"
+    },
+    "prev_hash": {
+      "offset": 4,
+      "len": 32,
+      "hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "protocol_version": {
+      "offset": 148,
+      "len": 4,
+      "hex": "00000001"
+    },
+    "block_time": {
+      "offset": 152,
+      "len": 8,
+      "hex": "000000006ab13b80"
+    }
+  },
+  "block_hash_seq1": "7a041a0c993daacbae991eb7aa4db1b60e96e38e5d81ab1a8a827c1b7dbf82bf",
+  "sign_preimage_seq1_hex": "4f4e585f424c4f434b5f5349475f563100000000000000000000000000000000aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa7a041a0c993daacbae991eb7aa4db1b60e96e38e5d81ab1a8a827c1b7dbf82bf",
+  "sign_preimage_len": 96,
+  "sign_preimage_prefix_hex": "4f4e585f424c4f434b5f5349475f563100000000000000000000000000000000",
+  "signature_seq1_hex": "16768b984b6578a8e8888d1bba86c4c57e459e147d9bc0902885602c8eda8b93081639a04770e7c5ccd46cf6e96f065dfcd463954e9aa1735854b410a41c1406",
+  "sig_section_hex": "000000010000000016768b984b6578a8e8888d1bba86c4c57e459e147d9bc0902885602c8eda8b93081639a04770e7c5ccd46cf6e96f065dfcd463954e9aa1735854b410a41c1406",
+  "block_file_magic": "ONXBLK05",
+  "block_file_seq1_hex": "4f4e58424c4b30350000000100000000000000000000000000000000000000000000000000000000000000001111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222200000000000003e9fffffffffcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc0000000200000001000000006ab13b80000000010000000016768b984b6578a8e8888d1bba86c4c57e459e147d9bc0902885602c8eda8b93081639a04770e7c5ccd46cf6e96f065dfcd463954e9aa1735854b410a41c140600000000",
+  "verify_accept": true,
+  "verify_rejects": {
+    "bad_signature": true,
+    "wrong_chain_id": true,
+    "tampered_header": true,
+    "duplicate_index": true,
+    "unordered_indices": true,
+    "insufficient_stake": true,
+    "small_order_key": true
+  },
+  "tags": {
+    "block_hdr": "ONX_BLOCK_HDR_V1",
+    "block_sig": "ONX_BLOCK_SIG_V1"
+  }
+}

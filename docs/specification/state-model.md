@@ -222,7 +222,8 @@ wire encoding (168 bytes): body_bytes || signature (64 bytes, Ed25519)
   ...)` over the ordered transaction hashes; the empty body commits to
   `SHA256(pad32("ONX_TXS_ROOT_V2") || b"")`.
 - **Block header identity**: `SHA256(pad32("ONX_BLOCK_HDR_V1") || header_bytes)`
-  over the 148-byte canonical header encoding.
+  over the 160-byte canonical header encoding (ADR-0032; was 148 bytes
+  before ONXBLK05).
 
 The complete registry of domain separation tags — spine, orphan-crate,
 and retired — is maintained in `docs/specification/protocol-primitives.md`

@@ -67,7 +67,8 @@ All protocol hashing contexts must prepend an explicit domain separation tag bef
 | `ONX_MSG_INT_V1`        | Internal message delivery ID: `SHA256(pad32 \|\| canonical bytes)` |
 | `ONX_MSGS_ROOT_V1`      | Ordered external-message-set commitment in the block header |
 | `ONX_ADDR_V1`           | Key-derived address: `SHA256(pad32 \|\| pubkey)` |
-| `ONX_BLOCK_HDR_V1`      | Block header identity: `SHA256(pad32 \|\| 148-byte header)` |
+| `ONX_BLOCK_HDR_V1`      | Block header identity: `SHA256(pad32 \|\| 160-byte header)` (ADR-0032; was 148 bytes before ONXBLK05) |
+| `ONX_BLOCK_SIG_V1`      | Block signature preimage: `pad32("ONX_BLOCK_SIG_V1") \|\| chain_id \|\| block_hash` (ADR-0032) |
 | `ONX_CELL_HASH_V1`      | Cell representation hash (see `state-model.md` §4.3) |
 | `ONX_GENESIS_V1`        | Genesis document hash, which doubles as the chain ID |
 | `ONX_GENESIS_ADDR_V1`   | `AccountId` derivation from a genesis config label |
