@@ -18,20 +18,43 @@ use tokio::time::sleep;
 /// Load a validator signing key (ONXBLK05, TRAP 4).
 ///
 /// - The file must contain exactly 32 bytes (the seed).
-/// - The file must have mode 0600 (owner read/write only).
+/// - The file must have mode 0600 (owner read/write only) and be owned
+///   by the effective uid.
 /// - The derived pubkey must match a genesis validator's pubkey.
+///
+/// The file is opened FIRST and all checks run against the open file
+/// descriptor (`File::metadata` stats the fd, not the path), so there is
+/// no stat→read race window. Symlinks are refused outright.
 ///
 /// Any violation is a startup refusal, never a warning.
 fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String> {
-    let metadata =
-        fs::metadata(path).map_err(|e| format!("signing key {path}: cannot stat: {e}"))?;
+    use std::io::Read;
+    use std::os::unix::fs::MetadataExt;
+
+    // Refuse symlinks: the key path must be a real file.
+    let link_meta =
+        fs::symlink_metadata(path).map_err(|e| format!("signing key {path}: cannot stat: {e}"))?;
+    if link_meta.file_type().is_symlink() {
+        return Err(format!("signing key {path}: must not be a symlink"));
+    }
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("signing key {path}: cannot open: {e}"))?;
+    // Stat the open fd — the checks below apply to the exact bytes we read.
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("signing key {path}: cannot stat open file: {e}"))?;
     let mode = metadata.permissions().mode() & 0o777;
     if mode != 0o600 {
         return Err(format!(
             "signing key {path}: bad permissions {mode:o} (must be 600)"
         ));
     }
-    let seed = fs::read(path).map_err(|e| format!("signing key {path}: cannot read: {e}"))?;
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(format!("signing key {path}: not owned by the current user"));
+    }
+    let mut seed = Vec::with_capacity(32);
+    file.read_to_end(&mut seed)
+        .map_err(|e| format!("signing key {path}: cannot read: {e}"))?;
     if seed.len() != 32 {
         return Err(format!(
             "signing key {path}: must be 32 bytes, got {}",

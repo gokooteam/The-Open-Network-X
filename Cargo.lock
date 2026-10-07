@@ -1439,6 +1439,7 @@ name = "onxd"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "onx",
  "onx-consensus",
  "onx-data-structures",

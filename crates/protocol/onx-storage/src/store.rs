@@ -252,25 +252,37 @@ impl ChainStore {
 
     /// v3 -> v4 migration: the `block_sigs` table is additive, but only an
     /// EMPTY v3 database may migrate. A v3 database holding blocks is
+    /// True if the seqno→hash index holds any entry above genesis
+    /// (seqno 0). Used by the migration guards: a database with blocks
+    /// committed under an older schema cannot be upgraded in place.
+    fn has_blocks_above_genesis(&self) -> Result<bool, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let seq_tbl = rtxn.open_table(SEQNO_TO_HASH)?;
+        for e in seq_tbl.iter()? {
+            let (k, _) = e?;
+            let seqno = u32::from_be_bytes(
+                k.value()
+                    .try_into()
+                    .map_err(|_| StorageError::Corrupt("bad seqno key".to_string()))?,
+            );
+            if seqno > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// refused — its blocks were committed without signatures and cannot
     /// be upgraded (TRAP 2: resync from genesis).
     fn migrate_v3_to_v4(&self) -> Result<(), StorageError> {
         // Check for blocks first (read txn): any seqno->hash entry ABOVE
         // genesis (seqno 0) means the v3 DB holds blocks and cannot migrate.
         // Genesis itself is fine — it carries no signatures.
-        {
-            let rtxn = self.db.begin_read()?;
-            let seq_tbl = rtxn.open_table(SEQNO_TO_HASH)?;
-            let has_blocks = seq_tbl.iter()?.any(|e| {
-                let (k, _) = e.expect("iter");
-                u32::from_be_bytes(k.value().try_into().expect("seqno key")) > 0
+        if self.has_blocks_above_genesis()? {
+            return Err(StorageError::SchemaMismatch {
+                found: 3,
+                supported: SCHEMA_VERSION,
             });
-            if has_blocks {
-                return Err(StorageError::SchemaMismatch {
-                    found: 3,
-                    supported: SCHEMA_VERSION,
-                });
-            }
         }
         // Empty: create the table and bump the version.
         let wtxn = self.db.begin_write()?;
@@ -364,7 +376,17 @@ impl ChainStore {
     /// are reconstructible via replay). Just bump the version key,
     /// re-checking inside the write transaction in case another opener
     /// raced us.
+    ///
+    /// Like the v3 path, a v2 database WITH blocks is refused: its blocks
+    /// were committed without signatures (148-byte headers) and cannot be
+    /// upgraded — resync from genesis.
     fn migrate_v2_to_v4(&self) -> Result<(), StorageError> {
+        if self.has_blocks_above_genesis()? {
+            return Err(StorageError::SchemaMismatch {
+                found: 2,
+                supported: SCHEMA_VERSION,
+            });
+        }
         let wtxn = self.db.begin_write()?;
         {
             let mut meta = wtxn.open_table(META)?;
@@ -624,6 +646,16 @@ impl ChainStore {
     ) -> Result<(), StorageError> {
         let h = &block.header;
         let block_hash = h.hash();
+
+        // An empty signature section can never satisfy the >2/3 stake rule,
+        // so it is never a valid committed block. Reject here (defense in
+        // depth alongside the acceptance layer's full verification) rather
+        // than persisting a block no verifier will accept.
+        if sig_entries.is_empty() {
+            return Err(StorageError::Corrupt(
+                "commit_block: empty signature section".to_string(),
+            ));
+        }
 
         // 1. Pure STF: fail-closed validation of the whole block.
         //
@@ -1062,6 +1094,15 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Placeholder sig entries: commit_block stores (never verifies) the
+    /// section; only non-emptiness is enforced at this layer.
+    fn dummy_sigs() -> Vec<SigEntry> {
+        vec![SigEntry {
+            validator_index: 0,
+            sig: [0xAB; 64],
+        }]
+    }
+
     fn temp_db_path(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1102,7 +1143,7 @@ mod tests {
         )
         .expect("propose_block");
         store
-            .commit_block(&state, &block, &[])
+            .commit_block(&state, &block, &dummy_sigs())
             .expect("commit_block");
         assert_eq!(store.head().expect("head").expect("head").0, 1);
 
@@ -1248,6 +1289,59 @@ mod tests {
         };
         assert!(
             matches!(err, StorageError::SchemaMismatch { found: 3, .. }),
+            "unexpected error: {:?}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Audit blocker 3: a v2 database WITH blocks must be refused, exactly
+    /// like the v3 path — its blocks carry 148-byte unsigned headers and
+    /// cannot be upgraded in place.
+    #[test]
+    fn migrate_v2_to_v4_refuses_db_with_blocks() {
+        use onx_stf::{propose_block, State as StfState};
+        let path = temp_db_path("v2-to-v4-blocks");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        let doc = test_genesis();
+        store.init_genesis(&doc).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("state");
+
+        let block = propose_block(
+            &StfState::from_genesis(&doc),
+            vec![],
+            state.last_lt + 1,
+            onx_data_structures::AccountId::from_bytes([0xcc; 32]),
+            1,
+            0,
+        )
+        .expect("propose");
+        let sig = onx_stf::SigEntry {
+            validator_index: 0,
+            sig: [0x5a; 64],
+        };
+        store
+            .commit_block(&state, &block, &[sig])
+            .expect("commit_block");
+        {
+            let wtxn = store.db.begin_write().expect("write txn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.insert(b"schema_version".as_slice(), 2u32.to_be_bytes().as_slice())
+                    .expect("rollback version");
+            }
+            wtxn.commit().expect("commit");
+        }
+        drop(store);
+
+        // Re-opening must FAIL: v2 DB with blocks cannot migrate.
+        let err = match ChainStore::open(&path) {
+            Ok(_) => panic!("must refuse v2 DB with blocks"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StorageError::SchemaMismatch { found: 2, .. }),
             "unexpected error: {:?}",
             err
         );
@@ -1621,7 +1715,7 @@ mod tests {
         // itself has no handler on this path — the process dies.)
         test_set_inject_commit_panic(true);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store.commit_block(&state, &block, &[])
+            store.commit_block(&state, &block, &dummy_sigs())
         }));
         test_set_inject_commit_panic(false);
         assert!(
@@ -1640,7 +1734,7 @@ mod tests {
         // The panic was never an "invalid block": the same block commits
         // cleanly once the injection is disarmed.
         store
-            .commit_block(&state, &block, &[])
+            .commit_block(&state, &block, &dummy_sigs())
             .expect("commit_block after disarmed panic injection");
         assert_eq!(
             store.head().expect("head").expect("head present").0,
@@ -1684,5 +1778,32 @@ mod tests {
         store.init_genesis(&doc).expect("re-init");
         let backfilled = store.genesis_document().expect("read").expect("backfilled");
         assert_eq!(backfilled.to_bytes(), doc.to_bytes());
+    }
+
+    /// commit_block rejects an empty signature section: it can never
+    /// satisfy the >2/3 stake rule, so persisting it would store a block
+    /// no verifier accepts.
+    #[test]
+    fn commit_block_rejects_empty_sig_section() {
+        let path = temp_db_path("empty-sigs");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("genesis state");
+        let accounts = test_accounts();
+        let block = propose_block(
+            &state,
+            test_block_txs(7, 1, &accounts, state.chain_id),
+            test_block_lt(1),
+            test_fee_collector(),
+            1,
+            0,
+        )
+        .expect("propose");
+        let err = store.commit_block(&state, &block, &[]).unwrap_err();
+        assert!(
+            matches!(err, StorageError::Corrupt(_)),
+            "expected Corrupt for empty sig section, got: {err:?}"
+        );
     }
 }

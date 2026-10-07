@@ -39,7 +39,11 @@ pub enum AuthError {
     /// Signature does not verify.
     BadSignature { index: u32 },
     /// Valid signers hold <= 2/3 of total genesis stake.
-    InsufficientStake { signed: u64, total: u64 },
+    InsufficientStake { signed: u128, total: u128 },
+    /// Stake arithmetic overflowed u128 (practically unreachable — it
+    /// would take 2^64 max-stake validators — but silent wrapping or
+    /// saturation is never acceptable in consensus code).
+    StakeOverflow,
     /// Empty validator set.
     EmptyValidatorSet,
     /// Block declares a protocol version this node does not understand.
@@ -75,6 +79,7 @@ impl std::fmt::Display for AuthError {
             Self::InsufficientStake { signed, total } => {
                 write!(f, "insufficient stake: {signed}/{total} signed (need >2/3)")
             }
+            Self::StakeOverflow => write!(f, "stake arithmetic overflowed u128"),
             Self::EmptyValidatorSet => write!(f, "empty validator set"),
             Self::UnsupportedProtocolVersion { got } => {
                 write!(f, "unsupported protocol version {got}")
@@ -165,7 +170,7 @@ pub fn verify_block_auth(
     parent_block_time: u64,
     entries: &[SigEntry],
     validators: &[GenesisValidatorRef],
-) -> Result<u64, AuthError> {
+) -> Result<u128, AuthError> {
     if validators.is_empty() {
         return Err(AuthError::EmptyValidatorSet);
     }
@@ -192,7 +197,13 @@ pub fn verify_block_auth(
         }
     }
     let preimage = header.sign_bytes(chain_id);
-    let mut signed_stake: u64 = 0;
+    // Stake sums in u128 with CHECKED arithmetic. Summing in u64 (even
+    // saturating) then widening is wrong: with three validators at
+    // u64::MAX, one signer (1/3 of real stake) saturates both sums to
+    // u64::MAX and passes. u128 cannot saturate in practice (it would
+    // take 2^64 max-stake validators), and checked ops fail closed if
+    // it ever does.
+    let mut signed_stake: u128 = 0;
     for e in entries {
         let v = validators
             .get(e.validator_index as usize)
@@ -215,15 +226,23 @@ pub fn verify_block_auth(
             .map_err(|_| AuthError::BadSignature {
                 index: e.validator_index,
             })?;
-        signed_stake = signed_stake.saturating_add(v.stake);
+        signed_stake = signed_stake
+            .checked_add(v.stake as u128)
+            .ok_or(AuthError::StakeOverflow)?;
     }
-    let total: u64 = validators
-        .iter()
-        .map(|v| v.stake)
-        .fold(0, u64::saturating_add);
-    // Strictly more than 2/3: signed*3 > total*2 (no float, no rounding).
-    // Use u128 to avoid overflow on large stakes.
-    if (signed_stake as u128) * 3 <= (total as u128) * 2 {
+    let mut total: u128 = 0;
+    for v in validators {
+        total = total
+            .checked_add(v.stake as u128)
+            .ok_or(AuthError::StakeOverflow)?;
+    }
+    // Strictly more than 2/3: signed*3 > total*2 (no float, no rounding),
+    // all in checked u128.
+    let lhs = signed_stake
+        .checked_mul(3)
+        .ok_or(AuthError::StakeOverflow)?;
+    let rhs = total.checked_mul(2).ok_or(AuthError::StakeOverflow)?;
+    if lhs <= rhs {
         return Err(AuthError::InsufficientStake {
             signed: signed_stake,
             total,

@@ -18,6 +18,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Placeholder signature entries for tests that commit blocks directly to
+/// set up state (bypassing the producer). `commit_block` stores — never
+/// verifies — the section; only non-emptiness is enforced at this layer.
+fn dummy_sigs() -> Vec<onx_stf::SigEntry> {
+    vec![onx_stf::SigEntry {
+        validator_index: 0,
+        sig: [0xAB; 64],
+    }]
+}
+
 // ---------- helpers ----------
 
 fn test_secret(byte: u8) -> SecretKey {
@@ -213,7 +223,9 @@ impl Harness {
             tx_pool_dir: self.tx_pool_dir.clone(),
             blocks_dir: self.dir.join("data").join("blocks"),
             telemetry: None,
-            signing_key: None,
+            // The test genesis declares test_secret(0x11) as its validator;
+            // the producer refuses to start without a signing key.
+            signing_key: Some(test_secret(0x11)),
         }
     }
 
@@ -352,7 +364,7 @@ fn mempool_rejects_stale_nonce_and_dedupes() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block, &[]).unwrap();
+    h.store().commit_block(&state, &block, &dummy_sigs()).unwrap();
     assert_eq!(account_nonce(h.store(), 0xaa), 1);
 
     // Now drop a stale nonce-0 message (the wallet has moved on).
@@ -510,7 +522,7 @@ fn loop_drops_stale_msg_without_crashing() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block, &[]).unwrap();
+    h.store().commit_block(&state, &block, &dummy_sigs()).unwrap();
 
     // Now drop a message that was valid when written but is stale now,
     // plus a good one.
@@ -600,7 +612,7 @@ fn select_candidates_drops_became_stale_without_crashing() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block, &[]).unwrap();
+    h.store().commit_block(&state, &block, &dummy_sigs()).unwrap();
 
     // Selection against the fresh head: the stale message is rejected, no panic.
     let fresh: State = h.store().load_state().unwrap().unwrap();
@@ -646,7 +658,7 @@ fn loop_double_key_reveal_drops_only_second_reveal() {
     );
     let block =
         propose_block(&state, vec![fund], state.last_lt + 1, h.fee_collector, 1, 0).unwrap();
-    h.store().commit_block(&state, &block, &[]).unwrap();
+    h.store().commit_block(&state, &block, &dummy_sigs()).unwrap();
 
     // Confirm the test's premise: funded but keyless.
     match h.store().get_account(&addr).unwrap() {
@@ -743,10 +755,9 @@ fn startup_regenerates_block_file_missing_after_crash() {
     // left the block committed but `blocks/` missing its file, forever.
     // Simulate exactly that, restart the producer, and require the file to
     // come back byte-correct.
+    use onx::blockfile::BLOCK_FILE_MAGIC;
     use onx_stf::block::BLOCK_HEADER_BYTE_LEN;
     use onx_stf::BlockHeader;
-
-    const BLK_MAGIC: &[u8; 8] = b"ONXBLK04";
 
     let mut h = Harness::new("regen");
     let mut wallet = TestWallet::new(h.chain_id);
@@ -766,9 +777,46 @@ fn startup_regenerates_block_file_missing_after_crash() {
     h.reopen();
     let state: State = h.store().load_state().unwrap().unwrap();
     let msg = wallet.sign(0xaa, 0xab, 500, 5);
-    let block = propose_block(&state, vec![msg], state.last_lt + 1, h.fee_collector, 1, 0).unwrap();
+    // Monotonic time: block 2 must not go backwards from block 1's stamp
+    // (the real producer clamps this; this direct commit bypasses it).
+    let parent_time = {
+        let h1 = h
+            .store()
+            .block_hash_for_seqno(1)
+            .unwrap()
+            .expect("block 1 committed");
+        h.store()
+            .get_block_header(&h1)
+            .unwrap()
+            .expect("block 1 header")
+            .block_time
+    };
+    let block = propose_block(&state, vec![msg], state.last_lt + 1, h.fee_collector, 1, parent_time)
+        .unwrap();
     assert_eq!(block.header.seqno, 2);
-    h.store().commit_block(&state, &block, &[]).unwrap();
+    // Real signature (the test genesis declares test_secret(0x11) as its
+    // validator): the regenerated file must pass `onx replay`'s auth check.
+    let real_sig = {
+        use onx::auth::GenesisValidatorRef;
+        let secret = test_secret(0x11);
+        let preimage = block.header.sign_bytes(&h.chain_id);
+        let sig = secret.sign_raw(&preimage).encode();
+        // Validator 0 in the pubkey-sorted canonical list.
+        let mut refs = vec![GenesisValidatorRef {
+            pubkey: secret.public_key().encode(),
+            stake: 1000,
+        }];
+        refs.sort_by_key(|r| r.pubkey);
+        let index = refs
+            .iter()
+            .position(|r| r.pubkey == secret.public_key().encode())
+            .unwrap() as u32;
+        vec![onx_stf::SigEntry {
+            validator_index: index,
+            sig,
+        }]
+    };
+    h.store().commit_block(&state, &block, &real_sig).unwrap();
     let blk2 = h.blocks_dir().join("block-00000002.blk");
     assert!(
         !blk2.is_file(),
@@ -792,7 +840,7 @@ fn startup_regenerates_block_file_missing_after_crash() {
     // Byte-correct: the regenerated file's header matches the committed
     // block in the DB exactly.
     let bytes = std::fs::read(&blk2).unwrap();
-    assert_eq!(&bytes[..8], BLK_MAGIC, "magic intact");
+    assert_eq!(&bytes[..8], BLOCK_FILE_MAGIC, "magic intact");
     let file_header =
         BlockHeader::from_bytes(&bytes[8..8 + BLOCK_HEADER_BYTE_LEN]).expect("header parses");
     h.reopen();
@@ -939,5 +987,22 @@ fn e2e_producer_output_replays_through_onx_binary() {
     assert_eq!(
         replay_root, daemon_root,
         "replay of the daemon's blocks reproduces the daemon's root"
+    );
+}
+
+/// Audit blocker 4: the producer must refuse to start without a signing
+/// key — not run keyless and die on the first transaction.
+#[test]
+fn producer_refuses_to_start_without_signing_key() {
+    let mut h = Harness::new("no-key-refusal");
+    let store = h.store.take().expect("store");
+    let mut cfg = h.producer_config();
+    cfg.signing_key = None;
+    let mempool = Mempool::new(&h.tx_pool_dir, 100, h.chain_id, h.fee_collector).unwrap();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let err = run_producer_loop(store, mempool, cfg, shutdown).unwrap_err();
+    assert!(
+        err.contains("no signing key"),
+        "expected no-signing-key refusal, got: {err}"
     );
 }

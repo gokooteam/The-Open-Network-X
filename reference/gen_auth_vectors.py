@@ -194,6 +194,28 @@ def build_vectors():
     v["verify_rejects"] = rejects
     assert all(rejects.values()), f"reject paths not all raising: {rejects}"
 
+    # --- shared-bytes reject vectors (audit blocker 5): the concrete
+    # inputs for each reject path, so the Rust side tests the same bytes
+    # instead of just asserting Python raised.
+    rv = {}
+    rv["bad_signature"] = {"sig_hex": bytes(bad_sig).hex()}
+    rv["wrong_chain_id"] = {"chain_id_hex": (bytes([0xBB] * 32)).hex()}
+    rv["tampered_header"] = {"header_hex": bytes(h_tampered).hex()}
+    rv["duplicate_index"] = {
+        "sig_section_hex": encode_sig_section([(0, sig1), (0, sig1)]).hex()
+    }
+    rv["unordered_indices"] = {
+        "sig_section_hex": encode_sig_section([(1, other_sig), (0, sig1)]).hex()
+    }
+    rv["insufficient_stake"] = {
+        "validators": [
+            {"pubkey_hex": p.hex(), "stake": s} for (p, s) in vals2
+        ],
+        "self_index": idx_self,
+    }
+    rv["small_order_key"] = {"pubkey_hex": small_order.hex()}
+    v["reject_vectors"] = rv
+
     # Sanity: the domain tags are the frozen strings.
     v["tags"] = {
         "block_hdr": TAG_BLOCK_HDR,

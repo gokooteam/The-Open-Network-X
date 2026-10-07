@@ -43,6 +43,39 @@
     "insufficient_stake": true,
     "small_order_key": true
   },
+  "reject_vectors": {
+    "bad_signature": {
+      "sig_hex": "0f5e04f6b87695faa34f483b81efc3588c46544453672d0a06747593b4f0e26bd05b4f55d507d89f7315d2b7ef31eeff60c7cf646a2ab800769d07b28693890d"
+    },
+    "wrong_chain_id": {
+      "chain_id_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "tampered_header": {
+      "header_hex": "0000000100000000000000000000000000000000000000000000000000000000000000001111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222200000000000003e9fffffffffcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfcfc0000000000000001000000006ab13b81"
+    },
+    "duplicate_index": {
+      "sig_section_hex": "00000002000000000e5e04f6b87695faa34f483b81efc3588c46544453672d0a06747593b4f0e26bd05b4f55d507d89f7315d2b7ef31eeff60c7cf646a2ab800769d07b28693890d000000000e5e04f6b87695faa34f483b81efc3588c46544453672d0a06747593b4f0e26bd05b4f55d507d89f7315d2b7ef31eeff60c7cf646a2ab800769d07b28693890d"
+    },
+    "unordered_indices": {
+      "sig_section_hex": "000000020000000147d3330625d20f57c3c5b68ddf03556c952aad61b34d2526c5c4d31eb348a25cb1d6f775d1a58f7fea99a2446d08d7463dc40ba346001834c283a1e757c38702000000000e5e04f6b87695faa34f483b81efc3588c46544453672d0a06747593b4f0e26bd05b4f55d507d89f7315d2b7ef31eeff60c7cf646a2ab800769d07b28693890d"
+    },
+    "insufficient_stake": {
+      "validators": [
+        {
+          "pubkey_hex": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+          "stake": 1000
+        },
+        {
+          "pubkey_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+          "stake": 1000
+        }
+      ],
+      "self_index": 1
+    },
+    "small_order_key": {
+      "pubkey_hex": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
   "tags": {
     "block_hdr": "ONX_BLOCK_HDR_V1",
     "block_sig": "ONX_BLOCK_SIG_V1"
