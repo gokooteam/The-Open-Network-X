@@ -19,7 +19,7 @@ Economic values must be explicit ONX decisions rather than implicit inheritance 
 | Reference figure | ONX decision | Rationale |
 | --- | --- | --- |
 | $10^9$ base-unit subdivision | **Accept** | `amount_nanos` already names the base unit and uses it canonically. |
-| Initial supply cap | **Accept: 5 Billion Onyx** ($5 \times 10^{18}$ nanos) | Fixed baseline supply cap for economic security. |
+| Initial supply cap | **Accept: 5 Billion Onyxi** ($5 \times 10^{18}$ nanos) | Fixed baseline supply cap for economic security. |
 | Validator reward rate | **Accept: 1.75% Annual Inflation** | Provides sustainable staking yield and security budget. |
 | Fee burn allocation | **Accept: 50% Burn / 50% Validator** | Deflationary counterweight balancing validator block rewards. |
 | Storage fee rate | **Accept: 10 nanos / byte / Mlt** | Predictable state rent pricing per byte per $10^6$ logical time units. |

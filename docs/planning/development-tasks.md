@@ -284,7 +284,7 @@ To transition from protocol specifications and standalone libraries to a fully f
   - `crates/protocol/onx-consensus/src/election.rs` and `crates/protocol/onx-economics/src/slashing.rs`.
   - Validator lifecycle test suite.
 - **Acceptance Criteria:**
-  Election lifecycle runs end-to-end: validators stake Onyx, active set is chosen, rewards accrue, and double-signing triggers automatic stake slashing.
+  Election lifecycle runs end-to-end: validators stake Onyxi, active set is chosen, rewards accrue, and double-signing triggers automatic stake slashing.
 
 ---
 
@@ -438,7 +438,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 - **Description:**
   Build the genesis block generator tool (`onx-genesis`) for creating initial chain states and launching private/public testnets.
 - **Requirements:**
-  1. Read network initial configuration parameters (initial Onyx balances, initial validator public keys, initial workchain config).
+  1. Read network initial configuration parameters (initial Onyxi balances, initial validator public keys, initial workchain config).
   2. Construct canonical Masterchain Genesis Block (#0) and initial Shard Block headers.
   3. Export genesis BoC files and bootstrap node configuration files.
 - **Deliverables:**

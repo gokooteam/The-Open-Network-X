@@ -471,7 +471,7 @@ impl AccountState {
         let expected_next_balance = if balance_delta >= 0 {
             // Fail closed on overflow: saturating here would mint u128::MAX.
             // Unreachable in practice (needs a balance > 2^127 nanos, versus
-            // a 5B-Onyx total supply), but the error is the correct behavior.
+            // a 5B-Onyxi total supply), but the error is the correct behavior.
             cur_balance
                 .checked_add(balance_delta as u128)
                 .ok_or_else(|| {

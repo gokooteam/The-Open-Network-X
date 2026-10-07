@@ -24,7 +24,7 @@
 //!   in protocol crates via clippy `disallowed-types`),
 //! - only `BTreeMap`/`BTreeSet`/`Vec` (insertion-ordered) and fixed-size arrays.
 //!
-//! Scope: Onyx value transfers and TVM contract execution, all via
+//! Scope: Onyxi value transfers and TVM contract execution, all via
 //! asynchronous messages. External messages authenticate at the built-in
 //! wallet handler (STF, not VM); internal messages deliver as the
 //! receiver's own transaction, dispatching into `onx-execution` for
@@ -70,6 +70,6 @@ pub use message::{
     ONX_MSG_INT_V1,
 };
 pub use state::State;
-/// Gas economics for contract execution: 1_000 gas per nano-Onyx of declared fee.
+/// Gas economics for contract execution: 1_000 gas per nano-Onyxii of declared fee.
 pub use stf::GAS_PER_NANO;
 pub use stf::{apply_block, propose_block, AppliedMessage, DeliveryReceipt, Receipts};

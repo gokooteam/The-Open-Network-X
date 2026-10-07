@@ -1,7 +1,7 @@
 //! Message-model cross-process determinism probe.
 //!
 //! Builds a fixed genesis, then applies a seeded pseudo-random sequence of
-//! blocks (external messages carrying Onyx transfers) through the honest
+//! blocks (external messages carrying Onyxi transfers) through the honest
 //! producer path (`propose_block`) and validator path (`apply_block`).
 //! Prints the final state root, last block hash, and message count.
 //!

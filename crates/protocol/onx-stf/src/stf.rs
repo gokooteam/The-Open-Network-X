@@ -37,7 +37,7 @@ use onx_state_model::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Gas purchased per nano-Onyx of declared message fee, for contract calls.
+/// Gas purchased per nano-Onyxii of declared message fee, for contract calls.
 /// The fee still splits 50/50 burn/validator via the normal fee model —
 /// gas only bounds execution; there is no gas refund and no fee market yet
 /// (both deferred). A contract call must carry a non-zero fee (rejected at

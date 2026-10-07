@@ -16,14 +16,14 @@
 
 **Open Network X (ONX)** is an independent blockchain implementation project inspired by the architecture and technical vision described in the original The Open Network (TON) white paper.
 
-ONX explores, reconstructs, and implements that vision independently and from first principles. It is not the TON blockchain, is not an official continuation of TON, and is not intended to replace the existing TON network or its community. The native currency of Open Network X is **Onyx**.
+ONX explores, reconstructs, and implements that vision independently and from first principles. It is not the TON blockchain, is not an official continuation of TON, and is not intended to replace the existing TON network or its community. The native currency of Open Network X is **Onyxi** (ticker: **ONXI**).
 
 ## Contents
 
 - [What is Open Network X?](#what-is-open-network-x)
 - [Independence](#independence)
 - [The white paper is the starting point](#the-white-paper-is-the-starting-point)
-- [Onyx](#onyx)
+- [Onyxi](#onyxi)
 - [Project philosophy](#project-philosophy)
 - [Project status](#project-status)
 - [Changelog and roadmap](ROADMAP.md)
@@ -74,9 +74,9 @@ The original TON white paper (`WHITEPAPER.md`) is the primary historical and arc
 - Where the white paper is ambiguous, ONX documents its interpretation.
 - Where the white paper does not provide sufficient information, ONX explicitly identifies the missing information and documents the engineering decision that fills the gap.
 
-## Onyx
+## Onyxi
 
-Onyx is the native currency of Open Network X. The currency exists as part of the ONX protocol rather than as a separate application-layer token. The exact monetary policy, denomination system, issuance mechanism, validator economics, transaction fees, and other economic parameters will be specified as the protocol develops.
+Onyxi is the native currency of Open Network X. The currency exists as part of the ONX protocol rather than as a separate application-layer token. The exact monetary policy, denomination system, issuance mechanism, validator economics, transaction fees, and other economic parameters will be specified as the protocol develops.
 
 ## Project philosophy
 
@@ -169,7 +169,7 @@ The long-term goal is to develop an independent, functioning blockchain network 
 
 ## Disclaimer
 
-Open Network X is an independent project. ONX, Open Network X, and Onyx should not be represented as official TON products, networks, or services. The use of historical TON technical material as a reference does not imply endorsement, affiliation, or control by the organizations or communities associated with the existing TON ecosystem.
+Open Network X is an independent project. ONXI, Open Network X, and Onyxi should not be represented as official TON products, networks, or services. The use of historical TON technical material as a reference does not imply endorsement, affiliation, or control by the organizations or communities associated with the existing TON ecosystem.
 
 ## License
 

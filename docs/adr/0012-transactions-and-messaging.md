@@ -37,7 +37,7 @@ ONX adopts the following specifications for transaction and message semantics:
    - External Inbound messages (`msg_type = 0x02`) carry zero value (`amount_nanos = 0` and empty `extra_currencies`) and MUST be tentatively executed by collators/validators under a strict, small gas cap (`MAX_TENTATIVE_GAS = 10,000`).
    - Messages failing tentative execution (e.g., signature verification failure) are discarded immediately without block inclusion.
 2. **Deterministic Multi-Currency Representation:**
-   - Principal Onyx balance is tracked in `amount_nanos` (`uint128`).
+   - Principal Onyxi balance is tracked in `amount_nanos` (`uint128`).
    - Additional currencies are encoded in `extra_currencies` as count-prefixed arrays of `(currency_id, value)` pairs, strictly sorted in ascending order by 32-bit `currency_id`. Duplicate or unsorted currency IDs cause immediate rejection.
 3. **Output-Queue-Only Architecture & Delivery Ordering:**
    - No input message queues exist. Inbound messages are executed upon block inclusion.
