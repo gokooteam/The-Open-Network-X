@@ -119,7 +119,7 @@ fn stf_happy_path_transfer_with_fee_split() {
     let mut signer = MsgSigner::new(state.chain_id);
     let msg = signer.sign(alice, bob, 1_000_000, 1_000);
     let msg_hash = msg.hash();
-    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
+    let block = propose_block(&state, vec![msg], 1, collector, 1, 0).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
 
     assert_eq!(balance_of(&next, &alice), 10_000_000 - 1_001_000);
@@ -161,7 +161,7 @@ fn stf_creates_receiver_account_on_first_transfer() {
 
     let mut signer = MsgSigner::new(state.chain_id);
     let msg = signer.sign(alice, carol, 250_000, 0);
-    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
+    let block = propose_block(&state, vec![msg], 1, collector, 1, 0).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     assert_eq!(balance_of(&next, &carol), 250_000);
     // Zero fee: no dust account created for the collector.
@@ -174,7 +174,7 @@ fn stf_self_transfer_nets_to_fee_only() {
     let alice = ids[0];
     let mut signer = MsgSigner::new(state.chain_id);
     let msg = signer.sign(alice, alice, 1_000_000, 400);
-    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
+    let block = propose_block(&state, vec![msg], 1, collector, 1, 0).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     // Debited amount+fee, credited amount: net -fee.
     assert_eq!(balance_of(&next, &alice), 10_000_000 - 400);
@@ -183,7 +183,7 @@ fn stf_self_transfer_nets_to_fee_only() {
 #[test]
 fn stf_rejects_bad_seqno() {
     let (state, _, collector) = test_genesis();
-    let block = propose_block(&state, vec![], 1, collector).unwrap();
+    let block = propose_block(&state, vec![], 1, collector, 1, 0).unwrap();
     let mut bad = block.clone();
     bad.header.seqno = 99;
     assert!(matches!(
@@ -204,7 +204,7 @@ fn stf_rejects_bad_seqno() {
 #[test]
 fn stf_rejects_bad_prev_hash() {
     let (state, _, collector) = test_genesis();
-    let block = propose_block(&state, vec![], 1, collector).unwrap();
+    let block = propose_block(&state, vec![], 1, collector, 1, 0).unwrap();
     let mut bad = block;
     bad.header.prev_hash = [0xAA; 32];
     assert!(matches!(
@@ -218,13 +218,13 @@ fn stf_rejects_lt_regression() {
     let (state, _, collector) = test_genesis();
     // lt must be strictly greater than last_lt (0 at genesis).
     assert!(matches!(
-        propose_block(&state, vec![], 0, collector),
+        propose_block(&state, vec![], 0, collector, 1, 0),
         Err(StfError::LogicalTimeRegression { .. })
     ));
-    let block = propose_block(&state, vec![], 1, collector).unwrap();
+    let block = propose_block(&state, vec![], 1, collector, 1, 0).unwrap();
     let (next, _) = apply_block(&state, &block).unwrap();
     assert!(matches!(
-        propose_block(&next, vec![], 1, collector),
+        propose_block(&next, vec![], 1, collector, 1, 0),
         Err(StfError::LogicalTimeRegression { .. })
     ));
 }
@@ -234,7 +234,7 @@ fn stf_rejects_tampered_body_and_header() {
     let (state, ids, collector) = test_genesis();
     let mut signer = MsgSigner::new(state.chain_id);
     let msg = signer.sign(ids[0], ids[1], 100, 0);
-    let block = propose_block(&state, vec![msg], 1, collector).unwrap();
+    let block = propose_block(&state, vec![msg], 1, collector, 1, 0).unwrap();
 
     // Mutate the body after proposing: msgs_root no longer matches.
     let mut tampered = block.clone();
@@ -266,7 +266,7 @@ fn stf_rejects_invalid_messages() {
     let mut signer = MsgSigner::new(state.chain_id);
     let bad: Vec<ExternalMessage> = vec![signer.sign(alice, bob, 0, 10)];
     assert!(matches!(
-        propose_block(&state, bad, 1, collector),
+        propose_block(&state, bad, 1, collector, 1, 0),
         Err(StfError::ZeroAmount)
     ));
 
@@ -274,7 +274,7 @@ fn stf_rejects_invalid_messages() {
     let mut bad_signer = MsgSigner::new(state.chain_id);
     let bad = vec![bad_signer.sign(alice, bob, 9_999_999, 2)];
     assert!(matches!(
-        propose_block(&state, bad, 1, collector),
+        propose_block(&state, bad, 1, collector, 1, 0),
         Err(StfError::InsufficientFunds { .. })
     ));
 
@@ -282,12 +282,12 @@ fn stf_rejects_invalid_messages() {
     let mut bad_signer = MsgSigner::new(state.chain_id);
     let bad = vec![bad_signer.sign(stranger, bob, 1, 0)];
     assert!(matches!(
-        propose_block(&state, bad, 1, collector),
+        propose_block(&state, bad, 1, collector, 1, 0),
         Err(StfError::SenderNotSpendable(_))
     ));
 
     // Empty block is valid (no-op block, still advances the chain).
-    let block = propose_block(&state, vec![], 1, collector).unwrap();
+    let block = propose_block(&state, vec![], 1, collector, 1, 0).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
     assert_eq!(next.seqno, 1);
     assert!(receipts.0.is_empty());
@@ -305,7 +305,7 @@ fn stf_allows_intra_block_multi_touch() {
         signer.sign(alice, bob, 2_000_000, 0),
         signer.sign(bob, alice, 500_000, 100),
     ];
-    let block = propose_block(&state, msgs, 1, collector).unwrap();
+    let block = propose_block(&state, msgs, 1, collector, 1, 0).unwrap();
     let (next, receipts) = apply_block(&state, &block).unwrap();
     assert_eq!(receipts.0.len(), 3);
     // Alice: 10M - 1M - 2M + 500k = 7_500_000 (the 100 fee is paid by Bob).
@@ -329,7 +329,8 @@ fn stf_header_commits_to_ordered_set() {
     assert_ne!(r1, r2);
 
     // Header round-trips through canonical bytes.
-    let block = propose_block(&state, vec![msg1.clone(), msg2.clone()], 1, collector).unwrap();
+    let block =
+        propose_block(&state, vec![msg1.clone(), msg2.clone()], 1, collector, 1, 0).unwrap();
     let bytes = block.header.to_bytes();
     assert_eq!(bytes.len(), onx_stf::block::BLOCK_HEADER_BYTE_LEN);
     let back = BlockHeader::from_bytes(&bytes).unwrap();
@@ -414,7 +415,7 @@ fn stf_randomized_sequences_deterministic_in_process() {
                     &test_secret(&from),
                 ));
             }
-            let block = propose_block(&state, msgs, b, collector).unwrap();
+            let block = propose_block(&state, msgs, b, collector, 1, 0).unwrap();
             let (next, receipts) = apply_block(&state, &block).unwrap();
             // Delivery phase settles: apply the deferred credits now.
             for (to, amount) in pending_credits {

@@ -179,3 +179,137 @@ def block_file_bytes(header_bytes: bytes, wires: list) -> bytes:
         out += u32be(len(w))
         out += w
     return bytes(out)
+
+
+# ---------------------------------------------------------------- ONXBLK05
+# Authenticated block headers (ADR-0032). The 160-byte header appends
+# protocol_version (u32be) and block_time (u64be) after msg_count; the
+# signature section sits OUTSIDE the hashed header bytes.
+#
+#   header_v05 (160) =
+#     seqno u32be(4) || prev_hash(32) || msgs_root(32) || state_root(32) ||
+#     lt u64be(8) || workchain i32be(4) || fee_collector(32) ||
+#     msg_count u32be(4) || protocol_version u32be(4) || block_time u64be(8)
+#
+#   block_hash = domain_hash(ONX_BLOCK_HDR_V1, header_v05)
+#   sign_bytes = pad32("ONX_BLOCK_SIG_V1") || chain_id(32) || block_hash(32)
+#   sig_section = count u32be || [validator_index u32be || sig(64)]*
+#   file = magic "ONXBLK05"(8) || header(160) || sig_section || body(...)
+
+TAG_BLOCK_SIG = "ONX_BLOCK_SIG_V1"
+BLOCK_FILE_MAGIC_V05 = b"ONXBLK05"
+HEADER_V05_LEN = 160
+PROTOCOL_VERSION_V1 = 1
+
+
+def block_header_bytes_v05(seqno, prev_hash, msgs_root_h, state_root, lt,
+                           workchain, fee_collector, msg_count,
+                           protocol_version=PROTOCOL_VERSION_V1,
+                           block_time=0) -> bytes:
+    out = bytearray()
+    out += u32be(seqno)
+    out += prev_hash
+    out += msgs_root_h
+    out += state_root
+    out += u64be(lt)
+    out += i32be(workchain)
+    out += fee_collector
+    out += u32be(msg_count)
+    out += u32be(protocol_version)
+    out += u64be(block_time)
+    assert len(out) == HEADER_V05_LEN, \
+        f"v05 header must be 160 bytes, got {len(out)}"
+    return bytes(out)
+
+
+def block_sign_bytes(chain_id: bytes, block_hash_v: bytes) -> bytes:
+    """96-byte signing preimage: pad32(tag) || chain_id || block_hash."""
+    assert len(chain_id) == 32 and len(block_hash_v) == 32
+    return pad32(TAG_BLOCK_SIG) + bytes(chain_id) + bytes(block_hash_v)
+
+
+def encode_sig_section(entries: list) -> bytes:
+    """entries: list of (validator_index:int, sig:bytes[64])."""
+    out = bytearray(u32be(len(entries)))
+    for idx, sig in entries:
+        assert 0 <= idx <= 0xFFFFFFFF
+        assert len(sig) == 64
+        out += u32be(idx)
+        out += sig
+    return bytes(out)
+
+
+def decode_sig_section_strict(data: bytes) -> list:
+    """Strict decode; returns list of (validator_index, sig). Fail-closed."""
+    if len(data) < 4:
+        raise ValueError("sig section truncated: no count")
+    count = int.from_bytes(data[0:4], "big")
+    # Each entry costs 68 bytes; bound the claim before allocating.
+    if 4 + count * 68 > len(data):
+        raise ValueError(
+            f"sig section claims {count} entries but holds {len(data)} bytes")
+    entries = []
+    off = 4
+    for _ in range(count):
+        idx = int.from_bytes(data[off:off + 4], "big")
+        sig = bytes(data[off + 4:off + 68])
+        entries.append((idx, sig))
+        off += 68
+    if off != len(data):
+        raise ValueError("sig section has trailing bytes")
+    # Canonical order: strictly ascending indices, no duplicates.
+    indices = [i for i, _ in entries]
+    if indices != sorted(indices) or len(set(indices)) != len(indices):
+        raise ValueError("sig section indices not strictly ascending")
+    return entries
+
+
+def verify_block_auth(chain_id: bytes, header_bytes: bytes,
+                      sig_entries: list, validators: list) -> None:
+    """Verify an authenticated header (ADR-0032 §5).
+
+    validators: list of (pubkey_bytes[32], stake:int) in canonical
+    (pubkey-sorted) order; validator_index addresses this list.
+    Raises ValueError on any failure. Requires >2/3 of genesis stake.
+    """
+    if len(header_bytes) != HEADER_V05_LEN:
+        raise ValueError("header must be 160 bytes")
+    if not validators:
+        raise ValueError("empty validator set")
+    total_stake = sum(s for _, s in validators)
+    if total_stake == 0:
+        raise ValueError("zero total stake")
+
+    bh = domain_hash(TAG_BLOCK_HDR, header_bytes)
+    preimage = block_sign_bytes(chain_id, bh)
+
+    seen_stake = 0
+    for idx, sig in sig_entries:
+        if idx >= len(validators):
+            raise ValueError(f"validator index {idx} out of range")
+        pubkey, stake = validators[idx]
+        # Strict predicate: canonical, on-curve, large-order.
+        ed25519._decodepoint(bytes(pubkey))
+        if not ed25519.verify(bytes(pubkey), preimage, bytes(sig)):
+            raise ValueError(f"bad signature from validator {idx}")
+        seen_stake += stake
+
+    # Strictly more than 2/3: seen*3 > total*2.
+    if seen_stake * 3 <= total_stake * 2:
+        raise ValueError(
+            f"insufficient stake: {seen_stake}/{total_stake} (need >2/3)")
+
+
+def block_file_bytes_v05(header_bytes: bytes, sig_section: bytes,
+                         wires: list) -> bytes:
+    """ONXBLK05 file: magic(8) || header(160) || sig_section ||
+    u32be count || [u32be len || wire]*."""
+    assert len(header_bytes) == HEADER_V05_LEN
+    out = bytearray(BLOCK_FILE_MAGIC_V05)
+    out += header_bytes
+    out += sig_section
+    out += u32be(len(wires))
+    for w in wires:
+        out += u32be(len(w))
+        out += w
+    return bytes(out)

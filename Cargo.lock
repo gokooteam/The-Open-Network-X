@@ -1218,6 +1218,7 @@ dependencies = [
  "onx-state-model",
  "onx-stf",
  "onx-storage",
+ "serde_json",
 ]
 
 [[package]]
@@ -1438,6 +1439,7 @@ name = "onxd"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "onx",
  "onx-consensus",
  "onx-data-structures",

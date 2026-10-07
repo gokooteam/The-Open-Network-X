@@ -5,9 +5,9 @@
 //! cross-block internal replay is structurally impossible.
 //!
 //! The header commits to the external set via `msgs_root`
-//! (`ONX_MSGS_ROOT_V1`). The 148-byte header layout is unchanged from the
-//! transaction era; only the commitment's domain tag changed, so the
-//! layout carries no legacy ambiguity.
+//! (`ONX_MSGS_ROOT_V1`). The 160-byte header layout (ONXBLK05, ADR-0032)
+//! appends `protocol_version` (u32be) and `block_time` (u64be) to the
+//! previous 148-byte layout, so the layout carries no legacy ambiguity.
 
 use crate::error::StfError;
 pub use crate::message::{msgs_root, ExternalMessage};
@@ -34,10 +34,17 @@ impl BlockBody {
 
 /// A block header.
 ///
-/// Canonical encoding (148 bytes, big-endian):
+/// Protocol version this node understands (ADR-0032). Validity is
+/// version-gated: `apply_block` rejects any block whose `protocol_version`
+/// differs — the version field IS the upgrade mechanism.
+/// Genesis declares v1; bump this when the header format changes.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Canonical encoding (160 bytes, big-endian, ADR-0032):
 /// `seqno u32be(4) || prev_hash(32) || msgs_root(32) || state_root(32) ||
-///  lt u64be(8) || workchain i32be(4) || fee_collector(32) || msg_count u32be(4)`
-/// = 4+32+32+32+8+4+32+4 = 148 bytes.
+///  lt u64be(8) || workchain i32be(4) || fee_collector(32) || msg_count u32be(4) ||
+///  protocol_version u32be(4) || block_time u64be(8)`
+/// = 4+32+32+32+8+4+32+4+4+8 = 160 bytes.
 ///
 /// Fields:
 /// - `state_root`: the *claimed* post-state root. The STF recomputes it and
@@ -49,6 +56,10 @@ impl BlockBody {
 ///   truncated body cannot pass the `msgs_root` check by accident... (it
 ///   can't anyway — `msgs_root` covers the full ordered set; `msg_count` is
 ///   carried for tooling convenience and checked for consistency).
+/// - `protocol_version`: the protocol version the block was produced under.
+///   Genesis declares v1; validity is version-gated (ADR-0032).
+/// - `block_time`: unix seconds, wall-clock at production. Monotonic and
+///   replay-checked; the STF treats it as header input, not execution state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockHeader {
     pub seqno: u32,
@@ -59,13 +70,18 @@ pub struct BlockHeader {
     pub workchain: i32,
     pub fee_collector: AccountId,
     pub msg_count: u32,
+    pub protocol_version: u32,
+    pub block_time: u64,
 }
 
 /// Canonical byte length of one [`BlockHeader`].
-pub const BLOCK_HEADER_BYTE_LEN: usize = 148;
+pub const BLOCK_HEADER_BYTE_LEN: usize = 160;
+
+/// Domain tag for the block signature preimage (ADR-0032).
+pub const ONX_BLOCK_SIG_V1: DomainTag = DomainTag::from_ascii("ONX_BLOCK_SIG_V1");
 
 impl BlockHeader {
-    /// Canonical 148-byte encoding.
+    /// Canonical 160-byte encoding.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(BLOCK_HEADER_BYTE_LEN);
         out.extend_from_slice(&Uint32(self.seqno).encode());
@@ -76,6 +92,8 @@ impl BlockHeader {
         out.extend_from_slice(&Int32(self.workchain).encode());
         out.extend_from_slice(&self.fee_collector.to_bytes());
         out.extend_from_slice(&Uint32(self.msg_count).encode());
+        out.extend_from_slice(&Uint32(self.protocol_version).encode());
+        out.extend_from_slice(&Uint64(self.block_time).encode());
         out
     }
 
@@ -87,7 +105,7 @@ impl BlockHeader {
                 got_len: bytes.len(),
             });
         }
-        // All call sites pass small constant offsets into the 148-byte header
+        // All call sites pass small constant offsets into the 160-byte header
         // (length checked above); saturation is unreachable. Explicit per the
         // crate's `arithmetic_side_effects` policy.
         let u32_at =
@@ -110,6 +128,8 @@ impl BlockHeader {
             workchain: i32_at(108),
             fee_collector: AccountId::from_bytes(h32_at(112)),
             msg_count: u32_at(144),
+            protocol_version: u32_at(148),
+            block_time: u64_at(152),
         })
     }
 
@@ -117,6 +137,17 @@ impl BlockHeader {
     /// Chained via `prev_hash` — this is what makes the chain a chain.
     pub fn hash(&self) -> [u8; 32] {
         domain_hash(&ONX_BLOCK_HDR_V1, &self.to_bytes())
+    }
+
+    /// The 96-byte signing preimage (ADR-0032):
+    /// `pad32("ONX_BLOCK_SIG_V1") || chain_id || block_hash`.
+    /// Signatures bind the chain and the exact block.
+    pub fn sign_bytes(&self, chain_id: &[u8; 32]) -> [u8; 96] {
+        let mut out = [0u8; 96];
+        out[..32].copy_from_slice(ONX_BLOCK_SIG_V1.as_bytes());
+        out[32..64].copy_from_slice(chain_id);
+        out[64..96].copy_from_slice(&self.hash());
+        out
     }
 }
 
@@ -137,6 +168,34 @@ pub struct Block {
     pub body: BlockBody,
 }
 
+/// One producer signature: which genesis validator signed, and how.
+/// (ADR-0032; the signature section sits outside the hashed header.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigEntry {
+    /// Index into the canonical (pubkey-sorted) genesis validator list.
+    pub validator_index: u32,
+    /// Ed25519 signature over the 96-byte preimage.
+    pub sig: [u8; 64],
+}
+
+/// Byte length of one encoded signature entry.
+pub const SIG_ENTRY_BYTE_LEN: usize = 4 + 64;
+
+/// Encode a signature section:
+/// `count(u32be) || [validator_index(u32be) || sig(64)]*`.
+pub fn encode_sig_section(entries: &[SigEntry]) -> Vec<u8> {
+    // Capacity is a hint only: saturating arithmetic keeps the deny-level
+    // arithmetic_side_effects lint happy without changing semantics.
+    let cap = 4usize.saturating_add(entries.len().saturating_mul(SIG_ENTRY_BYTE_LEN));
+    let mut out = Vec::with_capacity(cap);
+    out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for e in entries {
+        out.extend_from_slice(&e.validator_index.to_be_bytes());
+        out.extend_from_slice(&e.sig);
+    }
+    out
+}
+
 impl Block {
     /// Assemble a block, computing `msgs_root` and `msg_count` from the body.
     /// The caller must fill `state_root` — see [`crate::stf::apply_block`],
@@ -146,29 +205,42 @@ impl Block {
     /// holds more messages than fit in a `u32` (unreachable in
     /// practice; the check exists so the invariant is explicit rather
     /// than a silent truncation).
-    pub fn assemble(
-        seqno: u32,
-        prev_hash: [u8; 32],
-        lt: u64,
-        workchain: i32,
-        fee_collector: AccountId,
-        messages: Vec<ExternalMessage>,
-        state_root: [u8; 32],
-    ) -> Result<Self, StfError> {
-        let msg_count = checked_msg_count(messages.len())?;
-        let body = BlockBody { messages };
+    pub fn assemble(p: AssembleParams) -> Result<Self, StfError> {
+        let msg_count = checked_msg_count(p.messages.len())?;
+        let body = BlockBody {
+            messages: p.messages,
+        };
         let header = BlockHeader {
-            seqno,
-            prev_hash,
+            seqno: p.seqno,
+            prev_hash: p.prev_hash,
             msgs_root: body.msgs_root(),
-            state_root,
-            lt,
-            workchain,
-            fee_collector,
+            state_root: p.state_root,
+            lt: p.lt,
+            workchain: p.workchain,
+            fee_collector: p.fee_collector,
             msg_count,
+            protocol_version: p.protocol_version,
+            block_time: p.block_time,
         };
         Ok(Self { header, body })
     }
+}
+
+/// Parameters for [`Block::assemble`]: every header field except the two
+/// computed from the body (`msgs_root`, `msg_count`). A struct (rather than
+/// nine positional arguments) keeps the call sites readable now that the
+/// ADR-0032 fields (`protocol_version`, `block_time`) joined the header.
+#[derive(Debug, Clone)]
+pub struct AssembleParams {
+    pub seqno: u32,
+    pub prev_hash: [u8; 32],
+    pub lt: u64,
+    pub workchain: i32,
+    pub fee_collector: AccountId,
+    pub messages: Vec<ExternalMessage>,
+    pub state_root: [u8; 32],
+    pub protocol_version: u32,
+    pub block_time: u64,
 }
 
 #[cfg(test)]
@@ -192,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn header_layout_is_148_bytes() {
+    fn header_layout_is_160_bytes() {
         let header = BlockHeader {
             seqno: 1,
             prev_hash: [0x11; 32],
@@ -202,17 +274,25 @@ mod tests {
             workchain: -1,
             fee_collector: AccountId::from_bytes([0x44; 32]),
             msg_count: 3,
+            protocol_version: 1,
+            block_time: 1_790_000_000,
         };
         let bytes = header.to_bytes();
         assert_eq!(bytes.len(), BLOCK_HEADER_BYTE_LEN);
         // Field offsets: seqno 0..4, prev_hash 4..36, msgs_root 36..68,
         // state_root 68..100, lt 100..108, workchain 108..112,
-        // fee_collector 112..144, msg_count 144..148.
+        // fee_collector 112..144, msg_count 144..148,
+        // protocol_version 148..152, block_time 152..160.
         assert_eq!(u32::from_be_bytes(bytes[0..4].try_into().unwrap()), 1);
         assert_eq!(&bytes[36..68], &[0x22; 32]);
         assert_eq!(u64::from_be_bytes(bytes[100..108].try_into().unwrap()), 42);
         assert_eq!(i32::from_be_bytes(bytes[108..112].try_into().unwrap()), -1);
         assert_eq!(u32::from_be_bytes(bytes[144..148].try_into().unwrap()), 3);
+        assert_eq!(u32::from_be_bytes(bytes[148..152].try_into().unwrap()), 1);
+        assert_eq!(
+            u64::from_be_bytes(bytes[152..160].try_into().unwrap()),
+            1_790_000_000
+        );
         let back = BlockHeader::from_bytes(&bytes).unwrap();
         assert_eq!(back, header);
         assert!(BlockHeader::from_bytes(&bytes[..147]).is_err());
@@ -236,15 +316,17 @@ mod tests {
             [0u8; 32],
             &secret,
         );
-        let block = Block::assemble(
-            1,
-            [0x11; 32],
-            7,
-            0,
-            AccountId::from_bytes([0x44; 32]),
-            vec![msg.clone()],
-            [0x33; 32],
-        )
+        let block = Block::assemble(AssembleParams {
+            seqno: 1,
+            prev_hash: [0x11; 32],
+            lt: 7,
+            workchain: 0,
+            fee_collector: AccountId::from_bytes([0x44; 32]),
+            messages: vec![msg.clone()],
+            state_root: [0x33; 32],
+            protocol_version: 1,
+            block_time: 0,
+        })
         .unwrap();
         assert_eq!(block.header.msg_count, 1);
         assert_eq!(

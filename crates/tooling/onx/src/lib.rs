@@ -10,4 +10,5 @@
 //! binary wires genesis (Phase 2) → pure STF (Phase 3) → atomic store
 //! (Phase 4) together.
 
+pub mod auth;
 pub mod blockfile;

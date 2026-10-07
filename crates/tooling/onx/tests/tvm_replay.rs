@@ -18,6 +18,7 @@ use onx::blockfile::{block_file_name, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
+use onx_stf::block::SigEntry;
 use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,6 +60,15 @@ fn write_contract_genesis_toml(dir: &Path) -> PathBuf {
 
 fn replay_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_onx"))
+}
+
+fn sign_block(block: &Block, chain_id: &[u8; 32]) -> Vec<SigEntry> {
+    let secret = test_secret_key(0x11);
+    let preimage = block.header.sign_bytes(chain_id);
+    vec![SigEntry {
+        validator_index: 0,
+        sig: secret.sign_raw(&preimage).encode(),
+    }]
 }
 
 fn run_replay(genesis: &Path, blocks: &Path, data_dir: &Path) -> std::process::Output {
@@ -146,7 +156,7 @@ fn tvm_replay_two_processes_byte_identical_with_counter() {
             [0u8; 32],
             &secret,
         );
-        let block = propose_block(&state, vec![msg], i + 1, collector).unwrap();
+        let block = propose_block(&state, vec![msg], i + 1, collector, 1, 0).unwrap();
         let (next, receipts) = onx_stf::apply_block(&state, &block).unwrap();
         // The call executed, not bounced.
         assert!(!receipts.0[0].deliveries[0].bounced);
@@ -164,7 +174,11 @@ fn tvm_replay_two_processes_byte_identical_with_counter() {
 
     for block in &blocks {
         let path = blocks_dir.join(block_file_name(block.header.seqno));
-        std::fs::write(path, encode_block_file(block)).unwrap();
+        std::fs::write(
+            path,
+            encode_block_file(block, &sign_block(block, &chain_id)),
+        )
+        .unwrap();
     }
 
     // Two fresh `onx replay` subprocesses over the same inputs.
@@ -238,12 +252,12 @@ fn tvm_replay_bounces_failing_contract_call_block_stays_valid() {
         [0u8; 32],
         &secret,
     );
-    let block1 = propose_block(&state, vec![good], 1, collector).unwrap();
+    let block1 = propose_block(&state, vec![good], 1, collector, 1, 0).unwrap();
     let (next, _) = onx_stf::apply_block(&state, &block1).unwrap();
     state = next;
     std::fs::write(
         blocks_dir.join(block_file_name(1)),
-        encode_block_file(&block1),
+        encode_block_file(&block1, &sign_block(&block1, &chain_id)),
     )
     .unwrap();
 
@@ -263,12 +277,12 @@ fn tvm_replay_bounces_failing_contract_call_block_stays_valid() {
         [0u8; 32],
         &secret,
     );
-    let block2 = propose_block(&state, vec![bad_msg], 2, collector).unwrap();
+    let block2 = propose_block(&state, vec![bad_msg], 2, collector, 1, 0).unwrap();
     let (next, receipts) = onx_stf::apply_block(&state, &block2).unwrap();
     state = next;
     std::fs::write(
         blocks_dir.join(block_file_name(2)),
-        encode_block_file(&block2),
+        encode_block_file(&block2, &sign_block(&block2, &chain_id)),
     )
     .unwrap();
 

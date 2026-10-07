@@ -98,5 +98,8 @@ jobs:
       - name: Regenerate vectors and check for drift
         run: python3 reference/gen_vectors.py --check
 
+      - name: Regenerate ONXBLK05 auth vectors and check for drift
+        run: python3 reference/gen_auth_vectors.py --check
+
       - name: Ed25519 self-test
         run: python3 -c "import sys; sys.path.insert(0, 'reference'); import ed25519; ed25519.self_test()"

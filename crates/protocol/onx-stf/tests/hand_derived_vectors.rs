@@ -5,7 +5,11 @@
 //!   - `docs/specification/protocol-primitives.md` (SHA-256, big-endian ints,
 //!     32-byte zero-padded domain tags)
 //!   - `docs/adr/0002-message-encoding-and-domain-tags.md` (external message
-//!     field layout, domain tags, msgs_root, 148-byte header layout)
+//!     field layout, domain tags, msgs_root, 148-byte legacy header layout)
+//!   - `docs/adr/0032-onxblk05-authenticated-headers.md` (ONXBLK05: the header
+//!     grew to 160 bytes — protocol_version u32be + block_time u64be
+//!     appended after msg_count; the hand header vector was re-derived for
+//!     160 bytes in `reference/history/hand_derive_onxblk05_header.py`)
 //!
 //! Derivation script: `hidden_files/hand_derive_vectors_msg.py` (stdlib
 //! `struct` + `hashlib` only; Ed25519 via PyNaCl/libsodium, NOT the Rust
@@ -68,9 +72,9 @@ const HAND_MSG_WIRE_HEX: &str = "ddddddddddddddddddddddddddddddddddddddddddddddd
 const HAND_MSG_BODY_HEX: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd11111111111111111111111111111111111111111111111111111111111111110000000000000007002222222222222222222222222222222222222222222222222222222222222222000000000000000000000000000003e80000000000000000000000000000000a000000004444444444444444444444444444444444444444444444444444444444444444";
 const HAND_MSG_HASH_HEX: &str = "bef51624d10e0bcd1f93e7edee27f832621d4aa59d91c611435898d92ddd3b9d";
 const HAND_MSGS_ROOT_HEX: &str = "2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515e";
-const HAND_HEADER_HEX: &str = "0000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515ebbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00000000000f4240ffffffffcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000001";
+const HAND_HEADER_HEX: &str = "0000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515ebbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00000000000f4240ffffffffcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000000100000001000000006553f100";
 const HAND_HEADER_HASH_HEX: &str =
-    "cda94f160317f6bd0666d328c565084f782e880150ae054b7c370f8632b110f9";
+    "384ff6dd999455d3516c2a1cb76cf5f762188ebb317308de71a5eff1fe153f8a";
 
 #[test]
 fn hand_derived_msg_wire_bytes() {
@@ -121,6 +125,11 @@ fn hand_header() -> BlockHeader {
         workchain: -1, // masterchain; i32be(-1) = 0xFFFFFFFF
         fee_collector: AccountId::from_bytes([0xCC; 32]),
         msg_count: 1,
+        // ONXBLK05 tail (ADR-0032): protocol_version u32be at [148..152],
+        // block_time u64be at [152..160]. Human-chosen vector values
+        // (1, 1_700_000_000); see hand_derive_onxblk05_header.py.
+        protocol_version: 1,
+        block_time: 1_700_000_000,
     }
 }
 
@@ -128,16 +137,20 @@ fn hand_header() -> BlockHeader {
 fn hand_derived_block_header_bytes() {
     // Spec: seqno u32be(4) || prev_hash(32) || msgs_root(32) ||
     // state_root(32) || lt u64be(8) || workchain i32be(4) ||
-    // fee_collector(32) || msg_count u32be(4) = 148 bytes (layout
-    // unchanged from the transaction era; txs_root/tx_count renamed).
+    // fee_collector(32) || msg_count u32be(4) ||
+    // protocol_version u32be(4) || block_time u64be(8) = 160 bytes
+    // (ONXBLK05, ADR-0032; was 148 before the tail was appended).
     let hdr = hand_header();
     let bytes = hdr.to_bytes();
-    assert_eq!(bytes.len(), 148);
+    assert_eq!(bytes.len(), 160);
     assert_eq!(bytes, h(HAND_HEADER_HEX));
-    // Spot-checks: seqno 42, workchain -1, msg_count 1.
+    // Spot-checks: seqno 42, workchain -1, msg_count 1, protocol_version 1,
+    // block_time 1_700_000_000 (0x6553F100).
     assert_eq!(&bytes[0..4], &[0, 0, 0, 42]);
     assert_eq!(&bytes[108..112], &[0xFF, 0xFF, 0xFF, 0xFF]);
     assert_eq!(&bytes[144..148], &[0, 0, 0, 1]);
+    assert_eq!(&bytes[148..152], &[0, 0, 0, 1]);
+    assert_eq!(&bytes[152..160], &[0, 0, 0, 0, 0x65, 0x53, 0xF1, 0x00]);
 }
 
 #[test]

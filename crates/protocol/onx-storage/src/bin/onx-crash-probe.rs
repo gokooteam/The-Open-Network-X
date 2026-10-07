@@ -48,10 +48,17 @@ fn main() {
     while state.seqno < num_blocks {
         let next_seqno = state.seqno + 1;
         let msgs = test_block_txs(seed, next_seqno, &accounts, state.chain_id);
-        let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector)
+        let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector, 1, 0)
             .expect("propose must succeed");
+        // Non-empty placeholder: commit_block rejects empty sig sections
+        // (they can never satisfy the stake rule); the probe tests crash
+        // recovery, not auth, so the section is stored, never verified.
+        let sigs = [onx_stf::SigEntry {
+            validator_index: 0,
+            sig: [0xAB; 64],
+        }];
         store
-            .commit_block(&state, &block)
+            .commit_block(&state, &block, &sigs)
             .expect("commit must succeed");
         // Reload from disk: exercises the read path under kill pressure and
         // keeps the probe honest (it never trusts its own memory).

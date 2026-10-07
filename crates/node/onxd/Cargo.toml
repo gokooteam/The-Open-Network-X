@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 tokio = { version = "1.38", features = ["full"] }
 hex = "0.4"
+libc = "0.2"
 onx-telemetry = { path = "../onx-telemetry" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-execution = { path = "../../protocol/onx-execution" }
@@ -33,3 +34,4 @@ onx = { path = "../../tooling/onx" }
 [dev-dependencies]
 tokio = { version = "1.38", features = ["full"] }
 hex = "0.4"
+libc = "0.2"

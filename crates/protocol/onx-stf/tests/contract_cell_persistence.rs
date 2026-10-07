@@ -198,7 +198,7 @@ fn apply_one(
     collector: AccountId,
     lt: u64,
 ) -> Result<(State, Receipts), StfError> {
-    let block = propose_block(state, vec![msg], lt, collector)?;
+    let block = propose_block(state, vec![msg], lt, collector, 1, 0)?;
     let (next, receipts) = apply_block(state, &block)?;
     Ok((next, receipts))
 }

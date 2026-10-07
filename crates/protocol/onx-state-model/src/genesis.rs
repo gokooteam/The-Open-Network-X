@@ -123,6 +123,20 @@ impl GenesisDocument {
                 ));
             }
         }
+        // Bound total genesis stake to u64::MAX (checked sum). The block
+        // verifier sums stake in u128 with checked arithmetic; a u64-bound
+        // total at the trust root makes saturation there unreachable by
+        // construction, not just by checked ops.
+        {
+            let mut total: u64 = 0;
+            for v in &validators {
+                total = total.checked_add(v.stake).ok_or_else(|| {
+                    StateModelError::InvalidGenesis(
+                        "total genesis validator stake overflows u64".to_string(),
+                    )
+                })?;
+            }
+        }
         // Every genesis account must be committable to the state trie
         // (spec §4.5: values over MAX_TRIE_VALUE_BYTES cannot be hashed
         // into the trie). Reject here — at the trust root — rather than

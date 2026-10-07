@@ -25,7 +25,7 @@
 //! processed set. Internal messages are derived, never submitted, so
 //! cross-block replay is structurally impossible.
 
-use crate::block::{msgs_root, Block};
+use crate::block::{msgs_root, AssembleParams, Block, PROTOCOL_VERSION};
 use crate::error::StfError;
 use crate::message::{derive_address, ExternalMessage, InternalMessage, MsgKind};
 use crate::state::State;
@@ -37,7 +37,7 @@ use onx_state_model::{
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Gas purchased per nano-Onyx of declared message fee, for contract calls.
+/// Gas purchased per nano-Onyxii of declared message fee, for contract calls.
 /// The fee still splits 50/50 burn/validator via the normal fee model —
 /// gas only bounds execution; there is no gas refund and no fee market yet
 /// (both deferred). A contract call must carry a non-zero fee (rejected at
@@ -113,6 +113,8 @@ pub fn propose_block(
     messages: Vec<ExternalMessage>,
     lt: u64,
     fee_collector: AccountId,
+    protocol_version: u32,
+    block_time: u64,
 ) -> Result<Block, StfError> {
     let seqno = state.seqno.checked_add(1).ok_or(StfError::BadSeqno {
         expected: 0,
@@ -135,15 +137,17 @@ pub fn propose_block(
     )?;
     let state_root = scratch.state_root_hash()?;
 
-    Block::assemble(
+    Block::assemble(AssembleParams {
         seqno,
-        state.last_hash,
+        prev_hash: state.last_hash,
         lt,
-        state.workchain,
+        workchain: state.workchain,
         fee_collector,
         messages,
         state_root,
-    )
+        protocol_version,
+        block_time,
+    })
 }
 
 /// Apply a block to a state: the pure state transition function.
@@ -174,6 +178,13 @@ pub fn propose_block(
 pub fn apply_block(state: &State, block: &Block) -> Result<(State, Receipts), StfError> {
     let h = &block.header;
 
+    // Version-gated validity (ADR-0032): reject anything we don't understand
+    // before any other check — the version field IS the upgrade mechanism.
+    if h.protocol_version != PROTOCOL_VERSION {
+        return Err(StfError::UnsupportedProtocolVersion {
+            got: h.protocol_version,
+        });
+    }
     let expected_seqno = state.seqno.checked_add(1).ok_or(StfError::BadSeqno {
         expected: 0,
         got: h.seqno,
@@ -1049,5 +1060,25 @@ mod tests {
         // Sender: 10_000_000 - 1_000 (value) - 100 (fee) + 1_000 (bounce) = 9_999_900.
         // Fee split: 100 -> 50 burned, 50 to collector.
         assert_eq!(tree.get(&sender).unwrap().balance_nanos(), 9_999_900);
+    }
+
+    #[test]
+    fn apply_block_rejects_wrong_protocol_version() {
+        let (state, _secret, _sender, _receiver) = funded_state();
+        let collector = AccountId::from_bytes([0xCC; 32]);
+        let block = propose_block(&state, vec![], 1, collector, PROTOCOL_VERSION, 0).unwrap();
+        // Sanity: the honest block applies.
+        assert!(apply_block(&state, &block).is_ok());
+        // Tamper the version: the STF must fail closed.
+        let mut bad = block.clone();
+        bad.header.protocol_version = PROTOCOL_VERSION + 1;
+        let err = apply_block(&state, &bad).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StfError::UnsupportedProtocolVersion { got } if got == PROTOCOL_VERSION + 1
+            ),
+            "expected UnsupportedProtocolVersion, got: {err:?}"
+        );
     }
 }

@@ -6,7 +6,7 @@
 //! | Table           | Key                  | Value                          |
 //! |-----------------|----------------------|--------------------------------|
 //! | `accounts`      | account id `[u8;32]` | `AccountState` bytes           |
-//! | `block_headers` | block hash `[u8;32]` | 148-byte canonical header      |
+//! | `block_headers` | block hash `[u8;32]` | 160-byte canonical header      |
 //! | `block_bodies`  | block hash `[u8;32]` | `encode_body` bytes            |
 //! | `seqno_to_hash` | seqno `u32` BE       | block hash `[u8;32]`           |
 //! | `state_roots`   | seqno `u32` BE       | state root `[u8;32]`           |
@@ -39,7 +39,7 @@ use onx_data_structures::AccountId;
 use onx_state_model::{
     AccountState, BagOfCells, ContractCellDags, GenesisDocument, ShardStateTree,
 };
-use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, State};
+use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, SigEntry, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -53,7 +53,13 @@ use std::path::{Path, PathBuf};
 /// migration only bumps the version; no data moves. Unlike the v1 `cells`
 /// table, this one has a reader: the STF seeds the TVM interpreter's cell
 /// store from it on contract load.
-pub const SCHEMA_VERSION: u32 = 3;
+/// v3 -> v4: added the `block_sigs` table (block hash -> signature section
+/// bytes). ONXBLK05 (ADR-0032): signatures are committed atomically with
+/// the block — TRAP 2 (signature only in the file) is a consensus hazard
+/// on crash recovery. A v3 database WITH blocks is refused (SchemaMismatch):
+/// its blocks have no signatures and cannot be upgraded. An empty v3
+/// database migrates by creating the table and bumping the version.
+pub const SCHEMA_VERSION: u32 = 4;
 
 const ACCOUNTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("accounts");
 const BLOCK_HEADERS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_headers");
@@ -68,6 +74,10 @@ const META: TableDefinition<&[u8], &[u8]> = TableDefinition::new("meta");
 /// each account has exactly one entry, so growth is bounded by the number
 /// of contract accounts, not by history.
 const CONTRACT_CELLS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("contract_cells");
+/// Block signature sections: block hash `[u8;32]` -> sig-section bytes
+/// (`count(u32be) || [validator_index(u32be) || sig(64)]*`). Written
+/// atomically with the block in `commit_block` (ONXBLK05, ADR-0032).
+const BLOCK_SIGS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("block_sigs");
 
 /// Atomic chain store.
 ///
@@ -230,6 +240,7 @@ impl ChainStore {
             wtxn.open_table(ACCOUNTS)?;
             wtxn.open_table(BLOCK_HEADERS)?;
             wtxn.open_table(BLOCK_BODIES)?;
+            wtxn.open_table(BLOCK_SIGS)?;
             wtxn.open_table(SEQNO_TO_HASH)?;
             wtxn.open_table(STATE_ROOTS)?;
             wtxn.open_table(CONTRACT_CELLS)?;
@@ -239,11 +250,85 @@ impl ChainStore {
         Ok(())
     }
 
+    /// v3 -> v4 migration: the `block_sigs` table is additive, but only an
+    /// EMPTY v3 database may migrate. A v3 database holding blocks is
+    /// True if the seqno→hash index holds any entry above genesis
+    /// (seqno 0). Used by the migration guards: a database with blocks
+    /// committed under an older schema cannot be upgraded in place.
+    fn has_blocks_above_genesis(&self) -> Result<bool, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let seq_tbl = rtxn.open_table(SEQNO_TO_HASH)?;
+        for e in seq_tbl.iter()? {
+            let (k, _) = e?;
+            let seqno = u32::from_be_bytes(
+                k.value()
+                    .try_into()
+                    .map_err(|_| StorageError::Corrupt("bad seqno key".to_string()))?,
+            );
+            if seqno > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// refused — its blocks were committed without signatures and cannot
+    /// be upgraded (TRAP 2: resync from genesis).
+    fn migrate_v3_to_v4(&self) -> Result<(), StorageError> {
+        // Check for blocks first (read txn): any seqno->hash entry ABOVE
+        // genesis (seqno 0) means the v3 DB holds blocks and cannot migrate.
+        // Genesis itself is fine — it carries no signatures.
+        if self.has_blocks_above_genesis()? {
+            return Err(StorageError::SchemaMismatch {
+                found: 3,
+                supported: SCHEMA_VERSION,
+            });
+        }
+        // Empty: create the table and bump the version.
+        let wtxn = self.db.begin_write()?;
+        {
+            let mut meta = wtxn.open_table(META)?;
+            let found = match meta.get(b"schema_version".as_slice())? {
+                Some(v) => Some(u32_from_value(v.value(), "schema_version")?),
+                None => None,
+            };
+            match found {
+                Some(3) => {
+                    // Create the table (auto-created by create_tables on
+                    // fresh DBs; explicit here for the migration path).
+                    let _ = wtxn.open_table(BLOCK_SIGS)?;
+                    meta.insert(
+                        b"schema_version".as_slice(),
+                        SCHEMA_VERSION.to_be_bytes().as_slice(),
+                    )?;
+                }
+                Some(found) if found != SCHEMA_VERSION => {
+                    return Err(StorageError::SchemaMismatch {
+                        found,
+                        supported: SCHEMA_VERSION,
+                    });
+                }
+                _ => {
+                    meta.insert(
+                        b"schema_version".as_slice(),
+                        SCHEMA_VERSION.to_be_bytes().as_slice(),
+                    )?;
+                }
+            }
+        }
+        wtxn.commit()?;
+        Ok(())
+    }
+
     /// Write the schema version on first open; refuse newer versions.
     /// v2 -> v3 is a supported migration: the `contract_cells` table is
     /// purely additive (auto-created by `create_tables` above), so the
-    /// migration only bumps the version key. Anything else mismatched is
-    /// fail-closed `SchemaMismatch`.
+    /// migration only bumps the version key.
+    /// v3 -> v4 is a CONDITIONAL migration: the `block_sigs` table is
+    /// additive, but a v3 database that already holds blocks cannot be
+    /// upgraded — its blocks have no signatures (TRAP 2). Empty v3
+    /// databases migrate; non-empty ones get fail-closed `SchemaMismatch`.
+    /// Anything else mismatched is fail-closed `SchemaMismatch`.
     fn ensure_schema_version(&self) -> Result<(), StorageError> {
         let rtxn = self.db.begin_read()?;
         let meta = rtxn.open_table(META)?;
@@ -252,10 +337,15 @@ impl ChainStore {
             if found == SCHEMA_VERSION {
                 return Ok(());
             }
-            if found == 2 && SCHEMA_VERSION == 3 {
+            if found == 2 && SCHEMA_VERSION == 4 {
                 drop(meta);
                 drop(rtxn);
-                return self.migrate_v2_to_v3();
+                return self.migrate_v2_to_v4();
+            }
+            if found == 3 && SCHEMA_VERSION == 4 {
+                drop(meta);
+                drop(rtxn);
+                return self.migrate_v3_to_v4();
             }
             return Err(StorageError::SchemaMismatch {
                 found,
@@ -286,7 +376,17 @@ impl ChainStore {
     /// are reconstructible via replay). Just bump the version key,
     /// re-checking inside the write transaction in case another opener
     /// raced us.
-    fn migrate_v2_to_v3(&self) -> Result<(), StorageError> {
+    ///
+    /// Like the v3 path, a v2 database WITH blocks is refused: its blocks
+    /// were committed without signatures (148-byte headers) and cannot be
+    /// upgraded — resync from genesis.
+    fn migrate_v2_to_v4(&self) -> Result<(), StorageError> {
+        if self.has_blocks_above_genesis()? {
+            return Err(StorageError::SchemaMismatch {
+                found: 2,
+                supported: SCHEMA_VERSION,
+            });
+        }
         let wtxn = self.db.begin_write()?;
         {
             let mut meta = wtxn.open_table(META)?;
@@ -435,10 +535,23 @@ impl ChainStore {
         let wtxn = self.db.begin_write()?;
         {
             let mut meta = wtxn.open_table(META)?;
-            if let Some(existing) = meta.get(b"genesis_hash".as_slice())? {
-                let existing_hash = hash32_from_value(existing.value(), "genesis_hash")?;
+            let existing_hash: Option<[u8; 32]> = match meta.get(b"genesis_hash".as_slice())? {
+                Some(v) => Some(hash32_from_value(v.value(), "genesis_hash")?),
+                None => None,
+            };
+            if let Some(existing_hash) = existing_hash {
                 if existing_hash == genesis_hash {
-                    return Ok(()); // idempotent re-init
+                    // Idempotent re-init — but backfill genesis_doc for
+                    // databases initialized before ONXBLK05 step 5 added it
+                    // (TRAP 4): the startup signing-key check needs the
+                    // canonical genesis bytes.
+                    let needs_backfill = meta.get(b"genesis_doc".as_slice())?.is_none();
+                    if needs_backfill {
+                        meta.insert(b"genesis_doc".as_slice(), doc.to_bytes().as_slice())?;
+                    }
+                    drop(meta);
+                    wtxn.commit()?;
+                    return Ok(());
                 }
                 return Err(StorageError::Corrupt(
                     "database already initialized with a different genesis".to_string(),
@@ -503,6 +616,10 @@ impl ChainStore {
                 doc.workchain.0 .0.to_be_bytes().as_slice(),
             )?;
             meta.insert(b"head".as_slice(), head_value(0, &genesis_hash).as_slice())?;
+            // The canonical genesis document bytes, so the node can verify
+            // its signing key against the genesis validators at startup
+            // (ONXBLK05 TRAP 4) without re-parsing the TOML.
+            meta.insert(b"genesis_doc".as_slice(), doc.to_bytes().as_slice())?;
         }
         wtxn.commit()?;
         Ok(())
@@ -521,9 +638,24 @@ impl ChainStore {
     /// [`StorageError::ForkDetected`]. The idempotency/fork check runs
     /// inside the write transaction so concurrent committers cannot
     /// interleave a fork.
-    pub fn commit_block(&self, state: &State, block: &Block) -> Result<(), StorageError> {
+    pub fn commit_block(
+        &self,
+        state: &State,
+        block: &Block,
+        sig_entries: &[SigEntry],
+    ) -> Result<(), StorageError> {
         let h = &block.header;
         let block_hash = h.hash();
+
+        // An empty signature section can never satisfy the >2/3 stake rule,
+        // so it is never a valid committed block. Reject here (defense in
+        // depth alongside the acceptance layer's full verification) rather
+        // than persisting a block no verifier will accept.
+        if sig_entries.is_empty() {
+            return Err(StorageError::Corrupt(
+                "commit_block: empty signature section".to_string(),
+            ));
+        }
 
         // 1. Pure STF: fail-closed validation of the whole block.
         //
@@ -557,6 +689,7 @@ impl ChainStore {
             let mut seq_tbl = wtxn.open_table(SEQNO_TO_HASH)?;
             let mut bodies_tbl = wtxn.open_table(BLOCK_BODIES)?;
             let mut headers_tbl = wtxn.open_table(BLOCK_HEADERS)?;
+            let mut sigs_tbl = wtxn.open_table(BLOCK_SIGS)?;
             let mut accts_tbl = wtxn.open_table(ACCOUNTS)?;
             let mut roots_tbl = wtxn.open_table(STATE_ROOTS)?;
             let mut meta_tbl = wtxn.open_table(META)?;
@@ -606,9 +739,16 @@ impl ChainStore {
                 });
             }
 
-            // Block identity and data.
+            // Block identity and data. The signature section is committed in
+            // the SAME write txn (ONXBLK05, ADR-0032 TRAP 2): a crash between
+            // block commit and signature persist must never leave a block
+            // without its signatures.
             bodies_tbl.insert(block_hash.as_slice(), encode_body(&block.body).as_slice())?;
             headers_tbl.insert(block_hash.as_slice(), h.to_bytes().as_slice())?;
+            sigs_tbl.insert(
+                block_hash.as_slice(),
+                onx_stf::encode_sig_section(sig_entries).as_slice(),
+            )?;
 
             // Touched accounts only — no full-shard rewrite.
             for id in dirty_accounts(block, &receipts) {
@@ -704,6 +844,17 @@ impl ChainStore {
         }
     }
 
+    /// Signature section bytes for a block, if present. Raw bytes — decode
+    /// with the strict section decoder (acceptance layer).
+    pub fn get_block_sigs(&self, hash: &[u8; 32]) -> Result<Option<Vec<u8>>, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let tbl = rtxn.open_table(BLOCK_SIGS)?;
+        match tbl.get(hash.as_slice())? {
+            None => Ok(None),
+            Some(v) => Ok(Some(v.value().to_vec())),
+        }
+    }
+
     /// Account state by id, if present.
     pub fn get_account(&self, id: &AccountId) -> Result<Option<AccountState>, StorageError> {
         let rtxn = self.db.begin_read()?;
@@ -729,6 +880,22 @@ impl ChainStore {
         match meta.get(b"genesis_hash".as_slice())? {
             None => Ok(None),
             Some(v) => Ok(Some(hash32_from_value(v.value(), "genesis_hash")?)),
+        }
+    }
+
+    /// The canonical genesis document, if the store was initialized.
+    pub fn genesis_document(
+        &self,
+    ) -> Result<Option<onx_state_model::GenesisDocument>, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let meta = rtxn.open_table(META)?;
+        match meta.get(b"genesis_doc".as_slice())? {
+            None => Ok(None),
+            Some(v) => {
+                let doc = onx_state_model::GenesisDocument::from_bytes(v.value())
+                    .map_err(|e| StorageError::Corrupt(format!("bad genesis_doc: {e}")))?;
+                Ok(Some(doc))
+            }
         }
     }
 
@@ -927,6 +1094,15 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Placeholder sig entries: commit_block stores (never verifies) the
+    /// section; only non-emptiness is enforced at this layer.
+    fn dummy_sigs() -> Vec<SigEntry> {
+        vec![SigEntry {
+            validator_index: 0,
+            sig: [0xAB; 64],
+        }]
+    }
+
     fn temp_db_path(tag: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -944,7 +1120,7 @@ mod tests {
     /// Historical state remains reconstructible via replay from genesis +
     /// persisted block bodies (the phase5 replay suite covers that path).
     #[test]
-    fn schema_v3_has_no_legacy_cells_table() {
+    fn schema_v4_has_no_legacy_cells_table() {
         let path = temp_db_path("no-cells");
         let _ = std::fs::remove_file(&path);
         let store = ChainStore::open(&path).expect("open");
@@ -962,9 +1138,13 @@ mod tests {
             test_block_txs(7, 1, &accounts, state.chain_id),
             test_block_lt(1),
             test_fee_collector(),
+            1,
+            0,
         )
         .expect("propose_block");
-        store.commit_block(&state, &block).expect("commit_block");
+        store
+            .commit_block(&state, &block, &dummy_sigs())
+            .expect("commit_block");
         assert_eq!(store.head().expect("head").expect("head").0, 1);
 
         // The legacy v1 `cells` table must not exist.
@@ -978,16 +1158,18 @@ mod tests {
         );
 
         // And the schema version records the break from v1 (which had it):
-        // v3 added the `contract_cells` table.
-        assert_eq!(SCHEMA_VERSION, 3);
+        // v4 is current (v3 added `contract_cells`, v4 added `block_sigs`).
+        assert_eq!(SCHEMA_VERSION, 4);
 
         drop(rtxn);
         drop(store);
         let _ = std::fs::remove_file(&path);
     }
 
+    // ----- ADR-0029: migration startup invariant + panic policy -----
+
     #[test]
-    fn migrate_v2_to_v3_bumps_version() {
+    fn migrate_v2_to_v4_bumps_version() {
         let path = temp_db_path("v2-migrate");
         let _ = std::fs::remove_file(&path);
         let store = ChainStore::open(&path).expect("open");
@@ -1013,7 +1195,7 @@ mod tests {
             .get(b"schema_version".as_slice())
             .expect("get")
             .expect("version present");
-        assert_eq!(u32_from_value(v.value(), "schema_version").expect("u32"), 3);
+        assert_eq!(u32_from_value(v.value(), "schema_version").expect("u32"), 4);
         // The `contract_cells` table is available after migration.
         rtxn.open_table(CONTRACT_CELLS)
             .expect("contract_cells exists");
@@ -1023,7 +1205,187 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ----- ADR-0029: migration startup invariant + panic policy -----
+    // ----- ONXBLK05 v4: signature persistence -----
+
+    #[test]
+    fn migrate_v3_to_v4_empty_db() {
+        let path = temp_db_path("v3-to-v4-empty");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+
+        // Simulate a v3 database by rolling the version key back to 3.
+        {
+            let wtxn = store.db.begin_write().expect("write txn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.insert(b"schema_version".as_slice(), 3u32.to_be_bytes().as_slice())
+                    .expect("rollback version");
+            }
+            wtxn.commit().expect("commit");
+        }
+        drop(store);
+
+        // Re-opening must migrate v3 -> v4 (empty DB: no blocks).
+        let store = ChainStore::open(&path).expect("re-open migrates");
+        let rtxn = store.db.begin_read().expect("read txn");
+        let meta = rtxn.open_table(META).expect("meta");
+        let v = meta
+            .get(b"schema_version".as_slice())
+            .expect("get")
+            .expect("version present");
+        assert_eq!(u32_from_value(v.value(), "schema_version").expect("u32"), 4);
+        // The `block_sigs` table is available after migration.
+        rtxn.open_table(BLOCK_SIGS).expect("block_sigs exists");
+
+        drop(rtxn);
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_v3_to_v4_refuses_db_with_blocks() {
+        use onx_stf::{propose_block, State as StfState};
+        let path = temp_db_path("v3-to-v4-blocks");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        let doc = test_genesis();
+        store.init_genesis(&doc).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("state");
+
+        // Commit a block (v4 API), then roll the version back to 3 to
+        // simulate a v3 database that holds blocks.
+        let block = propose_block(
+            &StfState::from_genesis(&doc),
+            vec![],
+            state.last_lt + 1,
+            onx_data_structures::AccountId::from_bytes([0xcc; 32]),
+            1,
+            0,
+        )
+        .expect("propose");
+        let sig = onx_stf::SigEntry {
+            validator_index: 0,
+            sig: [0x5a; 64],
+        };
+        store
+            .commit_block(&state, &block, &[sig])
+            .expect("commit_block");
+        {
+            let wtxn = store.db.begin_write().expect("write txn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.insert(b"schema_version".as_slice(), 3u32.to_be_bytes().as_slice())
+                    .expect("rollback version");
+            }
+            wtxn.commit().expect("commit");
+        }
+        drop(store);
+
+        // Re-opening must FAIL: v3 DB with blocks cannot migrate.
+        let err = match ChainStore::open(&path) {
+            Ok(_) => panic!("must refuse v3 DB with blocks"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StorageError::SchemaMismatch { found: 3, .. }),
+            "unexpected error: {:?}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Audit blocker 3: a v2 database WITH blocks must be refused, exactly
+    /// like the v3 path — its blocks carry 148-byte unsigned headers and
+    /// cannot be upgraded in place.
+    #[test]
+    fn migrate_v2_to_v4_refuses_db_with_blocks() {
+        use onx_stf::{propose_block, State as StfState};
+        let path = temp_db_path("v2-to-v4-blocks");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        let doc = test_genesis();
+        store.init_genesis(&doc).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("state");
+
+        let block = propose_block(
+            &StfState::from_genesis(&doc),
+            vec![],
+            state.last_lt + 1,
+            onx_data_structures::AccountId::from_bytes([0xcc; 32]),
+            1,
+            0,
+        )
+        .expect("propose");
+        let sig = onx_stf::SigEntry {
+            validator_index: 0,
+            sig: [0x5a; 64],
+        };
+        store
+            .commit_block(&state, &block, &[sig])
+            .expect("commit_block");
+        {
+            let wtxn = store.db.begin_write().expect("write txn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.insert(b"schema_version".as_slice(), 2u32.to_be_bytes().as_slice())
+                    .expect("rollback version");
+            }
+            wtxn.commit().expect("commit");
+        }
+        drop(store);
+
+        // Re-opening must FAIL: v2 DB with blocks cannot migrate.
+        let err = match ChainStore::open(&path) {
+            Ok(_) => panic!("must refuse v2 DB with blocks"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, StorageError::SchemaMismatch { found: 2, .. }),
+            "unexpected error: {:?}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn commit_block_persists_sigs_atomically() {
+        use onx_stf::{propose_block, State as StfState};
+        let path = temp_db_path("v4-sigs");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        let doc = test_genesis();
+        store.init_genesis(&doc).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("state");
+
+        let block = propose_block(
+            &StfState::from_genesis(&doc),
+            vec![],
+            state.last_lt + 1,
+            onx_data_structures::AccountId::from_bytes([0xcc; 32]),
+            1,
+            0,
+        )
+        .expect("propose");
+        let sig = onx_stf::SigEntry {
+            validator_index: 0,
+            sig: [0x5a; 64],
+        };
+        store
+            .commit_block(&state, &block, &[sig])
+            .expect("commit_block");
+
+        // The signature section is in the DB, keyed by block hash.
+        let hash = block.header.hash();
+        let stored = store
+            .get_block_sigs(&hash)
+            .expect("get sigs")
+            .expect("present");
+        assert_eq!(stored, onx_stf::encode_sig_section(&[sig]));
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+    }
 
     use onx_state_model::{Cell, StorageStat};
     use std::collections::BTreeMap;
@@ -1101,7 +1463,7 @@ mod tests {
     /// complete: the migrated node can prove it will execute LDREF
     /// exactly like a genesis-replayed node.
     #[test]
-    fn migrate_v2_to_v3_startup_invariant_passes_with_complete_dags() {
+    fn migrate_v2_to_v4_startup_invariant_passes_with_complete_dags() {
         let path = temp_db_path("v2-invariant-ok");
         let _ = std::fs::remove_file(&path);
         let store = ChainStore::open(&path).expect("open");
@@ -1343,6 +1705,8 @@ mod tests {
             test_block_txs(7, 1, &accounts, state.chain_id),
             test_block_lt(1),
             test_fee_collector(),
+            1,
+            0,
         )
         .expect("propose_block");
 
@@ -1351,7 +1715,7 @@ mod tests {
         // itself has no handler on this path — the process dies.)
         test_set_inject_commit_panic(true);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store.commit_block(&state, &block)
+            store.commit_block(&state, &block, &dummy_sigs())
         }));
         test_set_inject_commit_panic(false);
         assert!(
@@ -1370,7 +1734,7 @@ mod tests {
         // The panic was never an "invalid block": the same block commits
         // cleanly once the injection is disarmed.
         store
-            .commit_block(&state, &block)
+            .commit_block(&state, &block, &dummy_sigs())
             .expect("commit_block after disarmed panic injection");
         assert_eq!(
             store.head().expect("head").expect("head present").0,
@@ -1380,5 +1744,66 @@ mod tests {
 
         drop(store);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// ONXBLK05 TRAP 4: databases initialized before step 5 have no
+    /// `genesis_doc` key. Re-running `init_genesis` with the same genesis
+    /// (the idempotent path) must backfill it, or the startup signing-key
+    /// check fails on upgraded nodes.
+    #[test]
+    fn init_genesis_backfills_genesis_doc() {
+        let path = temp_db_path("genesis-doc-backfill");
+        let _ = std::fs::remove_file(&path);
+        let doc = test_genesis();
+        {
+            let store = ChainStore::open(&path).expect("open");
+            store.init_genesis(&doc).expect("init_genesis");
+            assert!(store.genesis_document().expect("read").is_some());
+        } // drop the store to release the file lock
+
+        // Simulate a pre-step-5 database: delete the key directly.
+        {
+            let db = redb::Database::open(&path).expect("reopen");
+            let wtxn = db.begin_write().expect("wtxn");
+            {
+                let mut meta = wtxn.open_table(META).expect("meta");
+                meta.remove(b"genesis_doc".as_slice()).expect("remove");
+            }
+            wtxn.commit().expect("commit");
+        } // drop the raw handle
+
+        // Idempotent re-init backfills it.
+        let store = ChainStore::open(&path).expect("reopen store");
+        assert!(store.genesis_document().expect("read").is_none());
+        store.init_genesis(&doc).expect("re-init");
+        let backfilled = store.genesis_document().expect("read").expect("backfilled");
+        assert_eq!(backfilled.to_bytes(), doc.to_bytes());
+    }
+
+    /// commit_block rejects an empty signature section: it can never
+    /// satisfy the >2/3 stake rule, so persisting it would store a block
+    /// no verifier accepts.
+    #[test]
+    fn commit_block_rejects_empty_sig_section() {
+        let path = temp_db_path("empty-sigs");
+        let _ = std::fs::remove_file(&path);
+        let store = ChainStore::open(&path).expect("open");
+        store.init_genesis(&test_genesis()).expect("init_genesis");
+        let state = store.load_state().expect("load").expect("genesis state");
+        let accounts = test_accounts();
+        let block = propose_block(
+            &state,
+            test_block_txs(7, 1, &accounts, state.chain_id),
+            test_block_lt(1),
+            test_fee_collector(),
+            1,
+            0,
+        )
+        .expect("propose");
+        let err = store.commit_block(&state, &block, &[]).unwrap_err();
+        assert!(
+            matches!(err, StorageError::Corrupt(_)),
+            "expected Corrupt for empty sig section, got: {err:?}"
+        );
     }
 }

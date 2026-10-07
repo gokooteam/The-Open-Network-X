@@ -14,7 +14,8 @@ use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
-use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
+use onx_stf::block::SigEntry;
+use onx_stf::{propose_block, AssembleParams, Block, ExternalMessage, MsgKind, State};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -80,7 +81,7 @@ fn build_chain(
     n_blocks: u32,
     msgs_per: usize,
     seed: u64,
-) -> (Vec<Block>, State) {
+) -> (Vec<Block>, State, [u8; 32]) {
     let config = onx_genesis::parse_config(genesis_toml).unwrap();
     let doc = onx_genesis::build_genesis_document(&config).unwrap();
     // Chain identity is the genesis hash; every message must carry it
@@ -119,19 +120,29 @@ fn build_chain(
             ));
         }
         let lt = state.last_lt + 1;
-        let block = propose_block(&state, msgs, lt, collector).unwrap();
+        let block = propose_block(&state, msgs, lt, collector, 1, 0).unwrap();
         let (new_state, _) = onx_stf::apply_block(&state, &block).unwrap();
         state = new_state;
         blocks.push(block);
     }
-    (blocks, state)
+    (blocks, state, chain_id)
 }
 
-fn write_block_files(dir: &Path, blocks: &[Block]) {
+fn sign_block(block: &Block, chain_id: &[u8; 32]) -> Vec<SigEntry> {
+    use onx_primitives::SecretKey;
+    let secret = SecretKey::from_seed(&[0x11u8; 32]).unwrap();
+    let preimage = block.header.sign_bytes(chain_id);
+    vec![SigEntry {
+        validator_index: 0,
+        sig: secret.sign_raw(&preimage).encode(),
+    }]
+}
+
+fn write_block_files(dir: &Path, blocks: &[Block], chain_id: &[u8; 32]) {
     std::fs::create_dir_all(dir).unwrap();
     for block in blocks {
         let path = dir.join(block_file_name(block.header.seqno));
-        std::fs::write(path, encode_block_file(block)).unwrap();
+        std::fs::write(path, encode_block_file(block, &sign_block(block, chain_id))).unwrap();
     }
 }
 
@@ -226,9 +237,9 @@ fn root_at_seqno(stdout: &str, seqno: u32) -> &str {
 fn replay_prints_vectors_for_freezing() {
     let dir = tmpdir("vectors");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 5, 4, 0xC10C);
+    let (blocks, _, chain_id) = build_chain(&genesis, 5, 4, 0xC10C);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     let out = run_replay(&genesis, &blocks_dir, &dir.join("data"));
     assert!(
         out.status.success(),
@@ -260,9 +271,9 @@ fn replay_matches_golden_vectors() {
     }
     let dir = tmpdir("golden");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 5, 4, 0xC10C);
+    let (blocks, _, chain_id) = build_chain(&genesis, 5, 4, 0xC10C);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     let out = run_replay(&genesis, &blocks_dir, &dir.join("data"));
     assert!(
         out.status.success(),
@@ -298,9 +309,9 @@ fn replay_matches_golden_vectors() {
 fn replay_two_processes_byte_identical() {
     let dir = tmpdir("twoproc");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 10, 8, 0x5EED);
+    let (blocks, _, chain_id) = build_chain(&genesis, 10, 8, 0x5EED);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
 
     let out1 = run_replay(&genesis, &blocks_dir, &dir.join("data1"));
     let out2 = run_replay(&genesis, &blocks_dir, &dir.join("data2"));
@@ -326,10 +337,10 @@ fn replay_two_processes_byte_identical() {
 fn replay_equivalence_in_memory_vs_persisted() {
     let dir = tmpdir("equiv");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, mem_state) = build_chain(&genesis, 12, 6, 0xE901);
+    let (blocks, mem_state, chain_id) = build_chain(&genesis, 12, 6, 0xE901);
     let mem_root = hex::encode(mem_state.state_root().unwrap());
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
 
     let out = run_replay(&genesis, &blocks_dir, &dir.join("data"));
     assert!(
@@ -362,9 +373,9 @@ fn run_expect_failure(dir: &Path, genesis: &Path, blocks_dir: &Path, case: &str)
 fn replay_rejects_tampered_block_file() {
     let dir = tmpdir("tamper");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 4, 4, 0x7A1);
+    let (blocks, _, chain_id) = build_chain(&genesis, 4, 4, 0x7A1);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     // Flip a byte in the middle of block 3's body (a message field).
     let p3 = blocks_dir.join(block_file_name(3));
     let mut bytes = std::fs::read(&p3).unwrap();
@@ -382,9 +393,9 @@ fn replay_rejects_tampered_block_file() {
 fn replay_rejects_truncated_block_file() {
     let dir = tmpdir("trunc");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 4, 4, 0x7A2);
+    let (blocks, _, chain_id) = build_chain(&genesis, 4, 4, 0x7A2);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     let p2 = blocks_dir.join(block_file_name(2));
     let bytes = std::fs::read(&p2).unwrap();
     std::fs::write(&p2, &bytes[..bytes.len() / 2]).unwrap();
@@ -395,18 +406,19 @@ fn replay_rejects_truncated_block_file() {
 fn replay_rejects_wrong_prev_hash() {
     let dir = tmpdir("prevhash");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 3, 4, 0x7A3);
+    let (blocks, _, chain_id) = build_chain(&genesis, 3, 4, 0x7A3);
     // Hand-assemble a block with a lying prev_hash (Block::assemble does not
     // run the STF — the replay must catch it).
     let bad = &blocks[1];
     let mut evil = bad.clone();
     evil.header.seqno = 3; // the file name says block 3; the header must agree
     evil.header.prev_hash = [0xab; 32];
+    // Sign the tampered header: auth passes, the STF must catch the lie.
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks[..2]);
+    write_block_files(&blocks_dir, &blocks[..2], &chain_id);
     std::fs::write(
         blocks_dir.join(block_file_name(3)),
-        encode_block_file(&evil),
+        encode_block_file(&evil, &sign_block(&evil, &chain_id)),
     )
     .unwrap();
     let out = run_expect_failure(&dir, &genesis, &blocks_dir, "prevhash");
@@ -418,7 +430,7 @@ fn replay_rejects_wrong_prev_hash() {
     // Round-trip sanity: the file on disk really is what we wrote.
     let reread =
         decode_block_file(&std::fs::read(blocks_dir.join(block_file_name(3))).unwrap()).unwrap();
-    assert_eq!(reread.header.prev_hash, [0xab; 32]);
+    assert_eq!(reread.block.header.prev_hash, [0xab; 32]);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,10 +441,7 @@ fn replay_rejects_wrong_prev_hash() {
 fn replay_rejects_invalid_message_block() {
     let dir = tmpdir("badmsg");
     let genesis = write_genesis_toml(&dir);
-    let config = onx_genesis::parse_config(&genesis).unwrap();
-    let doc = onx_genesis::build_genesis_document(&config).unwrap();
-    let chain_id = doc.genesis_hash();
-    let (blocks, state) = build_chain(&genesis, 3, 4, 0xBAD);
+    let (blocks, state, chain_id) = build_chain(&genesis, 3, 4, 0xBAD);
     // Hand-assemble block 4 with a properly signed message spending far
     // more than any balance. msgs_root is correct (assemble computes it);
     // the STF must reject the message itself — the wallet error fires
@@ -455,21 +464,23 @@ fn replay_rejects_invalid_message_block() {
         &test_secret_key(0xaa),
     )];
     let prev = &blocks[2];
-    let evil = Block::assemble(
-        4,
-        prev.header.hash(),
-        prev.header.lt + 1,
-        -1,
-        account_id(0xaa),
-        evil_msgs,
-        [0xff; 32], // garbage claimed root: must not mask the message error
-    )
+    let evil = Block::assemble(AssembleParams {
+        seqno: 4,
+        prev_hash: prev.header.hash(),
+        lt: prev.header.lt + 1,
+        workchain: -1,
+        fee_collector: account_id(0xaa),
+        messages: evil_msgs,
+        state_root: [0xff; 32], // garbage claimed root: must not mask the message error
+        protocol_version: 1,
+        block_time: 0,
+    })
     .expect("evil block has one message");
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     std::fs::write(
         blocks_dir.join(block_file_name(4)),
-        encode_block_file(&evil),
+        encode_block_file(&evil, &sign_block(&evil, &chain_id)),
     )
     .unwrap();
 
@@ -489,7 +500,7 @@ fn replay_rejects_invalid_message_block() {
         "valid-prefix replay failed after rejection: {}",
         String::from_utf8_lossy(&out2.stderr)
     );
-    let (valid_blocks, valid_state) = build_chain(&genesis, 3, 4, 0xBAD);
+    let (valid_blocks, valid_state, _chain_id) = build_chain(&genesis, 3, 4, 0xBAD);
     assert_eq!(valid_blocks.len(), 3);
     assert_eq!(
         final_root(&stdout_of(&out2)),
@@ -505,9 +516,9 @@ fn replay_rejects_invalid_message_block() {
 fn replay_rerun_is_idempotent_noop() {
     let dir = tmpdir("idem");
     let genesis = write_genesis_toml(&dir);
-    let (blocks, _) = build_chain(&genesis, 6, 5, 0x1DEA);
+    let (blocks, _, chain_id) = build_chain(&genesis, 6, 5, 0x1DEA);
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
     let data = dir.join("data");
 
     let out1 = run_replay(&genesis, &blocks_dir, &data);
@@ -539,10 +550,10 @@ fn replay_crash_kill9_resume_matches() {
     let dir = tmpdir("crash");
     let genesis = write_genesis_toml(&dir);
     // Enough blocks that replay is still running after ~200ms.
-    let (blocks, mem_state) = build_chain(&genesis, 400, 8, 0xC8A5);
+    let (blocks, mem_state, chain_id) = build_chain(&genesis, 400, 8, 0xC8A5);
     let expected_root = hex::encode(mem_state.state_root().unwrap());
     let blocks_dir = dir.join("blocks");
-    write_block_files(&blocks_dir, &blocks);
+    write_block_files(&blocks_dir, &blocks, &chain_id);
 
     for iter in 0..3 {
         let data = dir.join(format!("data-crash-{iter}"));

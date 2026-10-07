@@ -8,6 +8,17 @@
 
 use onx_state_model::AccountState;
 use onx_stf::{apply_block, propose_block, Block, State};
+use std::io::BufRead;
+
+/// Placeholder signature entries for storage tests that don't exercise auth.
+/// `commit_block` stores (never verifies) the section; only non-emptiness
+/// is enforced at this layer.
+fn dummy_sigs() -> Vec<onx_stf::SigEntry> {
+    vec![onx_stf::SigEntry {
+        validator_index: 0,
+        sig: [0xAB; 64],
+    }]
+}
 use onx_storage::error::StorageError;
 use onx_storage::store::SCHEMA_VERSION;
 use onx_storage::support::{
@@ -83,9 +94,11 @@ fn run_chain_to(store: &ChainStore, num_blocks: u32, seed: u64) -> Result<[u8; 3
             test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
+            1,
+            0,
         )
         .expect("propose must succeed");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &dummy_sigs())?;
         state = store.load_state()?.expect("state present");
     }
     Ok(state.state_root()?)
@@ -132,11 +145,13 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
             test_block_txs(seed, next, &accounts, chain_id()),
             test_block_lt(next),
             collector,
+            1,
+            0,
         )
         .expect("propose");
         // Pure in-memory expectation.
         let (expected, _) = apply_block(&state, &block).expect("apply");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &dummy_sigs())?;
 
         // Loaded state must equal the pure-STF state exactly.
         let loaded = store.load_state()?.expect("state");
@@ -187,14 +202,16 @@ fn storage_idempotent_recommit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
 
-    store.commit_block(&state, &block)?;
+    store.commit_block(&state, &block, &dummy_sigs())?;
     let head1 = store.head()?;
     let root1 = store.state_root_at(1)?;
     // Recommit the identical block: no-op, no error, no state change.
-    store.commit_block(&state, &block)?;
+    store.commit_block(&state, &block, &dummy_sigs())?;
     assert_eq!(store.head()?, head1);
     assert_eq!(store.state_root_at(1)?, root1);
     cleanup(&path);
@@ -216,6 +233,8 @@ fn storage_fork_detected() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     let block_b = propose_block(
@@ -223,12 +242,16 @@ fn storage_fork_detected() -> Result<(), StorageError> {
         test_block_txs(999, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_ne!(block_a.header.hash(), block_b.header.hash());
 
-    store.commit_block(&state, &block_a)?;
-    let err = store.commit_block(&state, &block_b).unwrap_err();
+    store.commit_block(&state, &block_a, &dummy_sigs())?;
+    let err = store
+        .commit_block(&state, &block_b, &dummy_sigs())
+        .unwrap_err();
     assert!(
         matches!(err, StorageError::ForkDetected { seqno: 1, .. }),
         "expected ForkDetected, got: {err}"
@@ -255,12 +278,16 @@ fn storage_rejects_bad_block_atomically() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     // Tamper with the claimed post-state root: the STF must reject it, and
     // the failed commit must persist nothing.
     block.header.state_root = [0xFF; 32];
-    let err = store.commit_block(&state, &block).unwrap_err();
+    let err = store
+        .commit_block(&state, &block, &dummy_sigs())
+        .unwrap_err();
     assert!(
         matches!(err, StorageError::Stf(_)),
         "expected STF rejection, got: {err}"
@@ -299,10 +326,12 @@ fn storage_dirty_set_complete() -> Result<(), StorageError> {
             gen.block_txs(seed, n, &accounts),
             test_block_lt(n),
             collector,
+            1,
+            0,
         )
         .expect("propose");
         let (expected, _) = apply_block(&state, &block).expect("apply");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &dummy_sigs())?;
         for (id, expected_acct) in expected.tree.accounts() {
             let stored = store
                 .get_account(id)?
@@ -371,9 +400,11 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &dummy_sigs())?;
     let (head_seqno, head_hash) = store.head()?.expect("head");
     assert_eq!(head_seqno, 1);
 
@@ -390,12 +421,16 @@ fn storage_rejects_diverged_state_commit() -> Result<(), StorageError> {
         test_block_txs_with_nonces(8, 2, &accounts, &nonces, chain_id()),
         2,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_eq!(bad_block.header.seqno, 2);
     assert_eq!(bad_block.header.prev_hash, [0xAA; 32]);
 
-    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    let err = store
+        .commit_block(&bad_state, &bad_block, &dummy_sigs())
+        .unwrap_err();
     assert!(
         matches!(err, StorageError::HeadMismatch { .. }),
         "expected HeadMismatch, got: {err}"
@@ -427,9 +462,11 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &dummy_sigs())?;
 
     // State claims seqno 5 while the stored head is at 1. The proposed
     // block carries the real head hash as prev_hash — only the seqno half
@@ -444,12 +481,16 @@ fn storage_rejects_skipped_seqno_commit() -> Result<(), StorageError> {
         test_block_txs_with_nonces(8, 6, &accounts, &nonces, chain_id()),
         6,
         collector,
+        1,
+        0,
     )
     .expect("propose");
     assert_eq!(bad_block.header.seqno, 6);
     assert_eq!(bad_block.header.prev_hash, store.head()?.expect("head").1);
 
-    let err = store.commit_block(&bad_state, &bad_block).unwrap_err();
+    let err = store
+        .commit_block(&bad_state, &bad_block, &dummy_sigs())
+        .unwrap_err();
     assert!(
         matches!(err, StorageError::HeadMismatch { .. }),
         "expected HeadMismatch, got: {err}"
@@ -478,9 +519,11 @@ fn storage_load_state_rejects_tampered_root() -> Result<(), StorageError> {
         test_block_txs(7, 1, &accounts, chain_id()),
         1,
         collector,
+        1,
+        0,
     )
     .expect("propose");
-    store.commit_block(&state0, &block1)?;
+    store.commit_block(&state0, &block1, &dummy_sigs())?;
     // Sanity: the untampered database loads fine.
     assert!(store.load_state()?.is_some());
     drop(store);
@@ -579,6 +622,7 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
     };
     cleanup(&ref_path);
 
+    let mut ever_committed = false;
     for i in 0..iters {
         // NOTE: the seed is constant across iterations — the kill *timing*
         // (random sleep below) is what varies. Comparing against one
@@ -586,30 +630,61 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         let seed = 0xC0FFEEu64;
         let path = temp_db_path(&format!("crash{i}"));
 
-        let mut child = Command::new(probe)
-            .arg(&path)
-            .arg(num_blocks.to_string())
-            .arg(seed.to_string())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn crash probe");
-
-        // Kill at a random point: 1..40ms. Sometimes the probe finishes
-        // first — that exercises the already-complete path instead.
+        // Kill based on the probe's PROGRESS, not a fixed delay: read its
+        // stdout and SIGKILL after a random number of committed blocks.
+        // A fixed 1–40ms delay is machine-speed-dependent — on slow
+        // machines the kill always lands before block 1, and the test
+        // silently stops testing mid-chain crashes.
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("clock")
             .as_nanos() as u64;
-        let sleep_ms = 1 + (nanos.wrapping_add((i as u64).wrapping_mul(0x9E3779B97F4A7C15)) % 40);
-        std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
-        // SIGKILL on unix; best-effort if the child already exited.
-        let _ = child.kill();
-        let _ = child.wait();
+        // Target: 1..=num_blocks commits, or num_blocks+1 to let it finish
+        // (exercises the already-complete path).
+        let target_commits = 1
+            + (nanos.wrapping_add((i as u64).wrapping_mul(0x9E3779B97F4A7C15))
+                % (num_blocks as u64 + 1));
+        let mut child = Command::new(probe)
+            .arg(&path)
+            .arg(num_blocks.to_string())
+            .arg(seed.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn crash probe");
+        let stdout = child.stdout.take().expect("probe stdout piped");
+        let reader = std::io::BufReader::new(stdout);
+        let mut committed = 0u64;
+        let mut killed = false;
+        for line in reader.lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break, // pipe closed: probe exited
+            };
+            if line.starts_with("committed seqno=") {
+                committed += 1;
+                if committed >= target_commits {
+                    // SIGKILL on unix; best-effort if the child already exited.
+                    let _ = child.kill();
+                    killed = true;
+                    break;
+                }
+            }
+        }
+        if !killed {
+            // Probe finished before the target (or exited early): wait for
+            // it; this exercises the already-complete path.
+            let _ = child.wait();
+        } else {
+            let _ = child.wait();
+        }
 
         // Reopen (this IS the recovery) and verify full-or-nothing.
         let store = ChainStore::open(&path)?;
         let crashed_at = verify_crash_invariants(&store)?;
+        if crashed_at > 0 {
+            ever_committed = true;
+        }
 
         // Resume from the head pointer to completion.
         let resumed_root = run_chain_to(&store, num_blocks, seed)?;
@@ -620,6 +695,13 @@ fn storage_crash_kill9_recovery() -> Result<(), StorageError> {
         drop(store);
         cleanup(&path);
     }
+    // The probe must actually commit blocks: if every iteration dies at
+    // seqno 0, the test is hollow (this is how the empty-sig rejection
+    // silently neutered the probe).
+    assert!(
+        ever_committed,
+        "crash probe never committed a block in {iters} iterations — test is hollow"
+    );
     Ok(())
 }
 
@@ -652,7 +734,7 @@ fn storage_rejects_v1_schema_with_cells_table() -> Result<(), StorageError> {
             err,
             StorageError::SchemaMismatch {
                 found: 1,
-                supported: 3
+                supported: 4
             }
         ),
         "expected SchemaMismatch {{ found: 1, supported: 3 }}, got: {err}"

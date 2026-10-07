@@ -80,7 +80,7 @@ use crate::mempool::Mempool;
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_stf::block::Block;
-use onx_stf::{propose_block, ExternalMessage, State, StfError};
+use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
 use std::any::Any;
@@ -91,6 +91,68 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Canonical (pubkey-sorted) genesis validator refs, for `validator_index`
+/// assignment and self-verification (ADR-0032).
+fn canonical_validators(
+    store: &ChainStore,
+) -> Result<Vec<onx::auth::GenesisValidatorRef>, TickError> {
+    let doc = store
+        .genesis_document()
+        .map_err(|e| TickError::Fatal(format!("producer: cannot load genesis: {e}")))?
+        .ok_or_else(|| TickError::Fatal("producer: no genesis in store".to_string()))?;
+    let mut refs: Vec<onx::auth::GenesisValidatorRef> = doc
+        .validators
+        .iter()
+        .map(|v| {
+            // Validate the key with the strict predicate at load; the raw
+            // bytes are what the verifier consumes.
+            onx_primitives::PublicKey::decode_exact(&v.pubkey)
+                .map_err(|e| TickError::Fatal(format!("producer: bad genesis key: {e}")))?;
+            Ok(onx::auth::GenesisValidatorRef {
+                pubkey: v.pubkey,
+                stake: v.stake,
+            })
+        })
+        .collect::<Result<_, TickError>>()?;
+    refs.sort_by_key(|r| r.pubkey);
+    Ok(refs)
+}
+
+/// Sign a block with the producer's key (ONXBLK05).
+///
+/// Returns the signature section entries. A signing key is REQUIRED:
+/// an unsigned block would be rejected by every verifier (replay fails
+/// closed on empty/insufficient stake), so producing one is never useful —
+/// fail here with a clear error instead of emitting a dead block.
+///
+/// `validators` is the canonical (pubkey-sorted) genesis validator list;
+/// `validator_index` is the signer's position in it.
+fn sign_block(
+    block: &Block,
+    chain_id: &[u8; 32],
+    signing_key: Option<&onx_primitives::SecretKey>,
+    validators: &[onx::auth::GenesisValidatorRef],
+) -> Result<Vec<SigEntry>, String> {
+    let Some(secret) = signing_key else {
+        return Err(
+            "no signing key configured: block production requires --signing-key \
+             (an unsigned block would be rejected by every verifier)"
+                .to_string(),
+        );
+    };
+    let pubkey = secret.public_key().encode();
+    let index = validators
+        .iter()
+        .position(|v| v.pubkey == pubkey)
+        .ok_or_else(|| "signing key pubkey not in genesis validator list".to_string())?;
+    let preimage = block.header.sign_bytes(chain_id);
+    let sig = secret.sign_raw(&preimage);
+    Ok(vec![SigEntry {
+        validator_index: index as u32,
+        sig: sig.encode(),
+    }])
+}
+
 pub struct ProducerConfig {
     pub fee_collector: AccountId,
     pub poll_interval: Duration,
@@ -99,6 +161,10 @@ pub struct ProducerConfig {
     /// Optional telemetry handle; block height / pool size are reported
     /// when present.
     pub telemetry: Option<TelemetryHandle>,
+    /// Validator signing key (32-byte seed). If present, blocks are signed
+    /// (ONXBLK05); the key's pubkey must match a genesis validator
+    /// (checked at startup — TRAP 4).
+    pub signing_key: Option<onx_primitives::SecretKey>,
 }
 
 #[derive(Debug, Default)]
@@ -182,13 +248,23 @@ fn propose_block_caught(
     messages: Vec<ExternalMessage>,
     lt: u64,
     fee_collector: AccountId,
+    parent_block_time: u64,
 ) -> Result<Result<Block, StfError>, Box<dyn Any + Send>> {
     catch_unwind(AssertUnwindSafe(|| {
         // TEST-ONLY: simulates an interpreter/STF panic DURING the
         // dry-run, i.e. inside the containment boundary.
         #[cfg(test)]
         maybe_inject_propose_panic(&messages);
-        propose_block(state, messages, lt, fee_collector)
+        // ONXBLK05: protocol_version 1; block_time is wall-clock at proposal
+        // (producer policy: never stamp ahead of its own clock), clamped to
+        // the parent's block_time so a stepped-back clock can never produce
+        // a block the verifier rejects (monotonic, non-decreasing).
+        let wall_clock = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let block_time = wall_clock.max(parent_block_time);
+        propose_block(state, messages, lt, fee_collector, 1, block_time)
     }))
 }
 
@@ -220,6 +296,17 @@ pub fn run_producer_loop(
     // diagnosable after the fact, and apply_block panics diagnosable
     // before the halt.
     install_panic_backtrace_hook();
+    // A producer without a signing key cannot make a single valid block:
+    // every verifier rejects unsigned blocks, so starting the loop would
+    // just burn ticks until the first transaction arrives and then die.
+    // Fail at startup with a clear error instead of a systemd restart loop.
+    if cfg.signing_key.is_none() {
+        return Err(
+            "producer: no signing key configured (set signing_key_path in config \
+             or pass --signing-key); refusing to start"
+                .to_string(),
+        );
+    }
     fs::create_dir_all(&cfg.blocks_dir)
         .map_err(|e| format!("producer: cannot create blocks dir: {e}"))?;
     // Crash recovery for the block-file gap: a kill between the atomic DB
@@ -312,7 +399,41 @@ fn run_tick(
     // 5. Honest producer path: dry-run through the same apply as validation.
     // propose_robust drops ONLY messages the STF actually rejects (never
     // the whole set) if the filtered candidates unexpectedly fail.
-    let block = match propose_robust(&state, candidates, lt, cfg.fee_collector, mempool, stats)? {
+    //
+    // Parent block_time for the monotonicity clamp: genesis (block 1's
+    // parent) has block_time 0; otherwise read the committed parent header.
+    let parent_block_time = if state.seqno == 0 {
+        0
+    } else {
+        let parent_hash = store
+            .block_hash_for_seqno(state.seqno)
+            .map_err(|e| TickError::Fatal(format!("producer: parent hash lookup failed: {e}")))?
+            .ok_or_else(|| {
+                TickError::Fatal(format!(
+                    "producer: parent block {} not committed",
+                    state.seqno
+                ))
+            })?;
+        store
+            .get_block_header(&parent_hash)
+            .map_err(|e| TickError::Fatal(format!("producer: parent header lookup failed: {e}")))?
+            .ok_or_else(|| {
+                TickError::Fatal(format!(
+                    "producer: parent block {} header missing",
+                    state.seqno
+                ))
+            })?
+            .block_time
+    };
+    let block = match propose_robust(
+        &state,
+        candidates,
+        lt,
+        cfg.fee_collector,
+        parent_block_time,
+        mempool,
+        stats,
+    )? {
         Some(block) => block,
         None => return Ok(false), // everything was dropped; idle tick
     };
@@ -325,8 +446,31 @@ fn run_tick(
     // propagates and halts the node. Mapping it to "invalid block" or
     // bouncing the message would let a broken node keep running and
     // silently diverge from honest nodes.
+    //
+    // ONXBLK05: sign the block (if a signing key is configured), then
+    // commit block+signatures atomically (TRAP 2).
+    let validators = canonical_validators(store)?;
+    let sig_entries = sign_block(
+        &block,
+        &state.chain_id,
+        cfg.signing_key.as_ref(),
+        &validators,
+    )
+    .map_err(|e| TickError::Fatal(format!("producer: signing failed: {e}")))?;
+    // Self-verification (audit blocker 2): run the same acceptance check
+    // every verifier runs, BEFORE committing. A block we produced must
+    // never be one our own verifier rejects — fail the tick loudly
+    // instead of committing a block replay would refuse.
+    onx::auth::verify_block_auth(
+        &state.chain_id,
+        &block.header,
+        parent_block_time,
+        &sig_entries,
+        &validators,
+    )
+    .map_err(|e| TickError::Fatal(format!("producer: self-verification failed: {e}")))?;
     store
-        .commit_block(&state, &block)
+        .commit_block(&state, &block, &sig_entries)
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
 
     // 7. Emit the canonical block file (feeds `onx replay` directly),
@@ -334,7 +478,7 @@ fn run_tick(
     atomic_write_block_file(
         &cfg.blocks_dir,
         block.header.seqno,
-        &encode_block_file(&block),
+        &encode_block_file(&block, &sig_entries),
     )
     .map_err(TickError::Fatal)?;
 
@@ -382,6 +526,7 @@ fn propose_robust(
     candidates: Vec<ExternalMessage>,
     lt: u64,
     fee_collector: AccountId,
+    parent_block_time: u64,
     mempool: &mut Mempool,
     stats: &mut ProducerStats,
 ) -> Result<Option<Block>, TickError> {
@@ -390,7 +535,13 @@ fn propose_robust(
         if candidates.is_empty() {
             return Ok(None);
         }
-        match propose_block_caught(state, candidates.clone(), lt, fee_collector) {
+        match propose_block_caught(
+            state,
+            candidates.clone(),
+            lt,
+            fee_collector,
+            parent_block_time,
+        ) {
             Ok(Ok(block)) => return Ok(Some(block)),
             Ok(Err(e)) => {
                 eprintln!(
@@ -523,7 +674,7 @@ fn find_first_bad_prefix(
     let mut hi = candidates.len();
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
-        match propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector) {
+        match propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector, 0) {
             Ok(Ok(_)) => lo = mid,
             Ok(Err(_)) => hi = mid,
             Err(_) => return Err(()),
@@ -558,7 +709,7 @@ fn find_first_panicking_prefix(
 ) -> Option<usize> {
     // Empty-prefix probe: panicking here means the panic is not
     // message-caused. Never blame a message for it.
-    if propose_block_caught(state, Vec::new(), lt, fee_collector).is_err() {
+    if propose_block_caught(state, Vec::new(), lt, fee_collector, 0).is_err() {
         return None;
     }
     // Invariant: propose(..lo) does not panic, propose(..hi) panics.
@@ -567,7 +718,7 @@ fn find_first_panicking_prefix(
     let mut hi = candidates.len();
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
-        if propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector).is_err() {
+        if propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector, 0).is_err() {
             hi = mid;
         } else {
             lo = mid;
@@ -649,11 +800,21 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
         let path = blocks_dir.join(block_file_name(seqno));
         let needs_write = match fs::read(&path) {
             Ok(bytes) => match decode_block_file(&bytes) {
-                Ok(block) => {
+                Ok(signed) => {
                     let committed = store
                         .block_hash_for_seqno(seqno)
                         .map_err(|e| format!("producer: block hash lookup failed: {e}"))?;
-                    committed != Some(block.header.hash())
+                    // Compare the header hash AND the signature section: sigs
+                    // sit outside the hashed header, so a file with a
+                    // corrupted sig section would otherwise never be repaired.
+                    let committed_sigs = store
+                        .get_block_sigs(&committed.ok_or_else(|| {
+                            format!("producer: no committed block at seqno {seqno}")
+                        })?)
+                        .map_err(|e| format!("producer: sig lookup failed: {e}"))?;
+                    let file_sigs = onx::auth::encode_sig_section(&signed.sig_entries);
+                    committed != Some(signed.block.header.hash())
+                        || committed_sigs != Some(file_sigs)
                 }
                 Err(_) => true, // undecodable: rewrite
             },
@@ -674,8 +835,14 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
             .get_block_body(&hash)
             .map_err(|e| format!("producer: body lookup failed: {e}"))?
             .ok_or_else(|| format!("producer: missing body for seqno {seqno}"))?;
+        let sig_bytes = store
+            .get_block_sigs(&hash)
+            .map_err(|e| format!("producer: sig lookup failed: {e}"))?
+            .ok_or_else(|| format!("producer: missing sigs for seqno {seqno}"))?;
+        let sig_entries = onx::auth::decode_sig_section(&sig_bytes)
+            .map_err(|e| format!("producer: bad stored sigs for seqno {seqno}: {e}"))?;
         let block = Block { header, body };
-        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block))?;
+        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block, &sig_entries))?;
         regenerated += 1;
         eprintln!("producer: regenerated block file for seqno {seqno}");
     }
@@ -753,6 +920,7 @@ mod tests {
             vec![poison.clone(), honest.clone()],
             state.last_lt + 1,
             fee_collector,
+            0,
             &mut mempool,
             &mut stats,
         )
