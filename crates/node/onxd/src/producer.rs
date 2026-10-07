@@ -79,7 +79,7 @@
 use crate::mempool::Mempool;
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
-use onx_stf::block::Block;
+use onx_stf::block::{Block, PROTOCOL_VERSION};
 use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
@@ -255,16 +255,25 @@ fn propose_block_caught(
         // dry-run, i.e. inside the containment boundary.
         #[cfg(test)]
         maybe_inject_propose_panic(&messages);
-        // ONXBLK05: protocol_version 1; block_time is wall-clock at proposal
-        // (producer policy: never stamp ahead of its own clock), clamped to
-        // the parent's block_time so a stepped-back clock can never produce
+        // ONXBLK05: protocol_version stamps the header with the constant this
+        // node understands (the STF and the acceptance layer both reject
+        // anything else); block_time is wall-clock at proposal (producer
+        // policy: never stamp ahead of its own clock), clamped to the
+        // parent's block_time so a stepped-back clock can never produce
         // a block the verifier rejects (monotonic, non-decreasing).
         let wall_clock = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
         let block_time = wall_clock.max(parent_block_time);
-        propose_block(state, messages, lt, fee_collector, 1, block_time)
+        propose_block(
+            state,
+            messages,
+            lt,
+            fee_collector,
+            PROTOCOL_VERSION,
+            block_time,
+        )
     }))
 }
 
