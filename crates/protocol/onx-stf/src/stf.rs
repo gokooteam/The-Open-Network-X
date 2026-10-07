@@ -272,7 +272,9 @@ fn apply_messages(
     let max_deliveries = externals.len().saturating_mul(MAX_DELIVERIES_PER_EXTERNAL);
     let mut done = 0usize;
     while let Some((msg, idx)) = queue.pop_front() {
-        done += 1;
+        // Bounded by the `TooManyDeliveries` check below: `done` never gets
+        // near `usize::MAX`; saturation unreachable.
+        done = done.saturating_add(1);
         if done > max_deliveries {
             return Err(StfError::TooManyDeliveries {
                 max: max_deliveries,
@@ -881,8 +883,9 @@ fn storage_stat_for(code: Option<&Cell>, data: Option<&Cell>) -> StorageStat {
     let mut cell_count = 0u32;
     let mut byte_count = 0u64;
     for cell in [code, data].into_iter().flatten() {
-        cell_count += 1;
-        byte_count += cell.to_bytes().len() as u64;
+        // At most two cells, each a few hundred bytes: saturation unreachable.
+        cell_count = cell_count.saturating_add(1);
+        byte_count = byte_count.saturating_add(cell.to_bytes().len() as u64);
     }
     StorageStat {
         cell_count,

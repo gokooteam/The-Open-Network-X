@@ -12,6 +12,40 @@ use std::collections::BTreeMap;
 /// from a single source of truth instead of a magic number.
 pub(crate) const MAX_STACK_DEPTH: usize = 1023;
 
+/// True floor division for `DIVMOD` (0x14) / `DIV` (0x17), per the spec
+/// (`docs/specification/tvm-instruction-set.md` §4.3) and ADR-0030:
+/// `q = floor(a / b)`, `r = a - q*b`, so `sign(r) == sign(b)` or `r == 0`.
+/// This is TON's round-toward-negative-infinity convention, and it is fully
+/// defined for negative divisors — ADR-0028's "underspecified" premise was
+/// wrong (Euclidean was never the spec; `checked_div_euclid` was a bug).
+///
+/// Returns `None` when the quotient is unrepresentable (`MIN / -1`); the
+/// caller maps that — and `b == 0`, which must be rejected before calling —
+/// to `IntegerOverflow`. Every arithmetic step is `checked_*` because the
+/// crate denies `clippy::arithmetic_side_effects`.
+fn floored_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
+    debug_assert!(b != 0);
+    // `checked_div` truncates toward zero and returns `None` only for
+    // MIN / -1, whose true floor quotient (2^127) is unrepresentable.
+    let q_trunc = a.checked_div(b)?;
+    // `checked_rem` returns `None` only when b == 0 (excluded above) or for
+    // the MIN / -1 pair, which the line above already rejected.
+    let r_trunc = a.checked_rem(b)?;
+    if r_trunc != 0 && (r_trunc < 0) != (b < 0) {
+        // Truncation rounded toward zero, i.e. *up* past the floor: step
+        // the quotient down one and hand the remainder one divisor.
+        // Overflow audit of the two `checked_*` steps (both provably dead,
+        // kept `checked` for the lint):
+        // - `q_trunc - 1`: `q_trunc` can only be `i128::MIN` for the exact
+        //   pair MIN/1, whose remainder is 0, so this branch is unreachable.
+        // - `r_trunc + b`: in this branch the signs differ, so
+        //   |r_trunc + b| = |b| - |r_trunc| < |b| <= 2^127 — it shrinks.
+        Some((q_trunc.checked_sub(1)?, r_trunc.checked_add(b)?))
+    } else {
+        Some((q_trunc, r_trunc))
+    }
+}
+
 pub struct Interpreter {
     pub stack: Vec<StackValue>,
     pub call_stack: Vec<(Cell, usize)>, // (code_cell, bit_offset)
@@ -393,25 +427,18 @@ impl Interpreter {
                         ))?;
                     }
                     0x14 => {
-                        // DIVMOD — floored per spec §4.2: (a, b) -> (a div b, a mod b)
-                        // with a = q*b + r and 0 <= r < |b|. `checked_div_euclid`
-                        // coincides with floored division for every positive
-                        // divisor; for negative divisors the spec's "floored"
-                        // is pinned to the non-negative-remainder invariant
-                        // (see ADR-0028). The MIN/-1 pair overflows i128, so
-                        // `checked_*` maps it to IntegerOverflow instead of
-                        // panicking (which would halt the producer).
+                        // DIVMOD — true floor division per spec §4.3 and
+                        // ADR-0030: q = floor(a/b), r = a - q*b with
+                        // sign(r) == sign(b) or r == 0. (ADR-0028 pinned the
+                        // Euclidean remainder by mistake; `checked_div_euclid`
+                        // disagrees with the spec on negative divisors, e.g.
+                        // 7 DIVMOD -2 was (-3, 1), must be (-4, -1).)
                         let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        let q = a
-                            .checked_div_euclid(b)
-                            .ok_or(ExceptionKind::IntegerOverflow)?;
-                        let r = a
-                            .checked_rem_euclid(b)
-                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        let (q, r) = floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
                         self.push(StackValue::from_i128(q))?;
                         self.push(StackValue::from_i128(r))?;
                     }
@@ -450,14 +477,15 @@ impl Interpreter {
                 let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                 let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
                 let result = match opcode {
-                    // DIV returns only the quotient; DIVMOD remains available at 0x14.
-                    // Uses the same floored (Euclidean) division as DIVMOD so
-                    // the two opcodes agree on the quotient.
+                    // DIV returns only the quotient of the same true-floor
+                    // division DIVMOD uses, so the two opcodes agree on q
+                    // (ADR-0030). The old truncating `checked_div` did not.
                     0x17 => {
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a.checked_div_euclid(b)
+                        floored_divmod(a, b)
+                            .map(|(q, _)| q)
                             .ok_or(ExceptionKind::IntegerOverflow)?
                     }
                     0x18 => {

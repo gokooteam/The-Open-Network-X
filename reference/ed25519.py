@@ -72,6 +72,12 @@ def _encodepoint(p) -> bytes:
 
 
 def _decodepoint(s: bytes):
+    """Decode a public key under the strict predicate: canonical encoding
+    (recompressed bytes must match the input), on-curve, large-order.
+
+    Mirrors `PublicKey::decode_exact` in `crates/protocol/onx-primitives` —
+    this is the pinned-Ed25519 decode both implementations must agree on.
+    """
     if len(s) != 32:
         raise ValueError("bad public key length")
     y = int.from_bytes(s, "little") & ((1 << 255) - 1)
@@ -79,7 +85,22 @@ def _decodepoint(s: bytes):
     x = _xrecover(y)
     if x & 1 != sign:
         x = P - x
+    # On-curve: twisted Edwards -x^2 + y^2 = 1 + d x^2 y^2.
+    x2 = (x * x) % P
+    y2 = (y * y) % P
+    if (y2 - x2 - 1 - D * x2 % P * y2) % P != 0:
+        raise ValueError("point not on curve")
     p = (x, y, 1, (x * y) % P)
+    # Canonicality: the encoding must round-trip through recompression.
+    # Non-canonical encodings (e.g. y + P) decode to a valid point but
+    # re-encode to different bytes; reject them so one point has exactly
+    # one accepted encoding.
+    if _encodepoint(p) != s:
+        raise ValueError("non-canonical point encoding")
+    # Small-order (torsion) rejection: cofactorless verification admits
+    # forgeries under small-order keys.
+    if _encodepoint(_scalarmult(p, 8)) == _encodepoint((0, 1, 1, 0)):
+        raise ValueError("small-order point")
     return p
 
 

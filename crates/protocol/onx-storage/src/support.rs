@@ -109,7 +109,9 @@ pub fn test_block_txs(
     let mut base_nonce: BTreeMap<AccountId, u64> = BTreeMap::new();
     for b in 1..seqno {
         for (from, _, _, _) in test_block_transfers(seed, b, accounts) {
-            *base_nonce.entry(from).or_insert(0) += 1;
+            // Test nonce counter: saturation unreachable at test scale.
+            let counter = base_nonce.entry(from).or_insert(0);
+            *counter = counter.saturating_add(1);
         }
     }
     test_block_txs_with_nonces(seed, seqno, accounts, &base_nonce, chain_id)
@@ -135,9 +137,15 @@ pub fn test_block_txs_with_nonces(
     test_block_transfers(seed, seqno, accounts)
         .into_iter()
         .map(|(from, to, amount_nanos, fee_nanos)| {
-            let nonce = nonces.get(&from).copied().unwrap_or(0)
-                + intra_block.get(&from).copied().unwrap_or(0);
-            *intra_block.entry(from).or_insert(0) += 1;
+            // Test nonce arithmetic: both counters are tiny at test scale;
+            // saturation unreachable.
+            let nonce = nonces
+                .get(&from)
+                .copied()
+                .unwrap_or(0)
+                .saturating_add(intra_block.get(&from).copied().unwrap_or(0));
+            let counter = intra_block.entry(from).or_insert(0);
+            *counter = counter.saturating_add(1);
             ExternalMessage::new_signed(
                 chain_id,
                 MsgKind::Transfer,
@@ -185,7 +193,9 @@ impl TestTxGen {
     ) -> Vec<ExternalMessage> {
         let txs = test_block_txs_with_nonces(seed, seqno, accounts, &self.nonces, self.chain_id);
         for (from, _, _, _) in test_block_transfers(seed, seqno, accounts) {
-            *self.nonces.entry(from).or_insert(0) += 1;
+            // Test nonce counter: saturation unreachable at test scale.
+            let counter = self.nonces.entry(from).or_insert(0);
+            *counter = counter.saturating_add(1);
         }
         txs
     }
@@ -212,7 +222,15 @@ fn test_block_transfers(
             let from = accounts[rng.below(n)];
             let mut to = accounts[rng.below(n)];
             if to == from {
-                to = accounts[(rng.below(n) + 1) % n];
+                // Rotate to a different account. `n > 0` here: `rng.below(n)`
+                // just above already requires a nonzero bound (it panics on
+                // zero first), so `checked_rem` never returns `None`.
+                let rotated = rng
+                    .below(n)
+                    .saturating_add(1)
+                    .checked_rem(n)
+                    .expect("accounts is non-empty");
+                to = accounts[rotated];
             }
             (
                 from,
@@ -252,6 +270,13 @@ impl XorShift64 {
     /// Uniform value in `0..bound` (bound > 0).
     pub fn below(&mut self, bound: usize) -> usize {
         debug_assert!(bound > 0);
-        (self.next_u64() % bound as u64) as usize
+        // `bound > 0` is a documented precondition (see debug_assert): the
+        // `expect` fires only if a caller violates it — exactly the case the
+        // old `%`-by-zero panic covered, but now with a message naming the
+        // violated precondition.
+        (self
+            .next_u64()
+            .checked_rem(bound as u64)
+            .expect("below: bound must be > 0")) as usize
     }
 }

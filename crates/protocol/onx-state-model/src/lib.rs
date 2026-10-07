@@ -1,5 +1,12 @@
 #![deny(clippy::disallowed_types)]
 // Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
+// Wave-3 chain safety (ADR-0028): every integer arithmetic site in this crate
+// must be overflow-explicit (`checked_*`/`saturating_*`/`wrapping_*`). A plain
+// `+`/`-`/`*`/`/`/`%` on a value reachable from untrusted input (BoC decoder
+// offsets and sizes over untrusted bytes, cell bit-length arithmetic) is a
+// potential producer panic, i.e. a chain halt. `deny` keeps that property
+// load-bearing: new arithmetic must name its overflow behavior.
+#![deny(clippy::arithmetic_side_effects)]
 //! ONX state model and account lifecycle implementation.
 //!
 //! Implements `docs/specification/state-model.md`: account states, lifecycle transitions,

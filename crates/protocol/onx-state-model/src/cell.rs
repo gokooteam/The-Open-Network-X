@@ -73,7 +73,12 @@ impl Cell {
     /// Computes the 32-byte domain-separated SHA-256 cell representation hash per spec §4.3.
     pub fn hash(&self) -> [u8; 32] {
         let (d1, d2) = self.descriptor_bytes();
-        let mut payload = Vec::with_capacity(2 + self.data_bytes.len() + self.cell_refs.len() * 32);
+        // Capacity hint only; bounded by construction (<=128 data bytes, <=4 refs,
+        // total <= 258), so the saturating ops never saturate in practice.
+        let capacity = 2usize
+            .saturating_add(self.data_bytes.len())
+            .saturating_add(self.cell_refs.len().saturating_mul(32));
+        let mut payload = Vec::with_capacity(capacity);
         payload.push(d1);
         payload.push(d2);
         payload.extend_from_slice(&self.data_bytes);
@@ -87,7 +92,11 @@ impl Cell {
     pub fn to_bytes(&self) -> Vec<u8> {
         let (d1, d2) = self.descriptor_bytes();
         let descriptor_u16 = ((d1 as u16) << 8) | (d2 as u16);
-        let mut bytes = Vec::with_capacity(2 + self.data_bytes.len() + self.cell_refs.len() * 32);
+        // Same bounded-capacity reasoning as in `hash` above.
+        let capacity = 2usize
+            .saturating_add(self.data_bytes.len())
+            .saturating_add(self.cell_refs.len().saturating_mul(32));
+        let mut bytes = Vec::with_capacity(capacity);
         bytes.extend_from_slice(&Uint16(descriptor_u16).encode());
         bytes.extend_from_slice(&self.data_bytes);
         for ref_hash in &self.cell_refs {
@@ -139,7 +148,11 @@ impl Cell {
             });
         }
 
-        let required_len = offset + data_len + ref_count * 32;
+        // `data_len <= MAX_CELL_DATA_BYTES` and `ref_count <= MAX_CELL_REFS` were
+        // checked above, so `required_len <= 258`: saturation is unreachable.
+        let required_len = offset
+            .saturating_add(data_len)
+            .saturating_add(ref_count.saturating_mul(32));
         if slice.len() < required_len {
             return Err(StateModelError::DeserializationError(format!(
                 "Truncated Cell payload: expected {} bytes, got {}",
@@ -148,15 +161,15 @@ impl Cell {
             )));
         }
 
-        let data_bytes = slice[offset..offset + data_len].to_vec();
-        offset += data_len;
+        let data_bytes = slice[offset..offset.saturating_add(data_len)].to_vec();
+        offset = offset.saturating_add(data_len);
 
         let mut cell_refs = Vec::with_capacity(ref_count);
         for _ in 0..ref_count {
             let mut ref_hash = [0u8; 32];
-            ref_hash.copy_from_slice(&slice[offset..offset + 32]);
+            ref_hash.copy_from_slice(&slice[offset..offset.saturating_add(32)]);
             cell_refs.push(ref_hash);
-            offset += 32;
+            offset = offset.saturating_add(32);
         }
 
         let cell = Self::new_with_special(data_bytes, cell_refs, is_special)?;

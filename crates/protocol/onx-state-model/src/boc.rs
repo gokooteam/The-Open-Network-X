@@ -115,7 +115,9 @@ impl BagOfCells {
             let refs = cell.cell_refs();
             if child_idx < refs.len() {
                 // Resume this frame after the child is explored.
-                stack.push((node, child_idx + 1));
+                // `child_idx < refs.len() <= MAX_CELL_REFS` (checked above), so this
+                // never saturates; explicit per the arithmetic lint.
+                stack.push((node, child_idx.saturating_add(1)));
                 let child = refs[child_idx];
                 match marks.get(&child) {
                     Some(Mark::Visiting) => {
@@ -220,7 +222,8 @@ impl BagOfCells {
         let mut cursor = &slice[offset..];
         let count_val = Uint32::read(&mut cursor)
             .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-        offset += Uint32::BYTE_LEN;
+        // `offset` counts consumed bytes (always <= slice.len()): saturation unreachable.
+        offset = offset.saturating_add(Uint32::BYTE_LEN);
         let count = count_val.0 as usize;
 
         // Every encoded cell entry has at least its 32-byte hash and 4-byte
@@ -238,14 +241,14 @@ impl BagOfCells {
         let mut cells = BTreeMap::new();
         let mut prev_hash: Option<[u8; 32]> = None;
         for _ in 0..count {
-            if slice.len() < offset + 36 {
+            if slice.len() < offset.saturating_add(36) {
                 return Err(StateModelError::DeserializationError(
                     "Truncated BoC cell entry header".to_string(),
                 ));
             }
             let mut hash = [0u8; 32];
-            hash.copy_from_slice(&slice[offset..offset + 32]);
-            offset += 32;
+            hash.copy_from_slice(&slice[offset..offset.saturating_add(32)]);
+            offset = offset.saturating_add(32);
 
             // Canonical order: strictly ascending hashes. A duplicate entry
             // is not strictly greater than its predecessor, so this one
@@ -262,22 +265,25 @@ impl BagOfCells {
             let mut cell_cursor = &slice[offset..];
             let len_val = Uint32::read(&mut cell_cursor)
                 .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-            offset += Uint32::BYTE_LEN;
+            offset = offset.saturating_add(Uint32::BYTE_LEN);
             let len = len_val.0 as usize;
 
-            if slice.len() < offset + len {
+            if slice.len() < offset.saturating_add(len) {
                 return Err(StateModelError::DeserializationError(
                     "Truncated BoC cell content".to_string(),
                 ));
             }
 
-            let (cell, cell_consumed) = Cell::from_bytes(&slice[offset..offset + len])?;
+            let (cell, cell_consumed) =
+                Cell::from_bytes(&slice[offset..offset.saturating_add(len)])?;
             if cell_consumed != len {
                 return Err(StateModelError::TrailingBytes {
-                    remaining: len - cell_consumed,
+                    // `Cell::from_bytes` guarantees `cell_consumed <= len`, so in
+                    // this branch `cell_consumed < len`: never saturates.
+                    remaining: len.saturating_sub(cell_consumed),
                 });
             }
-            offset += len;
+            offset = offset.saturating_add(len);
 
             if cell.hash() != hash {
                 return Err(StateModelError::DeserializationError(

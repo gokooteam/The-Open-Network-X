@@ -138,10 +138,10 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x11` | `SUB` | `width`, `flavor` | `(a, b) -> (a - b)` | 4 | `IntegerOverflow` |
 | `0x12` | `NEG` | `width`, `flavor` | `(a) -> (-a)` | 4 | `IntegerOverflow` |
 | `0x13` | `MUL` | `width`, `flavor` | `(a, b) -> (a * b)` | 8 | `IntegerOverflow` |
-| `0x14` | `DIVMOD` | `width`, `flavor` | `(a, b) -> (a div b, a mod b)`, floored | 8 | `IntegerOverflow` (incl. `b = 0`, §3.3) |
+| `0x14` | `DIVMOD` | `width`, `flavor` | `(a, b) -> (a div b, a mod b)`, floored: `q = floor(a/b)`, `r = a − q·b`, `sign(r) = sign(b)` or `r = 0` | 8 | `IntegerOverflow` (incl. `b = 0`, §3.3) |
 | `0x15` | `CMP` | `width`, `flavor` | `(a, b) -> (r)`, `r ∈ {-1, 0, 1}` as a signed 8-bit `Integer` | 4 | — |
 | `0x16` | `ISZERO` | — | `(a) -> (bool)`, `bool` a 1-bit unsigned `Integer` | 4 | — |
-| `0x17` | `DIV` | `width`, `flavor` | `(a, b) -> (a div b)` | 8 | `IntegerOverflow` (incl. `b = 0`) |
+| `0x17` | `DIV` | `width`, `flavor` | `(a, b) -> (a div b)`, floored exactly as `DIVMOD`'s quotient: `q = floor(a/b)` | 8 | `IntegerOverflow` (incl. `b = 0`) |
 | `0x18` | `LSHIFT` | `width`, `flavor` | `(a, shift) -> (a << shift)` | 4 | `IntegerOverflow` |
 | `0x19` | `RSHIFT` | `width`, `flavor` | `(a, shift) -> (a >> shift)` | 4 | `IntegerOverflow` |
 | `0x20` | `CONV` | `width: uint16`, `signed: uint8` | `(a) -> (a')`, re-checked at `width` | 4 | `IntegerOverflow` |
@@ -151,6 +151,8 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x33` | `BYTEEQ` | — | `(Bytes, Bytes) -> (bool)` | `1 + ceil(min(len1, len2) / 32)` | — |
 
 `0x17`–`0x1F`, `0x21`–`0x2F`, and `0x34`–`0x3F` are reserved.
+
+**Floored division, stated exactly.** "Floored" in the table above is not a label awaiting a pin: it is `q = floor(a/b)` — the greatest integer less than or equal to the exact quotient — fully defined for negative divisors as well as positive ones. The remainder follows as `r = a − q·b`, so `sign(r) = sign(b)` or `r = 0` (this is TON's round-toward-negative-infinity convention). Examples: `7 DIVMOD 2 → (3, 1)`; `-7 DIVMOD 2 → (-4, 1)`; `7 DIVMOD -2 → (-4, -1)`; `-7 DIVMOD -2 → (3, -1)`. `DIV` (0x17) returns exactly `DIVMOD`'s quotient. See ADR-0030 for the correction history.
 
 ### 4.4 Cell / value access (`0x40`–`0x5F`)
 

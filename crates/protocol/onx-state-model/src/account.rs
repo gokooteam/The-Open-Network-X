@@ -220,6 +220,9 @@ impl AccountState {
         let state_type_val = Uint8::read(&mut cursor)
             .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
         let state_type = AccountType::from_u8(state_type_val.0)?;
+        // `offset` counts consumed bytes, so it is always <= slice.len() < usize::MAX:
+        // saturation is unreachable here. `saturating_add` is used purely to make
+        // overflow behavior explicit per the crate's `arithmetic_side_effects` policy.
         let mut offset = Uint8::BYTE_LEN;
 
         match state_type {
@@ -228,11 +231,11 @@ impl AccountState {
             AccountType::Frozen => {
                 let balance_val = Uint128::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint128::BYTE_LEN;
+                offset = offset.saturating_add(Uint128::BYTE_LEN);
 
                 let lt_val = Uint64::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint64::BYTE_LEN;
+                offset = offset.saturating_add(Uint64::BYTE_LEN);
 
                 if cursor.len() < 32 {
                     return Err(StateModelError::DeserializationError(
@@ -242,7 +245,7 @@ impl AccountState {
 
                 let mut storage_hash = [0u8; 32];
                 storage_hash.copy_from_slice(&cursor[..32]);
-                offset += 32;
+                offset = offset.saturating_add(32);
 
                 Ok((
                     Self::Frozen {
@@ -256,11 +259,11 @@ impl AccountState {
             AccountType::Active => {
                 let balance_val = Uint128::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint128::BYTE_LEN;
+                offset = offset.saturating_add(Uint128::BYTE_LEN);
 
                 let lt_val = Uint64::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint64::BYTE_LEN;
+                offset = offset.saturating_add(Uint64::BYTE_LEN);
 
                 if cursor.len() < 32 {
                     return Err(StateModelError::DeserializationError(
@@ -270,7 +273,7 @@ impl AccountState {
                 let mut code_hash = [0u8; 32];
                 code_hash.copy_from_slice(&cursor[..32]);
                 cursor = &cursor[32..];
-                offset += 32;
+                offset = offset.saturating_add(32);
 
                 if cursor.len() < 32 {
                     return Err(StateModelError::DeserializationError(
@@ -280,15 +283,15 @@ impl AccountState {
                 let mut data_hash = [0u8; 32];
                 data_hash.copy_from_slice(&cursor[..32]);
                 cursor = &cursor[32..];
-                offset += 32;
+                offset = offset.saturating_add(32);
 
                 let cell_count_val = Uint32::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint32::BYTE_LEN;
+                offset = offset.saturating_add(Uint32::BYTE_LEN);
 
                 let byte_count_val = Uint64::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint64::BYTE_LEN;
+                offset = offset.saturating_add(Uint64::BYTE_LEN);
 
                 if cursor.len() < 40 {
                     return Err(StateModelError::DeserializationError(
@@ -298,11 +301,11 @@ impl AccountState {
                 let mut pubkey = [0u8; 32];
                 pubkey.copy_from_slice(&cursor[..32]);
                 cursor = &cursor[32..];
-                offset += 32;
+                offset = offset.saturating_add(32);
 
                 let nonce_val = Uint64::read(&mut cursor)
                     .map_err(|e| StateModelError::DeserializationError(e.to_string()))?;
-                offset += Uint64::BYTE_LEN;
+                offset = offset.saturating_add(Uint64::BYTE_LEN);
 
                 // Optional appended cell payloads, present iff the header
                 // hash is non-zero. Each payload's hash is verified against
@@ -314,7 +317,7 @@ impl AccountState {
                         ))
                     })?;
                     cursor = &cursor[used..];
-                    offset += used;
+                    offset = offset.saturating_add(used);
                     Some(cell)
                 } else {
                     None
@@ -325,7 +328,7 @@ impl AccountState {
                             "Truncated Active AccountState data cell: {e}"
                         ))
                     })?;
-                    offset += used;
+                    offset = offset.saturating_add(used);
                     Some(cell)
                 } else {
                     None
@@ -467,7 +470,9 @@ impl AccountState {
         let expected_next_balance = if balance_delta >= 0 {
             cur_balance.saturating_add(balance_delta as u128)
         } else {
-            cur_balance - balance_delta.unsigned_abs()
+            // Guarded by the `BalanceUnderflow` early-return above:
+            // `unsigned_abs() <= cur_balance` here, so this never saturates.
+            cur_balance.saturating_sub(balance_delta.unsigned_abs())
         };
 
         if let Self::Active { balance_nanos, .. } | Self::Frozen { balance_nanos, .. } = next {

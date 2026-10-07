@@ -128,16 +128,19 @@ fn div_by_zero_still_integer_overflow() {
 }
 
 #[test]
-fn divmod_is_floored_with_nonnegative_remainder() {
-    // Spec §4.2: (a, b) -> (a div b, a mod b) with a = q*b + r and
-    // 0 <= r < |b|. Pinned by ADR-0028 for negative divisors too.
+fn divmod_is_true_floor() {
+    // Spec §4.3 / ADR-0030: q = floor(a/b), r = a - q*b, with
+    // sign(r) == sign(b) or r == 0. ADR-0028's Euclidean pin was wrong:
+    // 7 DIVMOD -2 -> (-4, -1) (was (-3, 1)); -7 DIVMOD -2 -> (3, -1)
+    // (was (4, 1)).
     for (a, b, q, r) in [
-        (-7i128, 2i128, -4i128, 1i128),
-        (7, -2, -3, 1),
-        (-7, -2, 4, 1),
-        (7, 2, 3, 1),
+        (7i128, 2i128, 3i128, 1i128),
+        (-7, 2, -4, 1),
+        (7, -2, -4, -1),
+        (-7, -2, 3, -1),
         (-8, 2, -4, 0),
         (0, -5, 0, 0),
+        (0, -1, 0, 0),
     ] {
         let (result, stack) = run_program(arith_program(0x14, a, b));
         assert!(
@@ -148,17 +151,19 @@ fn divmod_is_floored_with_nonnegative_remainder() {
         let got_q = pop_i128(&stack, 0);
         let got_r = pop_i128(&stack, 1);
         assert_eq!((got_q, got_r), (q, r), "DIVMOD({a}, {b})");
-        // The invariant the spec pins, checked independently of the table.
+        // The invariant the spec pins, checked independently of the table:
+        // a = q*b + r, |r| < |b|, sign(r) == sign(b) or r == 0.
         assert_eq!(a, got_q.wrapping_mul(b).wrapping_add(got_r));
-        assert!((0..b.abs()).contains(&got_r));
+        assert!(got_r.unsigned_abs() < b.unsigned_abs());
+        assert!(got_r == 0 || (got_r < 0) == (b < 0));
     }
 }
 
 #[test]
 fn div_opcode_matches_divmod_quotient() {
     // 0x17 DIV returns only the quotient; it must agree with DIVMOD's
-    // floored quotient (the old truncating `checked_div` did not).
-    for (a, b, q) in [(-7i128, 2i128, -4i128), (7, -2, -3), (-7, -2, 4), (7, 2, 3)] {
+    // true-floor quotient (the old truncating `checked_div` did not).
+    for (a, b, q) in [(7i128, 2i128, 3i128), (-7, 2, -4), (7, -2, -4), (-7, -2, 3)] {
         let (result, stack) = run_program(arith_program(0x17, a, b));
         assert!(
             matches!(result, ExecutionResult::Success { .. }),

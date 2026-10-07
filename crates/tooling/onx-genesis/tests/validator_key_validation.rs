@@ -180,3 +180,32 @@ fn accepts_label_derived_dev_balance_key() {
     let cfg = config_with_balance_key(Some("onx:alice-key"));
     build_genesis_document(&cfg).expect("label-derived dev balance key must keep working");
 }
+
+/// y = 3 is on-curve; this is its NON-canonical `y + p` encoding
+/// (p = 2^255 - 19, so `y + p` LE = `ef ff .. ff 7f`). It decodes to a
+/// valid large-order point but must be rejected: one point, one encoding.
+const NONCANONICAL_YP_KEY_HEX: &str =
+    "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f";
+
+#[test]
+fn rejects_noncanonical_yp_validator_key() {
+    // The hole this closes: the `y + p` encoding passed both decompress
+    // and the small-order check, so the old "canonical + on-curve +
+    // large-order" predicate let it through.
+    let err = build_genesis_document(&config_with_validator_key(NONCANONICAL_YP_KEY_HEX))
+        .expect_err("non-canonical y+p validator key must be rejected");
+    assert!(
+        err.contains("validator #0") && err.contains("canonical"),
+        "error must name the validator and the rule, got: {err}"
+    );
+}
+
+#[test]
+fn rejects_noncanonical_yp_balance_key() {
+    let err = build_genesis_document(&config_with_balance_key(Some(NONCANONICAL_YP_KEY_HEX)))
+        .expect_err("non-canonical y+p balance key must be rejected");
+    assert!(
+        err.contains("onx:alice") && err.contains("canonical"),
+        "error must name the balance and the rule, got: {err}"
+    );
+}

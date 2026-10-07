@@ -21,7 +21,9 @@ pub const MSG_LEN_PREFIX: usize = 4;
 
 /// Canonical encoding of a block body.
 pub fn encode_body(body: &BlockBody) -> Vec<u8> {
-    let mut out = Vec::with_capacity(BODY_COUNT_LEN + body.messages.len() * 240);
+    // Capacity hint only; under-reserving just grows the Vec.
+    let mut out =
+        Vec::with_capacity(BODY_COUNT_LEN.saturating_add(body.messages.len().saturating_mul(240)));
     out.extend_from_slice(&(body.messages.len() as u32).to_be_bytes());
     for msg in &body.messages {
         let msg_bytes = msg.to_bytes();
@@ -51,37 +53,43 @@ pub fn decode_body(bytes: &[u8]) -> Result<BlockBody, StorageError> {
     // count is clamped here and then rejected with a clean error by the
     // loop's truncation checks below. (The wave-1 guard in
     // `decode_block_file` remains as defense-in-depth at the file layer.)
-    let max_messages = (bytes.len() - BODY_COUNT_LEN) / MSG_LEN_PREFIX;
+    // Guarded by the length check above (`bytes.len() >= BODY_COUNT_LEN`):
+    // never saturates.
+    let max_messages = bytes.len().saturating_sub(BODY_COUNT_LEN) / MSG_LEN_PREFIX;
     let mut messages = Vec::with_capacity(count.min(max_messages));
     let mut off = BODY_COUNT_LEN;
+    // Invariant: `off <= bytes.len()` — every advance below is preceded by a
+    // truncation check — so the saturating ops below never saturate; they
+    // just satisfy the crate's `arithmetic_side_effects` policy.
     for i in 0..count {
-        if bytes.len() < off + MSG_LEN_PREFIX {
+        if bytes.len() < off.saturating_add(MSG_LEN_PREFIX) {
             return Err(StorageError::Corrupt(format!(
                 "truncated block body: message {i} length prefix missing"
             )));
         }
         let msg_len = u32::from_be_bytes(
-            bytes[off..off + MSG_LEN_PREFIX]
+            bytes[off..off.saturating_add(MSG_LEN_PREFIX)]
                 .try_into()
                 .expect("len checked"),
         ) as usize;
-        off += MSG_LEN_PREFIX;
-        if bytes.len() < off + msg_len {
+        off = off.saturating_add(MSG_LEN_PREFIX);
+        if bytes.len() < off.saturating_add(msg_len) {
             return Err(StorageError::Corrupt(format!(
                 "truncated block body: message {i} needs {msg_len} bytes, {} remain",
-                bytes.len() - off
+                bytes.len().saturating_sub(off)
             )));
         }
-        let msg = ExternalMessage::from_bytes(&bytes[off..off + msg_len]).map_err(|e| {
-            StorageError::Corrupt(format!("stored message {i} failed to decode: {e}"))
-        })?;
+        let msg =
+            ExternalMessage::from_bytes(&bytes[off..off.saturating_add(msg_len)]).map_err(|e| {
+                StorageError::Corrupt(format!("stored message {i} failed to decode: {e}"))
+            })?;
         messages.push(msg);
-        off += msg_len;
+        off = off.saturating_add(msg_len);
     }
     if off != bytes.len() {
         return Err(StorageError::Corrupt(format!(
             "block body has {} trailing bytes after {count} messages",
-            bytes.len() - off
+            bytes.len().saturating_sub(off)
         )));
     }
     Ok(BlockBody { messages })
