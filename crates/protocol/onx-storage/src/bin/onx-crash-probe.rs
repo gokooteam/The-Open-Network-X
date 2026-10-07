@@ -51,7 +51,7 @@ fn main() {
         let block = propose_block(&state, msgs, test_block_lt(next_seqno), collector, 1, 0)
             .expect("propose must succeed");
         store
-            .commit_block(&state, &block)
+            .commit_block(&state, &block, &[])
             .expect("commit must succeed");
         // Reload from disk: exercises the read path under kill pressure and
         // keeps the probe honest (it never trusts its own memory).

@@ -10,11 +10,11 @@
 //!   f. Invalid-message block rejected, head not advanced.
 //!   g. Idempotent re-run over committed blocks is a no-op.
 
-use onx::auth::SigEntry;
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
+use onx_stf::block::SigEntry;
 use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

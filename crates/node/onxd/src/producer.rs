@@ -332,7 +332,7 @@ fn run_tick(
     // bouncing the message would let a broken node keep running and
     // silently diverge from honest nodes.
     store
-        .commit_block(&state, &block)
+        .commit_block(&state, &block, &[])
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
 
     // 7. Emit the canonical block file (feeds `onx replay` directly),

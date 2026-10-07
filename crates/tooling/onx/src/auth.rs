@@ -20,19 +20,7 @@
 //!    genesis total stake.
 
 use onx_primitives::{PublicKey, Signature};
-use onx_stf::block::BlockHeader;
-
-/// One signature in the section: which genesis validator signed, and how.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SigEntry {
-    /// Index into the canonical (pubkey-sorted) genesis validator list.
-    pub validator_index: u32,
-    /// Ed25519 signature over the 96-byte preimage.
-    pub sig: [u8; 64],
-}
-
-/// Byte length of one encoded signature entry.
-pub const SIG_ENTRY_BYTE_LEN: usize = 4 + 64;
+use onx_stf::block::{BlockHeader, SigEntry, SIG_ENTRY_BYTE_LEN};
 
 /// Errors in signature-section decoding or block authentication.
 /// All are fail-closed: a bad section or bad signature rejects the block.
@@ -89,16 +77,8 @@ impl std::fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
-/// Encode a signature section.
-pub fn encode_sig_section(entries: &[SigEntry]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + entries.len() * SIG_ENTRY_BYTE_LEN);
-    out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
-    for e in entries {
-        out.extend_from_slice(&e.validator_index.to_be_bytes());
-        out.extend_from_slice(&e.sig);
-    }
-    out
-}
+/// Encode a signature section (re-exported from onx-stf).
+pub use onx_stf::block::encode_sig_section;
 
 /// Strictly decode a signature section. Any deviation is an error.
 pub fn decode_sig_section(bytes: &[u8]) -> Result<Vec<SigEntry>, AuthError> {

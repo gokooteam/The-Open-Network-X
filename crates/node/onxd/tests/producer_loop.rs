@@ -351,7 +351,7 @@ fn mempool_rejects_stale_nonce_and_dedupes() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block).unwrap();
+    h.store().commit_block(&state, &block, &[]).unwrap();
     assert_eq!(account_nonce(h.store(), 0xaa), 1);
 
     // Now drop a stale nonce-0 message (the wallet has moved on).
@@ -509,7 +509,7 @@ fn loop_drops_stale_msg_without_crashing() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block).unwrap();
+    h.store().commit_block(&state, &block, &[]).unwrap();
 
     // Now drop a message that was valid when written but is stale now,
     // plus a good one.
@@ -599,7 +599,7 @@ fn select_candidates_drops_became_stale_without_crashing() {
         0,
     )
     .unwrap();
-    h.store().commit_block(&state, &block).unwrap();
+    h.store().commit_block(&state, &block, &[]).unwrap();
 
     // Selection against the fresh head: the stale message is rejected, no panic.
     let fresh: State = h.store().load_state().unwrap().unwrap();
@@ -645,7 +645,7 @@ fn loop_double_key_reveal_drops_only_second_reveal() {
     );
     let block =
         propose_block(&state, vec![fund], state.last_lt + 1, h.fee_collector, 1, 0).unwrap();
-    h.store().commit_block(&state, &block).unwrap();
+    h.store().commit_block(&state, &block, &[]).unwrap();
 
     // Confirm the test's premise: funded but keyless.
     match h.store().get_account(&addr).unwrap() {
@@ -767,7 +767,7 @@ fn startup_regenerates_block_file_missing_after_crash() {
     let msg = wallet.sign(0xaa, 0xab, 500, 5);
     let block = propose_block(&state, vec![msg], state.last_lt + 1, h.fee_collector, 1, 0).unwrap();
     assert_eq!(block.header.seqno, 2);
-    h.store().commit_block(&state, &block).unwrap();
+    h.store().commit_block(&state, &block, &[]).unwrap();
     let blk2 = h.blocks_dir().join("block-00000002.blk");
     assert!(
         !blk2.is_file(),

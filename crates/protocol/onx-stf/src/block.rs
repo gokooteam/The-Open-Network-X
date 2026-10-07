@@ -162,6 +162,31 @@ pub struct Block {
     pub body: BlockBody,
 }
 
+/// One producer signature: which genesis validator signed, and how.
+/// (ADR-0032; the signature section sits outside the hashed header.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SigEntry {
+    /// Index into the canonical (pubkey-sorted) genesis validator list.
+    pub validator_index: u32,
+    /// Ed25519 signature over the 96-byte preimage.
+    pub sig: [u8; 64],
+}
+
+/// Byte length of one encoded signature entry.
+pub const SIG_ENTRY_BYTE_LEN: usize = 4 + 64;
+
+/// Encode a signature section:
+/// `count(u32be) || [validator_index(u32be) || sig(64)]*`.
+pub fn encode_sig_section(entries: &[SigEntry]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + entries.len() * SIG_ENTRY_BYTE_LEN);
+    out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+    for e in entries {
+        out.extend_from_slice(&e.validator_index.to_be_bytes());
+        out.extend_from_slice(&e.sig);
+    }
+    out
+}
+
 impl Block {
     /// Assemble a block, computing `msgs_root` and `msg_count` from the body.
     /// The caller must fill `state_root` — see [`crate::stf::apply_block`],

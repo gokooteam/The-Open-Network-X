@@ -59,7 +59,7 @@ pub mod message;
 pub mod state;
 pub mod stf;
 
-pub use block::{msgs_root, Block, BlockBody, BlockHeader};
+pub use block::{encode_sig_section, msgs_root, Block, BlockBody, BlockHeader, SigEntry};
 pub use error::StfError;
 pub use message::{
     derive_address, ExternalMessage, InternalMessage, MsgKind, EXT_BODY_PREFIX_LEN,

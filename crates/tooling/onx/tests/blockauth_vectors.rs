@@ -8,7 +8,7 @@
 
 use onx::auth::{decode_sig_section, encode_sig_section, verify_block_auth, GenesisValidatorRef};
 use onx::blockfile::{decode_block_file, BLOCK_FILE_MAGIC};
-use onx_stf::block::{BlockHeader, BLOCK_HEADER_BYTE_LEN};
+use onx_stf::block::{BlockHeader, SigEntry, BLOCK_HEADER_BYTE_LEN};
 use std::collections::HashMap;
 
 fn vectors() -> HashMap<String, serde_json::Value> {
@@ -84,7 +84,7 @@ fn rust_verifies_python_signature() {
 
     let mut sig = [0u8; 64];
     sig.copy_from_slice(&sig_hex);
-    let entries = vec![onx::auth::SigEntry {
+    let entries = vec![onx_stf::block::SigEntry {
         validator_index: 0,
         sig,
     }];
@@ -140,7 +140,7 @@ fn rust_rejects_python_reject_vectors() {
     bad_sig[0] ^= 1;
     let mut sig = [0u8; 64];
     sig.copy_from_slice(&bad_sig);
-    let entries = vec![onx::auth::SigEntry {
+    let entries = vec![onx_stf::block::SigEntry {
         validator_index: 0,
         sig,
     }];
@@ -152,7 +152,7 @@ fn rust_rejects_python_reject_vectors() {
     let th = BlockHeader::from_bytes(&tampered).unwrap();
     let mut sig2 = [0u8; 64];
     sig2.copy_from_slice(&hex_val(&v, "signature_seq1_hex"));
-    let entries2 = vec![onx::auth::SigEntry {
+    let entries2 = vec![onx_stf::block::SigEntry {
         validator_index: 0,
         sig: sig2,
     }];

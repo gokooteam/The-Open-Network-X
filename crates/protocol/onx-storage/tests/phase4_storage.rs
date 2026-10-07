@@ -87,7 +87,7 @@ fn run_chain_to(store: &ChainStore, num_blocks: u32, seed: u64) -> Result<[u8; 3
             0,
         )
         .expect("propose must succeed");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &[])?;
         state = store.load_state()?.expect("state present");
     }
     Ok(state.state_root()?)
@@ -140,7 +140,7 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
         .expect("propose");
         // Pure in-memory expectation.
         let (expected, _) = apply_block(&state, &block).expect("apply");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &[])?;
 
         // Loaded state must equal the pure-STF state exactly.
         let loaded = store.load_state()?.expect("state");
@@ -196,11 +196,11 @@ fn storage_idempotent_recommit() -> Result<(), StorageError> {
     )
     .expect("propose");
 
-    store.commit_block(&state, &block)?;
+    store.commit_block(&state, &block, &[])?;
     let head1 = store.head()?;
     let root1 = store.state_root_at(1)?;
     // Recommit the identical block: no-op, no error, no state change.
-    store.commit_block(&state, &block)?;
+    store.commit_block(&state, &block, &[])?;
     assert_eq!(store.head()?, head1);
     assert_eq!(store.state_root_at(1)?, root1);
     cleanup(&path);
@@ -272,7 +272,7 @@ fn storage_rejects_bad_block_atomically() -> Result<(), StorageError> {
     // Tamper with the claimed post-state root: the STF must reject it, and
     // the failed commit must persist nothing.
     block.header.state_root = [0xFF; 32];
-    let err = store.commit_block(&state, &block).unwrap_err();
+    let err = store.commit_block(&state, &block, &[]).unwrap_err();
     assert!(
         matches!(err, StorageError::Stf(_)),
         "expected STF rejection, got: {err}"
@@ -316,7 +316,7 @@ fn storage_dirty_set_complete() -> Result<(), StorageError> {
         )
         .expect("propose");
         let (expected, _) = apply_block(&state, &block).expect("apply");
-        store.commit_block(&state, &block)?;
+        store.commit_block(&state, &block, &[])?;
         for (id, expected_acct) in expected.tree.accounts() {
             let stored = store
                 .get_account(id)?

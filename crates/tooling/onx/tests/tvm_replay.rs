@@ -14,11 +14,11 @@
 //! The second test pins that: a call to a codeless account produces a
 //! valid block whose receipt shows the bounce, and replay agrees.
 
-use onx::auth::SigEntry;
 use onx::blockfile::{block_file_name, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_primitives::SecretKey;
 use onx_state_model::AccountState;
+use onx_stf::block::SigEntry;
 use onx_stf::{propose_block, Block, ExternalMessage, MsgKind, State};
 use std::path::{Path, PathBuf};
 use std::process::Command;

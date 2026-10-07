@@ -20,8 +20,11 @@
 //! truncation, wrong lengths, or trailing bytes. Signature *verification*
 //! is not done here — see [`crate::auth`]; the file layer only decodes.
 
-use crate::auth::{decode_sig_section, encode_sig_section, AuthError, SigEntry};
-use onx_stf::block::{Block, BlockBody, BlockHeader, BLOCK_HEADER_BYTE_LEN};
+use crate::auth::{decode_sig_section, AuthError};
+use onx_stf::block::SIG_ENTRY_BYTE_LEN;
+use onx_stf::block::{
+    encode_sig_section, Block, BlockBody, BlockHeader, SigEntry, BLOCK_HEADER_BYTE_LEN,
+};
 use onx_stf::message::EXT_BODY_PREFIX_LEN;
 use onx_storage::{decode_body, encode_body};
 
@@ -131,8 +134,7 @@ pub fn decode_block_file(bytes: &[u8]) -> Result<SignedBlock, BlockFileError> {
         ));
     }
     let sig_count = u32::from_be_bytes(after_header[..4].try_into().expect("length checked"));
-    let sig_len =
-        4usize.saturating_add((sig_count as usize).saturating_mul(crate::auth::SIG_ENTRY_BYTE_LEN));
+    let sig_len = 4usize.saturating_add((sig_count as usize).saturating_mul(SIG_ENTRY_BYTE_LEN));
     if sig_len > after_header.len() {
         return Err(BlockFileError::BadSigSection(format!(
             "sig section claims {sig_count} entries but only {} bytes remain",

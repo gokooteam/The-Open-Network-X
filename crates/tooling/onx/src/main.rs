@@ -135,7 +135,7 @@ fn replay(genesis_path: &Path, blocks_dir: &Path, data_dir: &Path) -> Result<(),
         // seqno, prev-hash, workchain, lt, msgs_root, claimed state root and
         // every external message), then persists everything atomically.
         store
-            .commit_block(&state, &block)
+            .commit_block(&state, &block, &signed.sig_entries)
             .map_err(|e| format!("{name}: rejected: {e}"))?;
         state = store
             .load_state()
