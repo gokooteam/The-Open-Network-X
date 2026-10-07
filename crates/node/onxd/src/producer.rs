@@ -80,7 +80,7 @@ use crate::mempool::Mempool;
 use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
 use onx_data_structures::AccountId;
 use onx_stf::block::Block;
-use onx_stf::{propose_block, ExternalMessage, State, StfError};
+use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
 use std::any::Any;
@@ -91,6 +91,55 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Canonical (pubkey-sorted) genesis validator public keys, for
+/// `validator_index` assignment (ADR-0032).
+fn canonical_validators(store: &ChainStore) -> Result<Vec<onx_primitives::PublicKey>, TickError> {
+    let doc = store
+        .genesis_document()
+        .map_err(|e| TickError::Fatal(format!("producer: cannot load genesis: {e}")))?
+        .ok_or_else(|| TickError::Fatal("producer: no genesis in store".to_string()))?;
+    let mut keys: Vec<onx_primitives::PublicKey> = doc
+        .validators
+        .iter()
+        .map(|v| {
+            onx_primitives::PublicKey::decode_exact(&v.pubkey)
+                .map_err(|e| TickError::Fatal(format!("producer: bad genesis key: {e}")))
+        })
+        .collect::<Result<_, _>>()?;
+    keys.sort_by(|a, b| a.encode().cmp(&b.encode()));
+    Ok(keys)
+}
+
+/// Sign a block with the producer's key (ONXBLK05).
+///
+/// Returns the signature section entries. If no signing key is configured,
+/// returns an empty section (the block is unsigned — verification will
+/// reject it; this is the pre-key transitional state).
+///
+/// `validators` is the canonical (pubkey-sorted) genesis validator list;
+/// `validator_index` is the signer's position in it.
+fn sign_block(
+    block: &Block,
+    chain_id: &[u8; 32],
+    signing_key: Option<&onx_primitives::SecretKey>,
+    validators: &[onx_primitives::PublicKey],
+) -> Result<Vec<SigEntry>, String> {
+    let Some(secret) = signing_key else {
+        return Ok(vec![]);
+    };
+    let pubkey = secret.public_key();
+    let index = validators
+        .iter()
+        .position(|v| v.encode() == pubkey.encode())
+        .ok_or_else(|| "signing key pubkey not in genesis validator list".to_string())?;
+    let preimage = block.header.sign_bytes(chain_id);
+    let sig = secret.sign_raw(&preimage);
+    Ok(vec![SigEntry {
+        validator_index: index as u32,
+        sig: sig.encode(),
+    }])
+}
+
 pub struct ProducerConfig {
     pub fee_collector: AccountId,
     pub poll_interval: Duration,
@@ -99,6 +148,10 @@ pub struct ProducerConfig {
     /// Optional telemetry handle; block height / pool size are reported
     /// when present.
     pub telemetry: Option<TelemetryHandle>,
+    /// Validator signing key (32-byte seed). If present, blocks are signed
+    /// (ONXBLK05); the key's pubkey must match a genesis validator
+    /// (checked at startup — TRAP 4).
+    pub signing_key: Option<onx_primitives::SecretKey>,
 }
 
 #[derive(Debug, Default)]
@@ -331,8 +384,19 @@ fn run_tick(
     // propagates and halts the node. Mapping it to "invalid block" or
     // bouncing the message would let a broken node keep running and
     // silently diverge from honest nodes.
+    //
+    // ONXBLK05: sign the block (if a signing key is configured), then
+    // commit block+signatures atomically (TRAP 2).
+    let validators = canonical_validators(store)?;
+    let sig_entries = sign_block(
+        &block,
+        &state.chain_id,
+        cfg.signing_key.as_ref(),
+        &validators,
+    )
+    .map_err(|e| TickError::Fatal(format!("producer: signing failed: {e}")))?;
     store
-        .commit_block(&state, &block, &[])
+        .commit_block(&state, &block, &sig_entries)
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
 
     // 7. Emit the canonical block file (feeds `onx replay` directly),
@@ -340,7 +404,7 @@ fn run_tick(
     atomic_write_block_file(
         &cfg.blocks_dir,
         block.header.seqno,
-        &encode_block_file(&block, &[]),
+        &encode_block_file(&block, &sig_entries),
     )
     .map_err(TickError::Fatal)?;
 
@@ -680,8 +744,14 @@ fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Resu
             .get_block_body(&hash)
             .map_err(|e| format!("producer: body lookup failed: {e}"))?
             .ok_or_else(|| format!("producer: missing body for seqno {seqno}"))?;
+        let sig_bytes = store
+            .get_block_sigs(&hash)
+            .map_err(|e| format!("producer: sig lookup failed: {e}"))?
+            .ok_or_else(|| format!("producer: missing sigs for seqno {seqno}"))?;
+        let sig_entries = onx::auth::decode_sig_section(&sig_bytes)
+            .map_err(|e| format!("producer: bad stored sigs for seqno {seqno}: {e}"))?;
         let block = Block { header, body };
-        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block, &[]))?;
+        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block, &sig_entries))?;
         regenerated += 1;
         eprintln!("producer: regenerated block file for seqno {seqno}");
     }

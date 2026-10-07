@@ -581,6 +581,10 @@ impl ChainStore {
                 doc.workchain.0 .0.to_be_bytes().as_slice(),
             )?;
             meta.insert(b"head".as_slice(), head_value(0, &genesis_hash).as_slice())?;
+            // The canonical genesis document bytes, so the node can verify
+            // its signing key against the genesis validators at startup
+            // (ONXBLK05 TRAP 4) without re-parsing the TOML.
+            meta.insert(b"genesis_doc".as_slice(), doc.to_bytes().as_slice())?;
         }
         wtxn.commit()?;
         Ok(())
@@ -831,6 +835,22 @@ impl ChainStore {
         match meta.get(b"genesis_hash".as_slice())? {
             None => Ok(None),
             Some(v) => Ok(Some(hash32_from_value(v.value(), "genesis_hash")?)),
+        }
+    }
+
+    /// The canonical genesis document, if the store was initialized.
+    pub fn genesis_document(
+        &self,
+    ) -> Result<Option<onx_state_model::GenesisDocument>, StorageError> {
+        let rtxn = self.db.begin_read()?;
+        let meta = rtxn.open_table(META)?;
+        match meta.get(b"genesis_doc".as_slice())? {
+            None => Ok(None),
+            Some(v) => {
+                let doc = onx_state_model::GenesisDocument::from_bytes(v.value())
+                    .map_err(|e| StorageError::Corrupt(format!("bad genesis_doc: {e}")))?;
+                Ok(Some(doc))
+            }
         }
     }
 

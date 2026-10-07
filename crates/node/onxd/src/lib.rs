@@ -4,14 +4,58 @@ pub mod producer;
 use crate::mempool::Mempool;
 use crate::producer::{run_producer_loop, ProducerConfig};
 use onx_data_structures::AccountId;
+use onx_primitives::SecretKey;
 use onx_storage::ChainStore;
 use onx_telemetry::{serve_metrics, TelemetryConfig, TelemetryHandle};
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
+
+/// Load a validator signing key (ONXBLK05, TRAP 4).
+///
+/// - The file must contain exactly 32 bytes (the seed).
+/// - The file must have mode 0600 (owner read/write only).
+/// - The derived pubkey must match a genesis validator's pubkey.
+///
+/// Any violation is a startup refusal, never a warning.
+fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String> {
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("signing key {path}: cannot stat: {e}"))?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        return Err(format!(
+            "signing key {path}: bad permissions {mode:o} (must be 600)"
+        ));
+    }
+    let seed = fs::read(path).map_err(|e| format!("signing key {path}: cannot read: {e}"))?;
+    if seed.len() != 32 {
+        return Err(format!(
+            "signing key {path}: must be 32 bytes, got {}",
+            seed.len()
+        ));
+    }
+    let secret =
+        SecretKey::from_seed(&seed).map_err(|e| format!("signing key {path}: bad seed: {e}"))?;
+    let pubkey = secret.public_key().encode();
+
+    // The key must belong to a genesis validator.
+    let doc = store
+        .genesis_document()
+        .map_err(|e| format!("signing key: cannot load genesis: {e}"))?
+        .ok_or_else(|| "signing key: no genesis in store".to_string())?;
+    let matches = doc.validators.iter().any(|v| v.pubkey == pubkey);
+    if !matches {
+        return Err(
+            "signing key: derived pubkey matches no genesis validator — refusing to start"
+                .to_string(),
+        );
+    }
+    Ok(secret)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRole {
@@ -50,6 +94,10 @@ pub struct OnxdConfig {
     pub block_poll_interval_ms: u64,
     /// Mempool bound; new submissions are rejected when full.
     pub mempool_max_txs: usize,
+    /// Path to the validator signing key file (32-byte seed). If set, the
+    /// producer signs blocks (ONXBLK05); on startup the key's pubkey must
+    /// match a genesis validator and the file must be mode 0600.
+    pub signing_key_path: Option<String>,
 }
 
 impl Default for OnxdConfig {
@@ -66,6 +114,7 @@ impl Default for OnxdConfig {
             fee_collector: None,
             block_poll_interval_ms: 200,
             mempool_max_txs: 10_000,
+            signing_key_path: None,
         }
     }
 }
@@ -89,6 +138,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
     let mut fee_collector: Option<String> = None;
     let mut block_poll_interval_ms = 200u64;
     let mut mempool_max_txs = 10_000usize;
+    let mut signing_key_path: Option<String> = None;
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -135,6 +185,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
                         .parse::<usize>()
                         .map_err(|_| format!("invalid mempool_max_txs value: {value}"))?;
                 }
+                "signing_key_path" => signing_key_path = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -152,6 +203,7 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
         fee_collector,
         block_poll_interval_ms,
         mempool_max_txs,
+        signing_key_path,
     })
 }
 
@@ -226,9 +278,16 @@ pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
                     .parse::<u64>()
                     .map_err(|_| "invalid --block-poll-interval-ms value".to_string())?;
             }
+            "--signing-key" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--signing-key requires a value".to_string());
+                }
+                config.signing_key_path = Some(args[idx].clone());
+            }
             "--help" | "-h" => {
                 return Err(
-                    "usage: onxd --config onxd.toml [--role full|validator|lite] [--tx-pool-dir DIR] [--fee-collector HEX] [--block-poll-interval-ms MS]".to_string(),
+                    "usage: onxd --config onxd.toml [--role full|validator|lite] [--tx-pool-dir DIR] [--fee-collector HEX] [--block-poll-interval-ms MS] [--signing-key PATH]".to_string(),
                 );
             }
             _ => {}
@@ -296,6 +355,14 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     fee_collector_arr.copy_from_slice(&fee_collector_bytes);
     let fee_collector = AccountId::from_bytes(fee_collector_arr);
 
+    // Validator signing key (ONXBLK05, TRAP 4): if configured, load the
+    // 32-byte seed, require mode 0600, and refuse to start unless the
+    // derived pubkey matches a genesis validator.
+    let signing_key = match &config.signing_key_path {
+        None => None,
+        Some(path) => Some(load_signing_key(path, &store)?),
+    };
+
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
     // Networking is frozen: reporting a peer count would imply a network
     // exists. Zero is the honest value until the real loop lands.
@@ -346,6 +413,7 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         tx_pool_dir: Path::new(&config.tx_pool_dir).to_path_buf(),
         blocks_dir: Path::new(&config.storage_path).join("blocks"),
         telemetry: Some(metrics),
+        signing_key,
     };
     let shutdown = Arc::new(AtomicBool::new(false));
     let producer_shutdown = shutdown.clone();

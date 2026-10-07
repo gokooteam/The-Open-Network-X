@@ -213,6 +213,7 @@ impl Harness {
             tx_pool_dir: self.tx_pool_dir.clone(),
             blocks_dir: self.dir.join("data").join("blocks"),
             telemetry: None,
+            signing_key: None,
         }
     }
 
