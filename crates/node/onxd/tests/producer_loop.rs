@@ -913,6 +913,15 @@ fn cargo_bin() -> String {
     std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
+/// Wall-clock seconds since the Unix epoch, for bracketing block_time in
+/// acceptance tests.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
 fn onx_binary() -> PathBuf {
     let target_dir = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
@@ -1009,41 +1018,46 @@ fn signed_block_1_carries_version_time_and_valid_signature() {
     let mut wallet = TestWallet::new(h.chain_id);
     h.drop_msg(&wallet.sign(0xaa, 0xab, 1000, 10));
 
+    let t0 = unix_now();
     let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
     shutdown.store(true, Ordering::Relaxed);
     let stats = handle
         .join()
         .expect("producer thread")
         .expect("producer ok");
+    let t1 = unix_now();
     assert!(stats.blocks_produced >= 1);
     assert_eq!(stats.msgs_committed, 1, "the transfer committed");
 
-    // 1. The block file decodes; the header stamps this node's protocol
-    //    version and a wall-clock block_time (never ahead of the node's own
-    //    clock, non-decreasing vs genesis whose block_time is 0).
+    // 1. The block file decodes; the header carries this node's protocol
+    //    version and a wall-clock block_time stamped during this run —
+    //    not zero, not stale, never ahead of the node's own clock,
+    //    non-decreasing vs genesis whose block_time is 0.
     let bytes =
         std::fs::read(h.blocks_dir().join(block_file_name(1))).expect("block-00000001.blk exists");
     let signed = decode_block_file(&bytes).expect("block 1 decodes");
     assert_eq!(signed.block.header.seqno, 1);
     assert_eq!(
         signed.block.header.protocol_version, PROTOCOL_VERSION,
-        "producer stamps PROTOCOL_VERSION, not a literal"
+        "header carries this node's protocol version"
     );
     assert!(
-        signed.block.header.block_time > 0,
-        "block_time is a real stamp, not zero"
+        signed.block.header.block_time >= t0,
+        "block_time was stamped during this run, not stale"
     );
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(u64::MAX);
     assert!(
-        signed.block.header.block_time <= now.saturating_add(120),
+        signed.block.header.block_time <= t1,
         "producer never stamps ahead of its own clock"
     );
-    assert!(
-        !signed.sig_entries.is_empty(),
-        "block 1 carries a signature section"
+    assert_eq!(
+        signed.block.body.messages.len(),
+        1,
+        "block 1 carries the dropped transfer explicitly"
+    );
+    assert_eq!(
+        signed.sig_entries.len(),
+        1,
+        "single-validator chain: block 1 carries exactly one signature entry"
     );
 
     // 2. The acceptance layer verifies the producer's real signature
