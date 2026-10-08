@@ -40,3 +40,9 @@ jobs:
         with:
           name: code-coverage-lcov
           path: lcov.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
