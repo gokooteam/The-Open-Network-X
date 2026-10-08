@@ -116,6 +116,8 @@ designed). Rationale: this is a *structural* limit, sibling to the 1023
 operand-stack cap (which raises `MalformedCell`, also a bouncer), not a
 spent budget. A contract that recurses too deep gets its value bounced
 like any other VM-raised failure; only a fully spent gas budget is fatal.
+*(Amended 2026-10-08: a spent gas budget now bounces too — see ADR-0037's
+status. No kind is fatal.)*
 
 The c2 exception-handler discriminator for the new kind is `5` (next free
 after `TypeMismatch = 4`).

@@ -190,9 +190,9 @@ under *Known bugs* below.
       `propose_block`/`apply_block` `CALLREF`s a child that does the
       increment, and the counter goes 0 → 1 → 2 without bouncing; it fails
       on the pre-#32 `main`. `stf_contract_callref_without_callee_content_bounces`
-      is the negative control. Nested calls are still wrong in one case:
-      see the implicit-return bug below.
-- [ ] Nested calls return to the wrong place after an implicit return. When
+      is the negative control. (A nested-call bug after an implicit return
+      was found later and fixed; see the next item.)
+- [x] Nested calls return to the wrong place after an implicit return. When
       a callee runs off the end of its code, the interpreter pops the call
       stack but leaves `c0` pointing at the frame it just restored
       (`step()` in `onx-execution/src/interpreter.rs`); an explicit `RET`
@@ -201,6 +201,12 @@ under *Known bugs* below.
       never runs. Reproduced on `main` @ `9d2b452`. Fix: reset `c0` from the
       remaining call stack on implicit return too. Evidence needed: a test
       of that A → B → C shape where A's code after the call runs.
+      **Done:** the implicit return in `step()` now resets `c0` from the
+      remaining call stack, exactly as `RET`/`IFRET` do. Evidence:
+      `nested_implicit_return_resumes_outermost_caller` in
+      `crates/protocol/onx-execution/tests/execution_tests.rs` (C falls off,
+      B `RET`s, A's code after the call runs once; the test fails without
+      the fix, with B's tail running twice and A's never).
 - [x] Code length ignores a code cell's exact bit length. `step()` and the
       operand readers measure code as `8 × data_bytes.len()`, not
       `bit_len()`, so in a bit-granular code cell (ADR-0036) the completion
@@ -251,7 +257,7 @@ under *Known bugs* below.
       same DAGs. Evidence: `crates/tooling/onx/tests/genesis_callref.rs`
       (in memory and through storage; the first call bounces without the
       seeding).
-- [ ] Out-of-gas should bounce, not be fatal. ADR-0037 made `OutOfGas`
+- [x] Out-of-gas should bounce, not be fatal. ADR-0037 made `OutOfGas`
       fatal (the destination keeps the value). That rule was rejected on
       2026-10-08 (ADR-0037's status explains why: it adds no cost to an
       attack and takes the value from honest senders). The code still
@@ -260,7 +266,12 @@ under *Known bugs* below.
       a consensus change. Fix: map `OutOfGas` to bounce, keep reporting the
       burned gas on bounce receipts, regenerate the vectors, and amend the
       spec. Evidence needed: an STF test where an out-of-gas delivery bounces
-      its value back to the sender.
+      its value back to the sender. **Done:** `is_fatal_exception` maps
+      `OutOfGas` to bounce (no kind is fatal now), bounce receipts still
+      report the burned gas, `fatal_bounce.json` is regenerated, and
+      `execution.md` §3.4 is amended. Evidence: `tvm_out_of_gas_bounces` in
+      `crates/protocol/onx-stf/tests/tvm_integration.rs` (sender gets the
+      value back, keeps only the fee paid; receipt reports 1,000,000 gas).
 - [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other. **Done (spec follows
@@ -305,17 +316,22 @@ under *Known bugs* below.
       moved with it. Gas caps keep 0034: they sit inside the Wave 4 run, and
       code and `gas_caps.json` cite them. ADR-0029, ADR-0034 to ADR-0036,
       ADR-0038, ADR-0039 and ADR-0040 are *Accepted*. ADR-0037 is *Accepted
-      in part*: its rule that out-of-gas is fatal is rejected (see the known
-      bug above). Each status line names its evidence and the known bugs it
+      in part*: its rule that out-of-gas is fatal is rejected (and now
+      reverted in code, see above). Each status line names its evidence and the known bugs it
       carries. Evidence: the `Status` lines in `docs/adr/`, and `python3
       scripts/site.py check`.
 - [x] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
       but it isn't. Wire it in or correct the README. **Done (corrected):**
       the README now says it is a Python model that no workflow runs, and
       that M5 replaces it. Evidence: `tests/simulation/README.md`.
-- [ ] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
+- [x] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
       #12 (2026-09-10), and none of PRs #1–#23 added one. Revive the
-      convention or retire it.
+      convention or retire it. **Done (retired as a requirement):** entries
+      are optional. `CONTRIBUTING.md` says so and why, the logbook's own
+      rules no longer claim CI enforces them, and the pre-commit checklist in
+      `docs/planning/development-tasks.md` marks the entry as optional. The
+      logbook stays, and entries #13 and #14 (added 2026-10-08) are kept.
+      Evidence: `CONTRIBUTING.md` ("Research Question Logbook").
 - [x] Docs and websites are checked, not trusted. **Done:** the `Docs and
       site` workflow (`.github/workflows/docs.yml`, job `site-and-docs`)
       fails a PR on a broken Markdown link (`scripts/check-doc-links.py`), a
