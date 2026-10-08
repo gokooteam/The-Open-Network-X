@@ -216,8 +216,18 @@ impl Interpreter {
         Slice::new_with_children(cell, child_cells)
     }
 
+    /// The current code cell's instruction-stream length in bits: its exact
+    /// `bit_len()`, not `8 × data_bytes.len()`. In a bit-granular code cell
+    /// (ADR-0036) the last byte's completion tag and padding are not code;
+    /// bounding every read and jump by this keeps them from executing as
+    /// instructions. Trailing bits too few for a whole opcode or operand
+    /// fail closed with `MalformedCell` at the read that reaches them.
+    fn code_bits(&self) -> usize {
+        self.current_code.bit_len()
+    }
+
     pub fn read_uint8(&mut self) -> Result<u8, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
+        let total_bits = self.code_bits();
         if self.pc_bits.saturating_add(8) > total_bits {
             return Err(ExceptionKind::MalformedCell);
         }
@@ -250,7 +260,7 @@ impl Interpreter {
     }
 
     pub fn step(&mut self) -> Result<bool, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
+        let total_bits = self.code_bits();
         if self.pc_bits >= total_bits {
             if let Some((prev_code, prev_pc)) = self.call_stack.pop() {
                 // Implicit return: the callee fell off its end. Restore the
@@ -899,7 +909,7 @@ impl Interpreter {
                 self.pc_bits = self
                     .pc_bits
                     .checked_add_signed((offset as isize).saturating_mul(8))
-                    .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
+                    .filter(|pc| *pc <= self.code_bits())
                     .ok_or(ExceptionKind::MalformedCell)?;
             }
             // 0x79: IFRET. Return from the current continuation if the condition is nonzero.
@@ -927,7 +937,7 @@ impl Interpreter {
                     self.pc_bits = self
                         .pc_bits
                         .checked_add_signed((offset as isize).saturating_mul(8))
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
+                        .filter(|pc| *pc <= self.code_bits())
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
             }
@@ -939,7 +949,7 @@ impl Interpreter {
                     self.pc_bits = self
                         .pc_bits
                         .checked_add_signed((offset as isize).saturating_mul(8))
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
+                        .filter(|pc| *pc <= self.code_bits())
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
             }

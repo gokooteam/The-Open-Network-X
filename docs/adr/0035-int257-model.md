@@ -1,6 +1,7 @@
 # ADR-0035 — 257-bit Integer Model (Wave 4, step 3)
 
-**Status:** Proposed (2026-10-07)
+**Status:** Accepted (2026-10-08; proposed 2026-10-07). Implemented in #32
+(`onx-execution/src/int257.rs`), pinned by `reference/vectors/int257.json`.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Supersedes:** ADR-0028 Non-goals (the "integer-model wave" deferral), ADR-0031
   "u128 carrier containment" (the bulkhead is removed by the real model)

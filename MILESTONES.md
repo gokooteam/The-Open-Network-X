@@ -22,7 +22,7 @@ notes. This file is the forward plan and the finish line.
   check links to evidence.** Evidence means a PR, a CI run, or a named test.
   "The code exists" does not count. The bar is the same as the README's
   "Adversarially tested" column: something tried to break it and it held.
-- **One milestone, one minor version** (per ADR-0034). M4 ships as `0.3.0`,
+- **One milestone, one minor version** (per ADR-0040). M4 ships as `0.3.0`,
   M5 as `0.4.0`, and so on. `1.0.0` is the maintenance gate. SemVer 1.0 is
   the point where you promise compatibility, which is the same point where
   you stop developing and start maintaining.
@@ -124,14 +124,14 @@ notes. This file is the forward plan and the finish line.
   actionlint, dependency review, cargo-machete/taplo/typos, cargo-audit,
   OpenSSF Scorecard, labelers, and Codecov.
 - SemVer 2.0.0 with one workspace version, `CHANGELOG.md`, release
-  automation, and the `v0.2.0` tag (#23, ADR-0034).
+  automation, and the `v0.2.0` tag (#23, ADR-0040).
 
 ### Where that leaves us
 
 | Measure | Value (2026-10-08) |
 | --- | --- |
 | Workspace crates | 20 |
-| Specifications / ADRs | 15 / 34 (ADR-0029 and ADR-0034 still *Proposed*) |
+| Specifications / ADRs | 15 / 34 (ADR-0029 and ADR-0034 still *Proposed*) _(since resolved: all accepted on 2026-10-08, ADR-0037 in part; the versioning ADR is now ADR-0040)_ |
 | Tests (`cargo test --workspace --all-targets`) | 426 passed, 0 failed, 6 ignored across 72 test binaries (local run, Rust 1.98.1) |
 | Golden-vector files / fuzz targets | 5 / 3 |
 | CI on `main` @ `d907e2c` | ✅ green (run #56), after 6 red of the previous 7 |
@@ -172,7 +172,8 @@ harder to fix once networking adds a second moving part.
 
 **Merged:** Wave 4 (#32, 2026-10-08) hardens the VM: gas caps, 257-bit
 ints, cell bit-length, storage stats, chain-bound `CHKSIGNU`, and live
-`code_refs` (ADR-0034 `gas-caps` to ADR-0039, all *Proposed*). Review of
+`code_refs` (ADR-0034 `gas-caps` to ADR-0039, accepted 2026-10-08, ADR-0037
+only in part). Review of
 #32 found bugs it introduced or exposed; the ones reproduced are listed
 under *Known bugs* below.
 
@@ -200,14 +201,22 @@ under *Known bugs* below.
       never runs. Reproduced on `main` @ `9d2b452`. Fix: reset `c0` from the
       remaining call stack on implicit return too. Evidence needed: a test
       of that A → B → C shape where A's code after the call runs.
-- [ ] Code length ignores a code cell's exact bit length. `step()` and the
+- [x] Code length ignores a code cell's exact bit length. `step()` and the
       operand readers measure code as `8 × data_bytes.len()`, not
       `bit_len()`, so in a bit-granular code cell (ADR-0036) the completion
       tag and padding bits execute as instructions. Reproduced: a 1-bit code
       cell stores byte `0x40` and runs it as `NEWC`. Fix: bound reads by
       `bit_len()`, or reject code cells that aren't byte-aligned. Evidence
       needed: that 1-bit cell raises `MalformedCell` instead.
-- [ ] Hitting the block gas cap drops a valid message. `propose_block`
+      **Done:** `step()`, `read_uint8` and the `IFELSE`/`REPEAT`/`UNTIL`
+      jump bounds all measure code with `Cell::bit_len()`; trailing bits too
+      few for an opcode or operand raise `MalformedCell`. Evidence:
+      `one_bit_code_cell_raises_malformed_cell_instead_of_running_newc` in
+      `crates/protocol/onx-execution/tests/code_bit_len.rs` (the 1-bit cell
+      stores `0x40` and raises `MalformedCell` with 0 gas used), plus 9- and
+      12-bit cases where only the leading `NOP` runs. Three of the four
+      tests fail on the old reader.
+- [x] Hitting the block gas cap drops a valid message. `propose_block`
       returns `BlockGasExceeded`, and `onxd`'s producer
       (`crates/node/onxd/src/producer.rs`) treats it like any rejection: it
       bisects to the message that tipped the block over, moves it to
@@ -215,6 +224,16 @@ under *Known bugs* below.
       calls can be used to get honest messages dropped. Fix: hold that
       message for a later block. Evidence needed: a producer test where an
       over-cap batch splits across two blocks with nothing rejected.
+      **Done:** the bisection now returns the error of the first failing
+      prefix; when it is `BlockGasExceeded`, `propose_robust` ends the block
+      before that message and leaves it and the rest in `pending/`. Only a
+      message that exceeds the cap by itself is rejected (it can never fit,
+      and holding it would stall everything behind it). Evidence:
+      `block_gas_cap_splits_batch_across_blocks_without_rejecting` in
+      `producer.rs`: twelve ~9.8M-gas contract calls from six senders go
+      through two real `run_tick`s; block 1 commits ten, block 2 the other
+      two, every nonce reaches 2, and `rejected/` stays empty. On the old
+      producer it fails: the eleventh call is rejected.
 - [ ] Genesis contracts whose code cell has children can't be called.
       Since ADR-0039, `run()` resolves every child of the root code cell
       before the first instruction and fails with `AbsentNode` if one is
@@ -223,6 +242,16 @@ under *Known bugs* below.
       call. Fix: seed the code DAG at genesis, or resolve a child only when
       `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
       contract that `CALLREF`s through the STF.
+- [ ] Out-of-gas should bounce, not be fatal. ADR-0037 made `OutOfGas`
+      fatal (the destination keeps the value). That rule was rejected on
+      2026-10-08 (ADR-0037's status explains why: it adds no cost to an
+      attack and takes the value from honest senders). The code still
+      implements it: `is_fatal_exception` in `onx-stf/src/stf.rs`,
+      `reference/vectors/fatal_bounce.json`, and `execution.md` §3.4. This is
+      a consensus change. Fix: map `OutOfGas` to bounce, keep reporting the
+      burned gas on bounce receipts, regenerate the vectors, and amend the
+      spec. Evidence needed: an STF test where an out-of-gas delivery bounces
+      its value back to the sender.
 - [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other. **Done (spec follows
@@ -257,11 +286,20 @@ under *Known bugs* below.
 - [x] ADR-0032's status line still says the Rust decoder is "not yet
       implemented", but it shipped in #13. **Done:** the status line names
       what shipped where (#12–#14). Evidence: `docs/adr/0032-onxblk05-authenticated-headers.md`.
-- [ ] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
+- [x] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
       *Proposed*. Since #32 there are two ADR-0034 records,
       `0034-versioning-standard.md` and `0034-gas-caps.md`, and the Wave 4
       records ADR-0035 to ADR-0039 are *Proposed* too. Renumber one of the
       ADR-0034s (and every reference to it), then accept or reject each.
+      **Done:** the versioning standard is now ADR-0040
+      (`docs/adr/0040-versioning-standard.md`), and every reference to it
+      moved with it. Gas caps keep 0034: they sit inside the Wave 4 run, and
+      code and `gas_caps.json` cite them. ADR-0029, ADR-0034 to ADR-0036,
+      ADR-0038, ADR-0039 and ADR-0040 are *Accepted*. ADR-0037 is *Accepted
+      in part*: its rule that out-of-gas is fatal is rejected (see the known
+      bug above). Each status line names its evidence and the known bugs it
+      carries. Evidence: the `Status` lines in `docs/adr/`, and `python3
+      scripts/site.py check`.
 - [x] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
       but it isn't. Wire it in or correct the README. **Done (corrected):**
       the README now says it is a Python model that no workflow runs, and

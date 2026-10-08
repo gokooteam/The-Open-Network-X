@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Workspace version management for ONX (policy: docs/adr/0034-versioning-standard.md).
+"""Workspace version management for ONX (policy: docs/adr/0040-versioning-standard.md).
 
 The single source of truth is `[workspace.package] version` in the root
 Cargo.toml. Every workspace member inherits it with `version.workspace = true`.
