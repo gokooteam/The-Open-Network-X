@@ -5,8 +5,9 @@ name: Claude PR Audit
 # new push to it. Findings are posted as inline review comments plus one
 # summary comment on the PR.
 #
-# Requires the repository secret ANTHROPIC_API_KEY
-# (Settings -> Secrets and variables -> Actions).
+# Requires the repository secret CLAUDE_CODE_OAUTH_TOKEN (generate it with
+# `claude setup-token`; add it under Settings -> Secrets and variables ->
+# Actions).
 
 on:
   pull_request:
@@ -22,8 +23,11 @@ permissions:
 jobs:
   audit:
     name: Claude audit
-    # Skip drafts, and fork PRs (GitHub does not expose secrets to them).
+    # Only run in gokooteam/The-Open-Network-X (not in the upstream
+    # quickerup repo, which also carries this file via merges). Skip drafts,
+    # and PRs from other forks (GitHub does not expose secrets to them).
     if: >-
+      github.repository == 'gokooteam/The-Open-Network-X' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
@@ -42,7 +46,7 @@ jobs:
       - name: Run Claude audit
         uses: anthropics/claude-code-action@v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           track_progress: true
           prompt: |
             REPO: ${{ github.repository }}
