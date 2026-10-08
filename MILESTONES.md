@@ -234,7 +234,7 @@ under *Known bugs* below.
       through two real `run_tick`s; block 1 commits ten, block 2 the other
       two, every nonce reaches 2, and `rejected/` stays empty. On the old
       producer it fails: the eleventh call is rejected.
-- [ ] Genesis contracts whose code cell has children can't be called.
+- [x] Genesis contracts whose code cell has children can't be called.
       Since ADR-0039, `run()` resolves every child of the root code cell
       before the first instruction and fails with `AbsentNode` if one is
       missing. `onx-genesis` never seeds `contract_cells`, and they are only
@@ -242,6 +242,15 @@ under *Known bugs* below.
       call. Fix: seed the code DAG at genesis, or resolve a child only when
       `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
       contract that `CALLREF`s through the STF.
+      **Done (seeded at genesis, ADR-0041):** lazy resolution alone could
+      not work, because the child content existed nowhere. The genesis
+      document now carries the complete code/data DAGs of every contract
+      whose roots have children (version 2 only then, so existing chain IDs
+      are unchanged), `onx-genesis` takes them as `child_cells_hex`,
+      `state_tree()` seeds `contract_cells`, and `init_genesis` persists the
+      same DAGs. Evidence: `crates/tooling/onx/tests/genesis_callref.rs`
+      (in memory and through storage; the first call bounces without the
+      seeding).
 - [ ] Out-of-gas should bounce, not be fatal. ADR-0037 made `OutOfGas`
       fatal (the destination keeps the value). That rule was rejected on
       2026-10-08 (ADR-0037's status explains why: it adds no cost to an

@@ -22,7 +22,26 @@
 //!     account_id:      32 bytes
 //!     state_len:       u32 (4 bytes)
 //!     state_bytes:     AccountState canonical encoding
+//! -- version 2 only --
+//! dag_count:           u32 (4 bytes, >= 1)
+//! per contract DAG entry, ascending AccountId order:
+//!     account_id:      32 bytes
+//!     dags_len:        u32 (4 bytes)
+//!     dags_bytes:      ContractCellDags canonical encoding
 //! ```
+//!
+//! ## Contract cell DAGs (version 2, ADR-0041)
+//!
+//! An account record embeds only the *root* code/data cells. A root with
+//! child references needs the children's content too: since ADR-0039,
+//! `run()` resolves every child of the root code cell before the first
+//! instruction, and `LDREF` needs data children. So a genesis contract
+//! whose code or data root has references carries its complete
+//! [`ContractCellDags`] in the document. The rule is canonical: a DAG
+//! entry exists **iff** the account is a contract whose code or data root
+//! has at least one reference, and the document is version 2 **iff** at
+//! least one such entry exists. A genesis without such contracts is
+//! byte-identical to version 1 — existing chain IDs do not change.
 //!
 //! ## Key derivation
 //!
@@ -41,6 +60,9 @@
 //! for the full derivation story and reproduction instructions.
 
 use crate::account::AccountState;
+use crate::boc::BagOfCells;
+use crate::cell::Cell;
+use crate::contract_cells::ContractCellDags;
 use crate::error::StateModelError;
 use crate::tree::{ShardStateTree, MAX_TRIE_VALUE_BYTES};
 use onx_data_structures::{AccountId, ShardIdent, WorkchainIdent};
@@ -49,8 +71,11 @@ use std::collections::BTreeMap;
 
 /// Magic bytes opening every canonical genesis document.
 pub const GENESIS_MAGIC: [u8; 4] = *b"ONXG";
-/// Current genesis document version. Bump only with a format change.
+/// Base genesis document version: no contract cell DAG section.
 pub const GENESIS_VERSION: u32 = 1;
+/// Genesis document version carrying a contract cell DAG section. Emitted
+/// only when at least one DAG entry exists (see module docs).
+pub const GENESIS_VERSION_CONTRACT_DAGS: u32 = 2;
 
 /// Domain tag for the genesis hash (which doubles as the chain ID).
 pub const ONX_GENESIS_V1: DomainTag = DomainTag::from_ascii("ONX_GENESIS_V1");
@@ -80,17 +105,45 @@ pub struct GenesisDocument {
     pub validators: Vec<GenesisValidator>,
     /// Ascending AccountId order (BTreeMap iteration).
     pub accounts: BTreeMap<AccountId, AccountState>,
+    /// Complete code/data DAGs for exactly the contract accounts whose code
+    /// or data root has child references (see module docs). Validated at
+    /// construction: rooted at the account's committed roots, complete (no
+    /// dangling reference), and holding no unreachable cells.
+    pub contract_cells: BTreeMap<AccountId, ContractCellDags>,
 }
 
 impl GenesisDocument {
     /// Builds a genesis document, enforcing determinism invariants:
     /// validators sorted by pubkey, shard bound to the workchain,
     /// no duplicate validator keys, at least one validator and one account.
+    ///
+    /// Carries no contract cell DAGs, so it rejects any contract whose code
+    /// or data root has child references; use
+    /// [`GenesisDocument::with_contract_cells`] for those.
     pub fn new(
+        workchain: WorkchainIdent,
+        shard: ShardIdent,
+        validators: Vec<GenesisValidator>,
+        accounts: BTreeMap<AccountId, AccountState>,
+    ) -> Result<Self, StateModelError> {
+        Self::with_contract_cells(workchain, shard, validators, accounts, BTreeMap::new())
+    }
+
+    /// [`GenesisDocument::new`] plus the contract cell DAGs for contracts
+    /// whose code or data root has child references (ADR-0041).
+    ///
+    /// Fail-closed: a contract whose roots have references but no DAG, a
+    /// DAG for an account that needs none (or is not a contract), a DAG
+    /// rooted anywhere but the account's committed roots, a dangling
+    /// reference, or an unreachable cell all reject the whole document. A
+    /// genesis contract that could never execute is refused at the trust
+    /// root instead of bouncing on every call.
+    pub fn with_contract_cells(
         workchain: WorkchainIdent,
         shard: ShardIdent,
         mut validators: Vec<GenesisValidator>,
         accounts: BTreeMap<AccountId, AccountState>,
+        contract_cells: BTreeMap<AccountId, ContractCellDags>,
     ) -> Result<Self, StateModelError> {
         if shard.workchain_id != workchain {
             return Err(StateModelError::InvalidGenesis(format!(
@@ -150,11 +203,13 @@ impl GenesisDocument {
                 )));
             }
         }
+        validate_contract_cells(&accounts, &contract_cells)?;
         Ok(Self {
             workchain,
             shard,
             validators,
             accounts,
+            contract_cells,
         })
     }
 
@@ -162,7 +217,12 @@ impl GenesisDocument {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(&GENESIS_MAGIC);
-        out.extend_from_slice(&Uint32(GENESIS_VERSION).encode());
+        let version = if self.contract_cells.is_empty() {
+            GENESIS_VERSION
+        } else {
+            GENESIS_VERSION_CONTRACT_DAGS
+        };
+        out.extend_from_slice(&Uint32(version).encode());
         out.extend_from_slice(&self.workchain.to_bytes());
         out.extend_from_slice(&self.shard.shard_prefix_ident.encode());
         out.extend_from_slice(&Uint32(self.validators.len() as u32).encode());
@@ -176,6 +236,15 @@ impl GenesisDocument {
             let state_bytes = state.to_bytes();
             out.extend_from_slice(&Uint32(state_bytes.len() as u32).encode());
             out.extend_from_slice(&state_bytes);
+        }
+        if !self.contract_cells.is_empty() {
+            out.extend_from_slice(&Uint32(self.contract_cells.len() as u32).encode());
+            for (id, dags) in &self.contract_cells {
+                out.extend_from_slice(&id.to_bytes());
+                let dag_bytes = dags.to_bytes();
+                out.extend_from_slice(&Uint32(dag_bytes.len() as u32).encode());
+                out.extend_from_slice(&dag_bytes);
+            }
         }
         out
     }
@@ -207,7 +276,7 @@ impl GenesisDocument {
         }
         let version_bytes = take(&mut cursor, 4)?;
         let version = u32::from_be_bytes(version_bytes.try_into().unwrap());
-        if version != GENESIS_VERSION {
+        if version != GENESIS_VERSION && version != GENESIS_VERSION_CONTRACT_DAGS {
             return Err(StateModelError::DeserializationError(format!(
                 "unsupported genesis version: {}",
                 version
@@ -263,13 +332,46 @@ impl GenesisDocument {
             accounts.insert(id, state);
         }
 
+        let mut contract_cells = BTreeMap::new();
+        if version == GENESIS_VERSION_CONTRACT_DAGS {
+            let dcount_bytes = take(&mut cursor, 4)?;
+            let dcount = u32::from_be_bytes(dcount_bytes.try_into().unwrap()) as usize;
+            // Canonical form: version 2 is emitted only with >= 1 entry, so
+            // an empty section is a second encoding of a version-1 document.
+            if dcount == 0 {
+                return Err(StateModelError::DeserializationError(
+                    "genesis version 2 with an empty contract DAG section".to_string(),
+                ));
+            }
+            let mut prev_id: Option<AccountId> = None;
+            for _ in 0..dcount {
+                let id_bytes = take(&mut cursor, 32)?;
+                let id = AccountId::from_bytes(id_bytes.try_into().unwrap());
+                if let Some(prev) = prev_id {
+                    if id <= prev {
+                        return Err(StateModelError::DeserializationError(
+                            "genesis contract DAGs not in strictly ascending order".to_string(),
+                        ));
+                    }
+                }
+                prev_id = Some(id);
+                let len_bytes = take(&mut cursor, 4)?;
+                let len = u32::from_be_bytes(len_bytes.try_into().unwrap()) as usize;
+                let dag_bytes = take(&mut cursor, len)?;
+                let dags = ContractCellDags::from_bytes(&dag_bytes).map_err(|e| {
+                    StateModelError::DeserializationError(format!("bad contract cell DAGs: {e}"))
+                })?;
+                contract_cells.insert(id, dags);
+            }
+        }
+
         if !cursor.is_empty() {
             return Err(StateModelError::TrailingBytes {
                 remaining: cursor.len(),
             });
         }
 
-        Self::new(workchain, shard, validators, accounts)
+        Self::with_contract_cells(workchain, shard, validators, accounts, contract_cells)
     }
 
     /// The genesis hash: domain-separated hash of the canonical bytes.
@@ -280,6 +382,12 @@ impl GenesisDocument {
     }
 
     /// Builds the initial [`ShardStateTree`] from the genesis allocations.
+    ///
+    /// Every genesis contract also gets its contract cell DAGs (ADR-0041):
+    /// the document's complete DAGs where its roots have children,
+    /// otherwise single-root bags (the root is the whole DAG). The STF
+    /// seeds the interpreter's cell store from these, so a genesis
+    /// contract's first call can resolve its code children.
     pub fn state_tree(&self) -> ShardStateTree {
         let mut tree = ShardStateTree::new();
         for (id, state) in &self.accounts {
@@ -287,9 +395,138 @@ impl GenesisDocument {
             // accounts over MAX_TRIE_VALUE_BYTES), so this cannot fail.
             tree.insert(*id, state.clone())
                 .expect("genesis accounts are trie-committable by construction");
+            if let AccountState::Active {
+                code: Some(code),
+                data,
+                ..
+            } = state
+            {
+                let dags = match self.contract_cells.get(id) {
+                    Some(dags) => dags.clone(),
+                    None => ContractCellDags {
+                        code: BagOfCells::from_root(code.clone())
+                            .expect("a single root cell is a valid bag"),
+                        data: BagOfCells::from_root(genesis_data_root(data.as_ref()))
+                            .expect("a single root cell is a valid bag"),
+                    },
+                };
+                tree.set_contract_cells(*id, dags);
+            }
         }
         tree
     }
+}
+
+/// The data root the STF executes a contract with: its data cell, or an
+/// empty cell when it has none (the STF's calling convention).
+fn genesis_data_root(data: Option<&Cell>) -> Cell {
+    data.cloned()
+        .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"))
+}
+
+/// Check the contract cell DAG section against the accounts (ADR-0041).
+fn validate_contract_cells(
+    accounts: &BTreeMap<AccountId, AccountState>,
+    contract_cells: &BTreeMap<AccountId, ContractCellDags>,
+) -> Result<(), StateModelError> {
+    let short = |id: &AccountId| -> String {
+        id.to_bytes()[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    for (id, state) in accounts {
+        let (code, data) = match state {
+            AccountState::Active {
+                code: Some(code),
+                data,
+                ..
+            } => (code, data.as_ref()),
+            _ => {
+                if contract_cells.contains_key(id) {
+                    return Err(StateModelError::InvalidGenesis(format!(
+                        "genesis account {} has contract cell DAGs but no code",
+                        short(id)
+                    )));
+                }
+                continue;
+            }
+        };
+        let data_root = genesis_data_root(data);
+        let needs_dags = !code.cell_refs().is_empty() || !data_root.cell_refs().is_empty();
+        let dags = match (needs_dags, contract_cells.get(id)) {
+            (false, None) => continue,
+            (false, Some(_)) => {
+                return Err(StateModelError::InvalidGenesis(format!(
+                    "genesis contract {} has contract cell DAGs but its code and data roots \
+                     have no child references (non-canonical)",
+                    short(id)
+                )))
+            }
+            (true, None) => {
+                return Err(StateModelError::InvalidGenesis(format!(
+                    "genesis contract {} has a code or data root with child references \
+                     but no contract cell DAGs: it could never execute",
+                    short(id)
+                )))
+            }
+            (true, Some(dags)) => dags,
+        };
+        for (label, boc, root) in [
+            ("code", &dags.code, code.hash()),
+            ("data", &dags.data, data_root.hash()),
+        ] {
+            check_complete_dag(boc, &root).map_err(|detail| {
+                StateModelError::InvalidGenesis(format!(
+                    "genesis contract {} {label} DAG: {detail}",
+                    short(id)
+                ))
+            })?;
+        }
+    }
+    for id in contract_cells.keys() {
+        if !accounts.contains_key(id) {
+            return Err(StateModelError::InvalidGenesis(format!(
+                "contract cell DAGs for {} which is not a genesis account",
+                short(id)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A genesis DAG must be rooted at `root`, complete (every reference
+/// reachable from the root resolves), hold every cell under its own hash,
+/// and hold no unreachable cell (the wire form carries only the reachable
+/// set, so an unreachable cell would not survive a `to_bytes`/`from_bytes`
+/// round trip).
+///
+/// `BagOfCells::new` does not check that a map key is its cell's hash, so
+/// this does: a cell stored under another hash would let a reference
+/// resolve to content the committed root does not commit to, and the
+/// document would fail `from_bytes` (which does check) after a restart.
+fn check_complete_dag(boc: &BagOfCells, root: &[u8; 32]) -> Result<(), String> {
+    if boc.root_hash() != root {
+        return Err("not rooted at the account's committed root".to_string());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack = vec![*root];
+    while let Some(hash) = stack.pop() {
+        if !seen.insert(hash) {
+            continue;
+        }
+        let cell = boc
+            .get_cell(&hash)
+            .ok_or_else(|| "dangling reference to a cell the DAG does not carry".to_string())?;
+        if cell.hash() != hash {
+            return Err("carries a cell under a hash that is not its own".to_string());
+        }
+        stack.extend(cell.cell_refs().iter().copied());
+    }
+    if seen.len() != boc.cells().len() {
+        return Err("carries cells unreachable from the root".to_string());
+    }
+    Ok(())
 }
 
 /// Derives a deterministic [`AccountId`] from a human-readable config label.
@@ -733,5 +970,349 @@ mod tests {
             derive_validator_pubkey("validator-01")
         );
         assert!(parse_or_derive_account_id("onx:alice").is_ok());
+    }
+
+    #[test]
+    fn rejects_contract_dag_with_cell_under_wrong_hash() {
+        // A code root with one child. The DAG stores an unrelated leaf
+        // under the child's hash: every reference resolves, so only a
+        // hash-vs-key check can catch it. The same DAG with the real child
+        // is accepted, so the rejection is about the misindexed cell.
+        let child = Cell::new(vec![0x01], vec![]).unwrap();
+        let impostor = Cell::new(vec![0x02], vec![]).unwrap();
+        let code = Cell::new(vec![0x00], vec![child.hash()]).unwrap();
+        let contract = derive_account_id("onx:contract");
+
+        let doc_with = |child_cell: Cell| {
+            let mut cells = BTreeMap::new();
+            cells.insert(code.hash(), code.clone());
+            cells.insert(child.hash(), child_cell);
+            let dags = ContractCellDags {
+                code: BagOfCells::new(code.hash(), cells).unwrap(),
+                data: BagOfCells::from_root(genesis_data_root(None)).unwrap(),
+            };
+            let mut accounts = sample_doc().accounts;
+            accounts.insert(
+                contract,
+                AccountState::Active {
+                    balance_nanos: 1,
+                    last_trans_lt: 0,
+                    code: Some(code.clone()),
+                    data: None,
+                    storage_stat: StorageStat {
+                        cell_count: 0,
+                        byte_count: 0,
+                        bit_count: 0,
+                    },
+                    pubkey: [0u8; 32],
+                    nonce: 0,
+                },
+            );
+            let base = sample_doc();
+            GenesisDocument::with_contract_cells(
+                base.workchain,
+                base.shard,
+                base.validators,
+                accounts,
+                BTreeMap::from([(contract, dags)]),
+            )
+        };
+
+        let doc = doc_with(child.clone()).expect("correctly indexed DAG is accepted");
+        assert!(GenesisDocument::from_bytes(&doc.to_bytes()).is_ok());
+
+        let err = doc_with(impostor).expect_err("misindexed cell must be refused");
+        assert!(
+            err.to_string().contains("under a hash that is not its own"),
+            "{err}"
+        );
+    }
+
+    // --- ADR-0041 canonical-form rejections --------------------------------
+    //
+    // The genesis hash is the chain ID, so each rule below is what keeps one
+    // logical genesis from having two encodings. Every case is checked at
+    // construction (`with_contract_cells`) and, where it is a wire-level
+    // rule, on decode (`from_bytes`).
+
+    fn contract_state(code: &Cell, data: Option<&Cell>) -> AccountState {
+        AccountState::Active {
+            balance_nanos: 1,
+            last_trans_lt: 0,
+            code: Some(code.clone()),
+            data: data.cloned(),
+            storage_stat: StorageStat {
+                cell_count: 0,
+                byte_count: 0,
+                bit_count: 0,
+            },
+            pubkey: [0u8; 32],
+            nonce: 0,
+        }
+    }
+
+    /// `sample_doc()` plus the given extra accounts and DAG section.
+    fn build_with(
+        extra: Vec<(AccountId, AccountState)>,
+        dags: BTreeMap<AccountId, ContractCellDags>,
+    ) -> Result<GenesisDocument, StateModelError> {
+        let base = sample_doc();
+        let mut accounts = base.accounts;
+        accounts.extend(extra);
+        GenesisDocument::with_contract_cells(
+            base.workchain,
+            base.shard,
+            base.validators,
+            accounts,
+            dags,
+        )
+    }
+
+    /// A bag holding exactly `cells`, rooted at `root` (no completeness
+    /// check: `BagOfCells::new` tolerates dangling refs).
+    fn bag(root: &Cell, cells: &[&Cell]) -> BagOfCells {
+        let mut map = BTreeMap::new();
+        map.insert(root.hash(), root.clone());
+        for c in cells {
+            map.insert(c.hash(), (*c).clone());
+        }
+        BagOfCells::new(root.hash(), map).unwrap()
+    }
+
+    fn empty_data_bag() -> BagOfCells {
+        BagOfCells::from_root(genesis_data_root(None)).unwrap()
+    }
+
+    /// Code root with one child, and its complete DAG.
+    fn code_with_child(tag: u8) -> (Cell, ContractCellDags) {
+        let child = Cell::new(vec![tag, 0x01], vec![]).unwrap();
+        let code = Cell::new(vec![tag], vec![child.hash()]).unwrap();
+        let dags = ContractCellDags {
+            code: bag(&code, &[&child]),
+            data: empty_data_bag(),
+        };
+        (code, dags)
+    }
+
+    /// Splits a version-2 document's bytes into the part before the DAG
+    /// section and its entries, re-encoded one by one.
+    fn split_dag_section(doc: &GenesisDocument) -> (Vec<u8>, Vec<Vec<u8>>) {
+        let bytes = doc.to_bytes();
+        let entries: Vec<Vec<u8>> = doc
+            .contract_cells
+            .iter()
+            .map(|(id, dags)| {
+                let mut e = id.to_bytes().to_vec();
+                let d = dags.to_bytes();
+                e.extend_from_slice(&(d.len() as u32).to_be_bytes());
+                e.extend_from_slice(&d);
+                e
+            })
+            .collect();
+        let section_len = entries
+            .iter()
+            .map(Vec::len)
+            .fold(4usize, usize::saturating_add);
+        let head = bytes[..bytes.len().saturating_sub(section_len)].to_vec();
+        (head, entries)
+    }
+
+    fn assemble(head: &[u8], entries: &[&Vec<u8>]) -> Vec<u8> {
+        let mut out = head.to_vec();
+        out.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+        for e in entries {
+            out.extend_from_slice(e);
+        }
+        out
+    }
+
+    #[test]
+    fn version_2_wire_rules_are_enforced() {
+        let (code_a, dags_a) = code_with_child(0xa0);
+        let (code_b, dags_b) = code_with_child(0xb0);
+        let (id_a, id_b) = (derive_account_id("onx:ca"), derive_account_id("onx:cb"));
+        let doc = build_with(
+            vec![
+                (id_a, contract_state(&code_a, None)),
+                (id_b, contract_state(&code_b, None)),
+            ],
+            BTreeMap::from([(id_a, dags_a), (id_b, dags_b)]),
+        )
+        .expect("valid two-contract genesis");
+        let bytes = doc.to_bytes();
+        assert_eq!(
+            u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
+            GENESIS_VERSION_CONTRACT_DAGS
+        );
+        let (head, entries) = split_dag_section(&doc);
+        assert_eq!(assemble(&head, &[&entries[0], &entries[1]]), bytes);
+        assert!(GenesisDocument::from_bytes(&bytes).is_ok());
+
+        // Out of order and duplicated entries.
+        let swapped = assemble(&head, &[&entries[1], &entries[0]]);
+        let err = GenesisDocument::from_bytes(&swapped).unwrap_err();
+        assert!(err.to_string().contains("strictly ascending"), "{err}");
+        let dup = assemble(&head, &[&entries[0], &entries[0], &entries[1]]);
+        let err = GenesisDocument::from_bytes(&dup).unwrap_err();
+        assert!(err.to_string().contains("strictly ascending"), "{err}");
+
+        // A missing entry: the contract's roots have refs but no DAG.
+        let missing = assemble(&head, &[&entries[0]]);
+        let err = GenesisDocument::from_bytes(&missing).unwrap_err();
+        assert!(err.to_string().contains("no contract cell DAGs"), "{err}");
+
+        // The same accounts as a version-1 document (no section at all).
+        let mut v1 = head.clone();
+        v1[4..8].copy_from_slice(&GENESIS_VERSION.to_be_bytes());
+        let err = GenesisDocument::from_bytes(&v1).unwrap_err();
+        assert!(err.to_string().contains("no contract cell DAGs"), "{err}");
+
+        // Truncated section.
+        assert!(GenesisDocument::from_bytes(&bytes[..bytes.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn version_2_with_empty_dag_section_is_rejected() {
+        // A version-1 document re-labelled version 2 with a zero count is a
+        // second encoding of the same genesis.
+        let mut bytes = sample_doc().to_bytes();
+        bytes[4..8].copy_from_slice(&GENESIS_VERSION_CONTRACT_DAGS.to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        let err = GenesisDocument::from_bytes(&bytes).unwrap_err();
+        assert!(
+            err.to_string().contains("empty contract DAG section"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn dag_entry_must_belong_to_a_contract_that_needs_one() {
+        let (code, dags) = code_with_child(0xc0);
+        let id = derive_account_id("onx:c");
+
+        // An id that is not a genesis account.
+        let err = build_with(vec![], BTreeMap::from([(id, dags.clone())])).unwrap_err();
+        assert!(err.to_string().contains("not a genesis account"), "{err}");
+
+        // A genesis account without code (alice is a plain wallet).
+        let alice = derive_account_id("onx:alice");
+        let err = build_with(vec![], BTreeMap::from([(alice, dags.clone())])).unwrap_err();
+        assert!(err.to_string().contains("but no code"), "{err}");
+
+        // A contract whose roots have no references: the root is the whole
+        // DAG, so an entry would be a second encoding.
+        let leaf = Cell::new(vec![0x42], vec![]).unwrap();
+        let leaf_dags = ContractCellDags {
+            code: BagOfCells::from_root(leaf.clone()).unwrap(),
+            data: empty_data_bag(),
+        };
+        let err = build_with(
+            vec![(id, contract_state(&leaf, None))],
+            BTreeMap::from([(id, leaf_dags)]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("non-canonical"), "{err}");
+
+        // A contract whose roots have references but no entry.
+        let err = build_with(vec![(id, contract_state(&code, None))], BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("no contract cell DAGs"), "{err}");
+        // `new` carries no DAGs, so it refuses the same contract.
+        let base = sample_doc();
+        let mut accounts = base.accounts;
+        accounts.insert(id, contract_state(&code, None));
+        assert!(
+            GenesisDocument::new(base.workchain, base.shard, base.validators, accounts).is_err()
+        );
+    }
+
+    #[test]
+    fn dag_must_be_rooted_complete_and_minimal() {
+        let child = Cell::new(vec![0x01], vec![]).unwrap();
+        let code = Cell::new(vec![0x00], vec![child.hash()]).unwrap();
+        let id = derive_account_id("onx:c");
+        let reject = |dags: ContractCellDags, needle: &str| {
+            let err = build_with(
+                vec![(id, contract_state(&code, None))],
+                BTreeMap::from([(id, dags)]),
+            )
+            .unwrap_err();
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        };
+
+        // Rooted elsewhere: a different code cell.
+        let other = Cell::new(vec![0x09], vec![child.hash()]).unwrap();
+        reject(
+            ContractCellDags {
+                code: bag(&other, &[&child]),
+                data: empty_data_bag(),
+            },
+            "not rooted at the account's committed root",
+        );
+        // Data DAG rooted at something other than the (empty) data root.
+        reject(
+            ContractCellDags {
+                code: bag(&code, &[&child]),
+                data: BagOfCells::from_root(child.clone()).unwrap(),
+            },
+            "data DAG: not rooted",
+        );
+        // Dangling: the child's content is missing.
+        reject(
+            ContractCellDags {
+                code: bag(&code, &[]),
+                data: empty_data_bag(),
+            },
+            "dangling reference",
+        );
+        // Unreachable: an extra cell nothing references.
+        let stray = Cell::new(vec![0x07], vec![]).unwrap();
+        reject(
+            ContractCellDags {
+                code: bag(&code, &[&child, &stray]),
+                data: empty_data_bag(),
+            },
+            "unreachable from the root",
+        );
+    }
+
+    #[test]
+    fn data_only_children_select_version_2_and_round_trip() {
+        // Childless code, data root with a child: the other path into
+        // version 2.
+        let code = Cell::new(vec![0x00], vec![]).unwrap();
+        let leaf = Cell::new(vec![0x05], vec![]).unwrap();
+        let data = Cell::new(vec![0x06], vec![leaf.hash()]).unwrap();
+        let id = derive_account_id("onx:d");
+        let dags = ContractCellDags {
+            code: BagOfCells::from_root(code.clone()).unwrap(),
+            data: bag(&data, &[&leaf]),
+        };
+        let doc = build_with(
+            vec![(id, contract_state(&code, Some(&data)))],
+            BTreeMap::from([(id, dags.clone())]),
+        )
+        .expect("data-only DAG accepted");
+        let bytes = doc.to_bytes();
+        assert_eq!(
+            u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
+            GENESIS_VERSION_CONTRACT_DAGS
+        );
+        let back = GenesisDocument::from_bytes(&bytes).expect("decodes");
+        assert_eq!(back.to_bytes(), bytes);
+        assert_eq!(back.state_tree().contract_cells(&id), Some(&dags));
+
+        // Without the data child's content it is refused.
+        let err = build_with(
+            vec![(id, contract_state(&code, Some(&data)))],
+            BTreeMap::from([(
+                id,
+                ContractCellDags {
+                    code: BagOfCells::from_root(code.clone()).unwrap(),
+                    data: bag(&data, &[]),
+                },
+            )]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("data DAG: dangling"), "{err}");
     }
 }

@@ -36,9 +36,7 @@
 use crate::encoding::{decode_body, encode_body};
 use crate::error::StorageError;
 use onx_data_structures::AccountId;
-use onx_state_model::{
-    AccountState, BagOfCells, ContractCellDags, GenesisDocument, ShardStateTree,
-};
+use onx_state_model::{AccountState, ContractCellDags, GenesisDocument, ShardStateTree};
 use onx_stf::{apply_block, Block, BlockBody, BlockHeader, Receipts, SigEntry, State};
 use redb::{Database, ReadableTable, TableDefinition};
 use std::collections::BTreeSet;
@@ -527,9 +525,9 @@ impl ChainStore {
     /// recomputed from accounts on every load (see `load_state`), and no
     /// reader ever needed the cells table (dropped in schema v2).
     /// Contract cell DAGs for genesis-installed contracts ARE persisted
-    /// (single-root bags built from the account record's embedded root
-    /// cells), so the ADR-0029 startup invariant holds on a fresh
-    /// database.
+    /// (the genesis document's complete DAGs, or single-root bags where
+    /// the roots have no children — ADR-0041), so the ADR-0029 startup
+    /// invariant holds on a fresh database.
     pub fn init_genesis(&self, doc: &GenesisDocument) -> Result<(), StorageError> {
         let genesis_hash = doc.genesis_hash();
         let wtxn = self.db.begin_write()?;
@@ -568,38 +566,17 @@ impl ChainStore {
                 }
             }
 
-            // Contract cell DAGs for genesis-installed contracts: the
-            // account record embeds the code/data *root cells*, so the
-            // DAGs start as single-root bags. (Genesis carries root cells
-            // only — a code cell with child refs has no child content
-            // anywhere; the startup invariant fails loudly on such a
-            // genesis instead of running an unexecutable contract. See
-            // ADR-0029.) Without these entries the startup invariant
-            // would refuse to open a database whose only contract
-            // activity predates any execution.
+            // Contract cell DAGs for genesis-installed contracts, exactly
+            // as `GenesisDocument::state_tree` built them (ADR-0041): the
+            // document's complete DAGs for contracts whose roots have
+            // children, single-root bags otherwise. Without these entries
+            // the startup invariant would refuse to open a database whose
+            // only contract activity predates any execution, and a genesis
+            // contract with code children would bounce on every call.
             {
                 let mut cells_tbl = wtxn.open_table(CONTRACT_CELLS)?;
-                for (id, st) in tree.accounts() {
-                    if let AccountState::Active {
-                        code: Some(code),
-                        data,
-                        ..
-                    } = st
-                    {
-                        let code_boc = BagOfCells::from_root(code.clone())?;
-                        // No persistent data yet: the STF seeds execution
-                        // with an empty cell in that case, so persist the
-                        // same default.
-                        let data_cell = data.clone().unwrap_or_else(|| {
-                            onx_state_model::Cell::new(vec![], vec![]).expect("empty cell is valid")
-                        });
-                        let data_boc = BagOfCells::from_root(data_cell)?;
-                        let dags = ContractCellDags {
-                            code: code_boc,
-                            data: data_boc,
-                        };
-                        cells_tbl.insert(id.to_bytes().as_slice(), dags.to_bytes().as_slice())?;
-                    }
+                for (id, dags) in tree.all_contract_cells() {
+                    cells_tbl.insert(id.to_bytes().as_slice(), dags.to_bytes().as_slice())?;
                 }
             }
 
@@ -1387,7 +1364,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    use onx_state_model::{Cell, StorageStat};
+    use onx_state_model::{BagOfCells, Cell, StorageStat};
     use std::collections::BTreeMap;
 
     fn contract_account(code: Option<Cell>, data: Option<Cell>) -> AccountState {

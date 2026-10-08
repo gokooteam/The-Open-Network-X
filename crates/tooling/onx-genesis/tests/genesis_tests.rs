@@ -27,6 +27,7 @@ fn test_config() -> GenesisConfig {
                 public_key: None,
                 code_hex: None,
                 data_hex: None,
+                child_cells_hex: Vec::new(),
             },
             onx_genesis::Balance {
                 address: "onx:bob".to_string(),
@@ -34,6 +35,7 @@ fn test_config() -> GenesisConfig {
                 public_key: None,
                 code_hex: None,
                 data_hex: None,
+                child_cells_hex: Vec::new(),
             },
         ],
         validators: vec![onx_genesis::Validator {
@@ -118,6 +120,7 @@ fn rejects_duplicate_addresses_and_empty_sets() {
         public_key: None,
         code_hex: None,
         data_hex: None,
+        child_cells_hex: Vec::new(),
     });
     assert!(build_genesis_document(&cfg).is_err());
 
