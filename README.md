@@ -117,7 +117,7 @@ earned.
 | Merkle proofs | ✅ | ✅ | ✅ | ✅ fabricated/absent-key proofs rejected |
 | Atomic storage + crash recovery | ✅ | ✅ | ✅ | ✅ 100× kill -9, full-or-nothing |
 | `onxd` block-production loop | ✅ | ✅ | ✅ | ✅ spool mempool, demand blocks, replay-to-identical-roots |
-| VM / TVM execution | ✅ | ✅ | ✅ | ⚠️ partial — `LDREF` child-cell bug fixed (#7, `vm_child_cells.rs`), checked arithmetic (#8), `tvm_execution` fuzzed in CI; open: `JMPREF`/`CALLREF` don't work from real contracts (M4) |
+| VM / TVM execution | ✅ | ✅ | ✅ | ⚠️ partial — `LDREF` child-cell bug fixed (#7, `vm_child_cells.rs`), checked arithmetic (#8), `tvm_execution` fuzzed in CI, `JMPREF`/`CALLREF` work from real contracts (#32, `callref_stf.rs`); open: nested calls after an implicit return, padding bits of bit-granular code cells (M4) |
 | Consensus | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
 | Networking (ADNL/DHT) | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
 | Sharding | ✅ | ❌ | ❌ | ❌ — frozen |

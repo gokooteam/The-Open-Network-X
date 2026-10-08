@@ -30,6 +30,8 @@ fuzz_target!(|data: &[u8]| {
         start_lt: 0,
         end_lt: 0,
         gas_limit: 1_024,
+        // Fixed test chain id (ADR-0038); CHKSIGNU only needs it to be stable.
+        chain_id: [0x43; 32],
     };
     let _ = execute(code, data_cell, fuzz_message(), context);
 });
