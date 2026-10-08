@@ -1,6 +1,10 @@
 # ADR-0029 — Panic Containment and the Migration Startup Invariant
 
-**Status:** Proposed
+**Status:** Accepted (2026-10-08). Implemented: per-message `catch_unwind`
+around the producer's dry-run (`crates/node/onxd/src/producer.rs`), no
+containment on `commit_block`/`apply_block`, and the startup DAG check
+`verify_contract_cell_dag_completeness` with `decode_contract_dags_persisted`
+(`crates/protocol/onx-storage/src/store.rs`).
 **Date:** 2026-10-06
 
 ## Context

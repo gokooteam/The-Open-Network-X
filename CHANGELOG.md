@@ -4,7 +4,7 @@ All notable changes to the ONX workspace are recorded here.
 
 The format follows [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/)
 and the project uses [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html)
-as described in [ADR-0034](docs/adr/0034-versioning-standard.md). One version
+as described in [ADR-0040](docs/adr/0040-versioning-standard.md). One version
 covers every crate in the workspace. Protocol wire-format versions (block
 magic, `PROTOCOL_VERSION`, storage `SCHEMA_VERSION`, domain tags) are tracked
 separately and listed under each release when they change.
@@ -40,6 +40,13 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Changed
 
+- ADRs: the versioning standard is renumbered ADR-0034 → ADR-0040
+  (`docs/adr/0040-versioning-standard.md`). Since #32 there had been two
+  ADR-0034s, and gas caps keep 0034. ADR-0029 and ADR-0034 to ADR-0040 are
+  now *Accepted*, except ADR-0037, which is *Accepted in part*: its rule
+  that out-of-gas is fatal is rejected. The code still implements that rule
+  until the fix tracked in `MILESTONES.md` (M4) lands. No code or consensus
+  bytes changed in this entry.
 - `ShardStateTree` stores account records in its Merkle trie leaves instead
   of a separate `BTreeMap`, so `clone()` is O(1) and the STF no longer
   deep-copies every account on each `propose_block` and `apply_block`. At
@@ -80,6 +87,15 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Fixed
 
+- VM: code length is the code cell's exact `bit_len()` (ADR-0036), not
+  `8 × data_bytes.len()`. In a bit-granular code cell the completion tag
+  and padding bits no longer execute as instructions; trailing bits too
+  few for an opcode or operand raise `MalformedCell`. Evidence:
+  `crates/protocol/onx-execution/tests/code_bit_len.rs`.
+- `onxd` producer: a batch over `MAX_GAS_PER_BLOCK` is split across blocks
+  instead of rejecting the message that tipped it over (which stranded the
+  sender's later nonces and let heavy calls get honest messages dropped).
+  The block ends before that message and the rest stay in `pending/`.
 - Explorer: its self-test failed for every visitor ("do not trust
   results") because the header vector was still the 148-byte pre-`ONXBLK05`
   one; it now uses the 160-byte vector from `hand_derived_vectors.rs`. The
@@ -140,7 +156,7 @@ signatures `ONX_MSG_EXT_V1`, addresses `ONX_ADDR_V1`.
   pointed at devnet-1 (#9, #17).
 - Opt-in Sentry crash reporting for `onxd` via `SENTRY_DSN` (#19).
 - Workspace-wide versioning policy, `CHANGELOG.md`, and release automation
-  (ADR-0034).
+  (ADR-0040).
 
 ### Changed
 

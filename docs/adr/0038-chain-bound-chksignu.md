@@ -1,6 +1,8 @@
 # ADR-0038 — Chain-bound CHKSIGNU (Wave 4, step 6)
 
-**Status:** Proposed (2026-10-07)
+**Status:** Accepted (2026-10-08; proposed 2026-10-07). Implemented in #32:
+`DomainTag::bind_chain` and `CHKSIGNU_V1` in `onx-primitives/src/hash.rs`,
+`ExecutionContext.chain_id` from state, and `TX_BODY_V1` deleted.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Amends:** `docs/specification/execution.md` §3.2; `docs/specification/tvm-instruction-set.md` §4.4
 
