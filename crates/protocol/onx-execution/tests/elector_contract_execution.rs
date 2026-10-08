@@ -58,6 +58,7 @@ fn elector_contract_processes_stakes_and_emits_validator_set_cell() {
             start_lt: 0,
             end_lt: 1,
             gas_limit: 1000,
+            chain_id: [0x43; 32], // test chain id (ADR-0038)
         },
     );
     assert!(matches!(exec, ExecutionResult::Success { .. }));

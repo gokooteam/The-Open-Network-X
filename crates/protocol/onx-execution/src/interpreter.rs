@@ -4,7 +4,7 @@ use crate::types::{Builder, ExceptionKind, ExecutionContext, ExecutionResult, Sl
 use onx_data_structures::Message;
 use onx_primitives::{
     domain_hash,
-    hash::{DomainTag, TX_BODY_V1},
+    hash::{DomainTag, CHKSIGNU_V1},
     PublicKey, Signature,
 };
 use onx_state_model::Cell;
@@ -750,6 +750,15 @@ impl Interpreter {
             0x62 => {
                 // CHKSIGNU — the hash operand must name a 32-byte preimage,
                 // i.e. lie in [0, 2^256); a negative Integer is TypeMismatch.
+                //
+                // ADR-0038: the signature is verified under the CHAIN-BOUND
+                // tag `CHKSIGNU_V1.bind_chain(chain_id)` — the tag bytes are
+                // SHA256(pad32("ONX_CHKSIGNU_V1") || chain_id), so a
+                // signature produced for one chain cannot verify on another
+                // chain even with identical keys. The base tag is never used
+                // raw. `chain_id` arrives via `ExecutionContext` (the STF
+                // populates it from `State.chain_id`); it is fixed for the
+                // block, so verification stays deterministic.
                 self.consume_gas(4000)?;
                 let hash_int = self.pop_integer()?;
                 let hash32 = hash_int
@@ -760,10 +769,11 @@ impl Interpreter {
                 if pubkey_bytes.len() != 32 || sig_bytes.len() != 64 {
                     return Err(ExceptionKind::TypeMismatch);
                 }
+                let tag = CHKSIGNU_V1.bind_chain(&self.context.chain_id);
                 let pubkey = PublicKey::decode_exact(&pubkey_bytes);
                 let sig = Signature::decode_exact(&sig_bytes);
                 let valid = if let (Ok(pk), Ok(s)) = (pubkey, sig) {
-                    pk.verify(&TX_BODY_V1, &hash32, &s).is_ok()
+                    pk.verify(&tag, &hash32, &s).is_ok()
                 } else {
                     false
                 };

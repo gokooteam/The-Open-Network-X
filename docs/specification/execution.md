@@ -46,7 +46,7 @@ execute(code: Cell, data: Cell, message: Message, context: ExecutionContext)
 ```
 
 - `code` and `data` are cell trees per `state-model.md` §3.3–§4.2 (the Bag-of-Cells model), not a host-language object graph.
-- `ExecutionContext` is limited to protocol-committed values already fixed by the block being produced or validated — at minimum the block's `gen_utime` and logical-time window (`start_lt`/`end_lt`, per `data-structures.md` §4.4) — and explicitly excludes wall-clock reads, local configuration, network state, or any other source of nondeterminism (`INSTRUCTIONS.md` §10).
+- `ExecutionContext` is limited to protocol-committed values already fixed by the block being produced or validated — at minimum the block's `gen_utime` and logical-time window (`start_lt`/`end_lt`, per `data-structures.md` §4.4), the chain's `chain_id` (the genesis hash; required for chain-bound signature verification — ADR-0038), and explicitly excludes wall-clock reads, local configuration, network state, or any other source of nondeterminism (`INSTRUCTIONS.md` §10).
 - `out_messages` are constructed per `transactions.md`'s `Message` structure; this document does not redefine message admission, only that execution is what *produces* the messages transactions.md then governs delivery of.
 - Execution is atomic: on `Exception`, `data` is unchanged from its pre-execution value (no partial state mutation is observable), matching typical protocol expectations for transaction rollback; only `gas_used` (and therefore fee deduction, per `transactions.md`) is retained from a failed execution.
 

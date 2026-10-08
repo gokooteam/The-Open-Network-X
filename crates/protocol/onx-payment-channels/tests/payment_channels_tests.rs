@@ -2,7 +2,7 @@
 
 use onx_data_structures::{AccountId, FullAddress, WorkchainIdent};
 use onx_payment_channels::{ChannelError, ChannelState, PaymentChannelArbiter};
-use onx_primitives::{hash::TX_BODY_V1, SecretKey, Uint128, Uint256, Uint64};
+use onx_primitives::{SecretKey, Uint128, Uint256, Uint64};
 use onx_state_model::Cell;
 
 fn setup_arbiter() -> (
@@ -51,8 +51,8 @@ fn test_cooperative_settlement_success() {
     };
 
     let state_hash = state.hash();
-    let sig_a = sk_a.sign(&TX_BODY_V1, &state_hash.0);
-    let sig_b = sk_b.sign(&TX_BODY_V1, &state_hash.0);
+    let sig_a = sk_a.sign(&ChannelState::DOMAIN_TAG, &state_hash.0);
+    let sig_b = sk_b.sign(&ChannelState::DOMAIN_TAG, &state_hash.0);
 
     assert_eq!(
         arbiter.cooperative_settle(state.clone(), sig_a, sig_b),
@@ -75,8 +75,8 @@ fn test_uncooperative_dispute_and_finalization() {
         expiry_lt: None,
     };
     let hash1 = state1.hash();
-    let sig_a1 = sk_a.sign(&TX_BODY_V1, &hash1.0);
-    let sig_b1 = sk_b.sign(&TX_BODY_V1, &hash1.0);
+    let sig_a1 = sk_a.sign(&ChannelState::DOMAIN_TAG, &hash1.0);
+    let sig_b1 = sk_b.sign(&ChannelState::DOMAIN_TAG, &hash1.0);
 
     assert_eq!(
         arbiter.submit_uncooperative_state(state1, sig_a1, sig_b1, Uint64::from(100u64)),

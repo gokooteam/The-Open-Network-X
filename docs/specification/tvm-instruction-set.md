@@ -206,7 +206,7 @@ are checked against it, so reading the completion tag as data fails closed
 | --- | --- | --- | --- | --- | --- |
 | `0x60` | `HASHBYTES` | — | `(Bytes) -> (Integer)`, unsigned 256-bit SHA-256 (`protocol-primitives.md`) | 200 | — |
 | `0x61` | `HASHCELL` | — | `(Cell) -> (Integer)`, unsigned 256-bit domain-separated Cell hash (`state-model.md`'s `ONX_CELL_HASH_V1`) | 200 | never `AbsentNode` (§3.5.3) |
-| `0x62` | `CHKSIGNU` | — | `(pubkey: Bytes, signature: Bytes, hash: Integer) -> (bool)`, Ed25519 verify (`protocol-primitives.md`) | 4000 | `TypeMismatch` if `pubkey` is not exactly 32 bytes or `signature` is not exactly 64 bytes |
+| `0x62` | `CHKSIGNU` | — | `(pubkey: Bytes, signature: Bytes, hash: Integer) -> (bool)`, Ed25519 verify under the chain-bound tag `chksignu_tag(chain_id)` (ADR-0038; `protocol-primitives.md`) | 4000 | `TypeMismatch` if `pubkey` is not exactly 32 bytes or `signature` is not exactly 64 bytes |
 
 `0x63`–`0x6F` are reserved.
 

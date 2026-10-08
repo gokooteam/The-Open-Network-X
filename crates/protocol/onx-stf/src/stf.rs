@@ -346,7 +346,16 @@ fn apply_messages(
                 max: max_deliveries,
             });
         }
-        let receipt = deliver(tree, msg, lt, workchain, &mut queue, idx, &mut processed)?;
+        let receipt = deliver(
+            tree,
+            msg,
+            lt,
+            workchain,
+            chain_id,
+            &mut queue,
+            idx,
+            &mut processed,
+        )?;
         block_gas_used = accumulate_block_gas(block_gas_used, receipt.gas_used)?;
         applied[idx].deliveries.push(receipt);
     }
@@ -583,11 +592,13 @@ fn wallet_receive(
 ///
 /// The delivery's own effects are revert-by-construction: the VM runs pure
 /// before any write, and a bounced delivery writes nothing at all.
+#[allow(clippy::too_many_arguments)]
 fn deliver(
     tree: &mut ShardStateTree,
     msg: InternalMessage,
     lt: u64,
     workchain: i32,
+    chain_id: &[u8; 32],
     queue: &mut VecDeque<(InternalMessage, usize)>,
     ext_idx: usize,
     processed: &mut BTreeSet<[u8; 32]>,
@@ -636,6 +647,7 @@ fn deliver(
                 workchain,
                 msg.dest,
                 tree.contract_cells_mut(),
+                chain_id,
             ) {
                 ExecOutcome::Success(out) => {
                     gas_used = out.gas_used;
@@ -860,6 +872,7 @@ fn try_execute_contract(
     workchain: i32,
     account_id: AccountId,
     contract_cells: &mut BTreeMap<AccountId, ContractCellDags>,
+    chain_id: &[u8; 32],
 ) -> ExecOutcome {
     let data_cell = data
         .cloned()
@@ -876,6 +889,10 @@ fn try_execute_contract(
         start_lt: lt,
         end_lt: lt,
         gas_limit,
+        // ADR-0038: the VM's chain identity comes from state, never from
+        // the message or local config — CHKSIGNU's chain-bound tag is only
+        // as trustworthy as this value.
+        chain_id: *chain_id,
     };
     let message = inbound_message(msg, lt, workchain);
 
@@ -1131,6 +1148,7 @@ mod tests {
             internal.clone(),
             1,
             0,
+            &state.chain_id,
             &mut queue,
             0,
             &mut processed,
@@ -1144,7 +1162,17 @@ mod tests {
         );
         // Redelivery of the same internal message is rejected — no double
         // delivery, no double spend.
-        let err = deliver(&mut tree, internal, 1, 0, &mut queue, 0, &mut processed).unwrap_err();
+        let err = deliver(
+            &mut tree,
+            internal,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, StfError::DoubleDelivery { .. }),
             "expected DoubleDelivery, got {err:?}"
@@ -1191,7 +1219,17 @@ mod tests {
         let mut queue = VecDeque::new();
         let mut processed = BTreeSet::new();
         // Delivery to the frozen account bounces.
-        let receipt = deliver(&mut tree, internal, 1, 0, &mut queue, 0, &mut processed).unwrap();
+        let receipt = deliver(
+            &mut tree,
+            internal,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap();
         assert!(receipt.bounced);
         assert_eq!(queue.len(), 1, "bounce queued");
         // The bounce delivers value back to the sender.
@@ -1199,7 +1237,17 @@ mod tests {
         assert!(bounced.is_bounce);
         assert_eq!(bounced.dest, sender);
         assert_eq!(bounced.value_nanos, 1_000);
-        let receipt2 = deliver(&mut tree, bounced, 1, 0, &mut queue, 0, &mut processed).unwrap();
+        let receipt2 = deliver(
+            &mut tree,
+            bounced,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap();
         assert!(!receipt2.bounced);
         // Sender: 10_000_000 - 1_000 (value) - 100 (fee) + 1_000 (bounce) = 9_999_900.
         // Fee split: 100 -> 50 burned, 50 to collector.

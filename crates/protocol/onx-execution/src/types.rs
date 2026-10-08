@@ -45,6 +45,12 @@ pub struct ExecutionContext {
     pub start_lt: u64,
     pub end_lt: u64,
     pub gas_limit: u64,
+    /// The chain's identity (genesis hash, per ADR-0005). The STF populates
+    /// this from `State.chain_id`; it is fixed for the block, so execution
+    /// stays deterministic. ADR-0038: `CHKSIGNU` verifies signatures under
+    /// the chain-bound tag derived from this value — contract signatures
+    /// cannot replay across chains.
+    pub chain_id: [u8; 32],
 }
 
 /// A read cursor over a Cell's data bytes and child cell references.

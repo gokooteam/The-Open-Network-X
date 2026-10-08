@@ -53,6 +53,7 @@ fn ctx() -> ExecutionContext {
         start_lt: 100,
         end_lt: 200,
         gas_limit: 10_000,
+        chain_id: [0x43; 32], // test chain id (ADR-0038)
     }
 }
 

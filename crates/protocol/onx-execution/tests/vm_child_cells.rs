@@ -32,6 +32,7 @@ fn dummy_context(gas_limit: u64) -> ExecutionContext {
         start_lt: 100,
         end_lt: 200,
         gas_limit,
+        chain_id: [0x43; 32], // test chain id (ADR-0038)
     }
 }
 

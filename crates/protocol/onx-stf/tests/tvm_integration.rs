@@ -200,6 +200,7 @@ fn tvm_counter_bytecode_increments() {
         start_lt: 1,
         end_lt: 1,
         gas_limit: 1_000_000,
+        chain_id: [0x43; 32], // test chain id (ADR-0038)
     };
     let mut interp = Interpreter::new(code, data.clone(), dummy_message(), ctx);
     interp.stack.push(StackValue::Cell(data));

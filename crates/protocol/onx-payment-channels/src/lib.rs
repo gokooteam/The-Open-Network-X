@@ -2,9 +2,7 @@
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
 use onx_execution::{ExceptionKind, ExecutionContext, ExecutionResult};
 use onx_primitives::{
-    domain_hash,
-    hash::{DomainTag, TX_BODY_V1},
-    PublicKey, Signature, Uint128, Uint256, Uint64,
+    domain_hash, hash::DomainTag, PublicKey, Signature, Uint128, Uint256, Uint64,
 };
 use onx_state_model::Cell;
 use std::fmt;
@@ -137,16 +135,21 @@ impl PaymentChannelArbiter {
         sig_b: &Signature,
     ) -> Result<(), ChannelError> {
         let state_hash = state.hash();
+        // ADR-0038: channel-state signatures use the channel's own tag
+        // (`ONX_CHANNEL_STATE_V1`, the spec'd tag in protocol-primitives.md
+        // §4.5) — never the retired shared `TX_BODY_V1`, which CHKSIGNU
+        // also used, letting channel signatures replay as contract
+        // signatures across chains.
         if self
             .pubkey_a
-            .verify(&TX_BODY_V1, &state_hash.0, sig_a)
+            .verify(&ChannelState::DOMAIN_TAG, &state_hash.0, sig_a)
             .is_err()
         {
             return Err(ChannelError::InvalidSignature);
         }
         if self
             .pubkey_b
-            .verify(&TX_BODY_V1, &state_hash.0, sig_b)
+            .verify(&ChannelState::DOMAIN_TAG, &state_hash.0, sig_b)
             .is_err()
         {
             return Err(ChannelError::InvalidSignature);
@@ -240,6 +243,8 @@ impl PaymentChannelArbiter {
             start_lt: 0,
             end_lt: 100,
             gas_limit: 1000,
+            // Test/demonstration chain id; the daemon flow is not consensus.
+            chain_id: [0x43; 32],
         };
 
         let empty_cell = Cell::new(vec![], vec![]).map_err(|_| ChannelError::InvalidProof)?;

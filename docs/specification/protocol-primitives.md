@@ -73,13 +73,13 @@ All protocol hashing contexts must prepend an explicit domain separation tag bef
 | `ONX_GENESIS_V1`        | Genesis document hash, which doubles as the chain ID |
 | `ONX_GENESIS_ADDR_V1`   | `AccountId` derivation from a genesis config label |
 | `ONX_GENESIS_VALKEY_V1` | Validator public-key derivation from a config label (dev-only; derived keys have no known private key) |
+| `ONX_CHKSIGNU_V1`       | `CHKSIGNU` verification *base* tag (ADR-0038): never used raw — verification always uses the chain-bound tag `SHA256(pad32 \|\| chain_id)`, so a contract signature commits to the chain it was produced for |
 
 **Orphan crates** (pre-spine code, not exercised by `onx replay`; tags live on until those crates are integrated or retired):
 
 | Tag string              | Used by |
 |-------------------------|---------|
 | `ONX_BLK_HDR_V1`        | `onx-data-structures` block hash |
-| `ONX_TX_BODY_V1`        | `onx-execution` interpreter and `onx-payment-channels` signature payloads |
 | `ONX_MSG_HASH_V1`       | `onx-data-structures` / `onx-transactions` message hashing |
 | `ONX_VALIDATOR_SIGN_V1` | `onx-networking` validator/DHT signatures |
 | `ONX_EXEC_HASH_V1`      | `onx-execution` interpreter |
@@ -95,6 +95,7 @@ All protocol hashing contexts must prepend an explicit domain separation tag bef
 | `ONX_TX_V2`, `ONX_TX_V2_SIGN`, `ONX_TXS_ROOT_V2` | Dropped with the V2 transaction encoding (pre-release, never shipped) |
 | `ONX_TX_V3`, `ONX_TX_V3_SIGN`, `ONX_TXS_ROOT_V3` | Dropped with the V3 transaction encoding — replaced by the message model (ADR-0001/0002), pre-release, never shipped |
 | `ONX_TRIE_NODE_V1`    | Defined in `onx-state-model/src/tree.rs` but never used — trie nodes hash as plain cells (`ONX_CELL_HASH_V1`) |
+| `ONX_TX_BODY_V1`      | Retired by ADR-0038 (pre-release, never shipped on a live chain): `CHKSIGNU` moved to the chain-bound `ONX_CHKSIGNU_V1` tag and `onx-payment-channels` moved to its spec'd `ONX_CHANNEL_STATE_V1` tag, closing the cross-protocol/cross-chain signature replay the shared tag allowed |
 
 **Test-only** (never consensus): `ONX_TEST_KEY_V1`, `ONX_PROBE_KEY_V1`.
 
