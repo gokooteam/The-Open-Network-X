@@ -159,8 +159,6 @@ signatures `ONX_MSG_EXT_V1`, addresses `ONX_ADDR_V1`.
 
 ### Added
 
-- `SECURITY.md`: how to report a vulnerability privately (GitHub private
-  vulnerability reporting), what counts, and response targets.
 - Deterministic replay: real genesis, pure state transition function, atomic
   redb storage with crash recovery, and the `onx replay` command (#1).
 - Ed25519 transaction authorization with per-account nonces (#2).

@@ -18,6 +18,11 @@ Report privately through GitHub's private vulnerability reporting:
 Only the maintainers can see the report. We discuss and fix it there, and
 publish an advisory once a fix is released.
 
+If the **Report a vulnerability** button is missing, private reporting is
+not enabled yet. Open a public issue titled "Security contact request" with
+**no details** about the problem, and a maintainer will set up a private
+channel with you.
+
 ## What counts
 
 Anything that can make honest nodes disagree, accept an invalid block, lose
