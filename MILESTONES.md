@@ -170,13 +170,21 @@ same roots, and look at them in the explorer.
 bugs, docs that say the wrong thing, and a `main` that is often red get
 harder to fix once networking adds a second moving part.
 
+**In flight:** Wave 4 (branch `wave4-gas-caps`, awaiting audit) hardens the
+VM: gas caps, 257-bit ints, cell bit-length, storage stats, chain-bound
+`CHKSIGNU`, and live `code_refs`. It merges before M4's criteria are
+ticked.
+
 **Exit criteria**
 
 *Known bugs*
 - [ ] `JMPREF`/`CALLREF` work from real contracts. PR #7 flagged this and it
-      is still open: the STF never fills `Interpreter::code_refs`, and only
-      test code pushes to it. Evidence: a test where a contract executed
-      through the STF calls `CALLREF` and gets the right result.
+      is still open on `main`: the STF never fills `Interpreter::code_refs`,
+      and only test code pushes to it. **In flight:** Wave 4 step 7 (ADR-0039,
+      branch `wave4-gas-caps`) wires `code_refs` live and adds the call-stack
+      depth limit; tick this when that branch merges. Evidence: a test where
+      a contract executed through the STF calls `CALLREF` and gets the right
+      result.
 - [ ] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other.
