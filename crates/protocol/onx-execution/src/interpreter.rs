@@ -554,12 +554,16 @@ impl Interpreter {
                 self.push(StackValue::Builder(Builder::default()))?;
             }
             0x41 => {
-                // ENDC
+                // ENDC — ADR-0036: the cell commits the builder's exact bit
+                // length. A partial final byte sets the compatible flag and
+                // gets the completion tag; byte-aligned builders stay
+                // byte-granular with unchanged hashes.
                 self.consume_gas(10)?;
                 let builder = self.pop_builder()?;
                 let cell_refs = builder.references.iter().map(|c| c.hash()).collect();
-                let cell = Cell::new(builder.data_bytes, cell_refs)
-                    .map_err(|_| ExceptionKind::MalformedCell)?;
+                let cell =
+                    Cell::new_with_bit_len(builder.data_bytes, builder.current_bit_len, cell_refs)
+                        .map_err(|_| ExceptionKind::MalformedCell)?;
                 // Register the materialized cell so the host can persist
                 // the full DAG after execution and so later LDREFs resolve
                 // to the actual stored child.
@@ -600,14 +604,16 @@ impl Interpreter {
                 self.push(StackValue::Builder(builder))?;
             }
             0x44 => {
-                // STBYTES
+                // STBYTES — ADR-0036: bytes are appended at bit granularity
+                // (each byte's 8 bits, MSB-first, at the current bit position)
+                // and `current_bit_len` advances by `8 * len`, so the bit
+                // length stays exact even after a partial-bit store. The old
+                // code extended `data_bytes` without touching the bit length,
+                // which is the bookkeeping half of the bit-length finding.
                 let bytes = self.pop_bytes()?;
                 self.consume_gas(10u64.saturating_add(bytes.len().div_ceil(32) as u64))?;
                 let mut builder = self.pop_builder()?;
-                if builder.data_bytes.len().saturating_add(bytes.len()) > 128 {
-                    return Err(ExceptionKind::MalformedCell);
-                }
-                builder.data_bytes.extend(bytes);
+                builder.append_bytes(&bytes)?;
                 self.push(StackValue::Builder(builder))?;
             }
             0x45 => {

@@ -82,8 +82,10 @@ impl Slice {
     }
 
     pub fn remaining_bits(&self) -> usize {
-        let total_bits = self.cell.data_bytes().len().saturating_mul(8);
-        total_bits.saturating_sub(self.bit_offset)
+        // ADR-0036: a bit-granular cell's readable bits are its exact bit
+        // length (the completion tag is not data). Byte-granular cells are
+        // unaffected (`bit_len() == 8 * data_bytes.len()` there).
+        self.cell.bit_len().saturating_sub(self.bit_offset)
     }
 
     pub fn remaining_refs(&self) -> usize {
@@ -133,6 +135,10 @@ impl Slice {
     }
 }
 
+/// Maximum meaningful bits a Builder may accumulate: one full cell's data
+/// (ADR-0036; matches `onx_state_model::MAX_CELL_DATA_BITS`).
+pub const MAX_BUILDER_BITS: usize = 128 * 8;
+
 /// A write accumulator for constructing new Cells.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Builder {
@@ -142,6 +148,46 @@ pub struct Builder {
 }
 
 impl Builder {
+    /// Appends one bit (0 or 1) at the current bit position, growing
+    /// `data_bytes` with zero bytes as needed. Maintains the builder
+    /// invariant: `data_bytes.len() == current_bit_len.div_ceil(8)` and every
+    /// bit at position `>= current_bit_len` is zero.
+    fn push_bit(&mut self, bit: u8) {
+        let dest_bit_idx = self.current_bit_len;
+        // Plain `/` and `%` on usize cannot overflow; the saturating forms
+        // below name the crate's arithmetic policy explicitly.
+        let dest_byte_idx = dest_bit_idx / 8;
+        let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx % 8);
+        if dest_byte_idx >= self.data_bytes.len() {
+            self.data_bytes.push(0);
+        }
+        if bit & 1 == 1 {
+            self.data_bytes[dest_byte_idx] |= 1 << dest_bit_in_byte;
+        }
+        self.current_bit_len = dest_bit_idx.saturating_add(1);
+    }
+
+    /// Appends whole bytes at bit granularity: each byte's 8 bits are stored
+    /// MSB-first starting at the current bit position (ADR-0036). Unlike the
+    /// pre-Wave-4 `STBYTES`, this advances `current_bit_len` by `8 * len`, so
+    /// the bit length stays exact even when bytes follow a partial-bit store.
+    /// Fails closed past 1024 bits.
+    pub fn append_bytes(&mut self, bytes: &[u8]) -> Result<(), ExceptionKind> {
+        let new_bits = self
+            .current_bit_len
+            .saturating_add(bytes.len().saturating_mul(8));
+        if new_bits > MAX_BUILDER_BITS {
+            return Err(ExceptionKind::MalformedCell);
+        }
+        for &b in bytes {
+            // `i < 8`, so the saturating_sub is exact, not a clamp.
+            for i in 0..8 {
+                self.push_bit((b >> (7usize.saturating_sub(i))) & 1);
+            }
+        }
+        Ok(())
+    }
+
     /// Appends the lower `width_bits` of a canonical 33-byte big-endian
     /// 257-bit value (the low bits of its two's-complement encoding).
     pub fn append_bits(

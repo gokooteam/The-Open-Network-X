@@ -160,10 +160,10 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | Opcode | Mnemonic | Operands | Stack effect | Gas | Exceptions |
 | --- | --- | --- | --- | --- | --- |
 | `0x40` | `NEWC` | — | `() -> (Builder)`, empty | 10 | — |
-| `0x41` | `ENDC` | — | `(Builder) -> (Cell)` | 10 | — |
-| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)`; `width = 0` stores nothing and is accepted as a no-op | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 128 bytes |
+| `0x41` | `ENDC` | — | `(Builder) -> (Cell)`; sets the bit-granular flag iff the builder's bit length is not a multiple of 8 (ADR-0036) | 10 | `MalformedCell` if the builder state is inconsistent (unreachable via `ST*`, fail-closed) |
+| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)`; `width = 0` stores nothing and is accepted as a no-op | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 1024 bits |
 | `0x43` | `STREF` | — | `(Builder, Cell) -> (Builder)` | 10 | `MalformedCell` if the builder already has 4 references |
-| `0x44` | `STBYTES` | — | `(Builder, Bytes) -> (Builder)` | `10 + ceil(len / 32)` | `MalformedCell` if appending would exceed 128 bytes |
+| `0x44` | `STBYTES` | — | `(Builder, Bytes) -> (Builder)`; bytes are appended MSB-first at the current bit position (bit granularity), and the bit length advances by `8 × len` — exact at any alignment (ADR-0036) | `10 + ceil(len / 32)` | `MalformedCell` if appending would exceed 1024 bits |
 | `0x45` | `CTOS` | — | `(Cell) -> (Slice)`, at `(0, 0)` | 10 | `AbsentNode` if `Cell` is a pruned special cell (§3.5.3) |
 | `0x46` | `LDU` | `width: uint16` | `(Slice) -> (Slice, Integer)`, unsigned | 10 | `MalformedCell` if fewer than `width` bits remain |
 | `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed: the `width`-bit two's-complement field is sign-extended into the full Integer domain | 10 | `MalformedCell` if fewer than `width` bits remain |
@@ -174,6 +174,12 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x4C` | `SREFS` | — | `(Slice) -> (Integer)`, remaining refs, unsigned 8-bit | 1 | — |
 
 `0x4D`–`0x5F` are reserved.
+
+**Slice bit length (ADR-0036).** A `Slice`'s readable bits are its cell's
+exact bit length (`state-model.md` §4.2.1), not `8 × data_bytes.len()`.
+`SBITS` reports the bit length minus the current offset; `LDU`/`LDI` bounds
+are checked against it, so reading the completion tag as data fails closed
+(`MalformedCell`). Byte-granular cells are unaffected.
 
 ### 4.5 Control flow (`0x70`–`0x7F`)
 
@@ -215,7 +221,7 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 3. **Reference operand out of range:** a `ref_index` operand (§4.5) names a child-cell reference the current code `Cell` does not have (`MalformedCell`, §3.5.4).
 4. **Arithmetic overflow:** an unsigned/signed `ADD`/`SUB`/`NEG`/`MUL`/`DIVMOD`/`CONV`/`STBITS` result does not fit its declared width, or `DIVMOD`'s divisor is zero (`IntegerOverflow`, §3.3, §4.3).
 5. **Pruned-branch content access:** `CTOS` is applied to a pruned special `Cell` (`AbsentNode`, §3.5.3).
-6. **Cell/slice structural violation:** `LDU`/`LDI` requests more bits than a `Slice` has remaining, `LDREF` requests a reference a `Slice` does not have remaining, `SUBBYTES` requests a range outside its `Bytes` operand, or `STBITS`/`STREF`/`STBYTES` would grow a `Builder` past `state-model.md`'s 128-byte/4-reference limits (`MalformedCell`).
+6. **Cell/slice structural violation:** `LDU`/`LDI` requests more bits than a `Slice` has remaining, `LDREF` requests a reference a `Slice` does not have remaining, `SUBBYTES` requests a range outside its `Bytes` operand, or `STBITS`/`STBYTES` would grow a `Builder` past 1024 bits, or `STREF` past 4 references (`MalformedCell`).
 7. **Cryptographic shape violation:** `CHKSIGNU`'s `pubkey` or `signature` operand is not exactly 32 or 64 bytes respectively (`TypeMismatch`).
 8. **Gas exhaustion:** debiting the next instruction's gas cost (§4) would exceed the supplied limit (`OutOfGas`, at that exact instruction, per `execution.md` §3.4).
 9. **Explicit throw:** `THROW` always raises its named kind (§4.5); this is normal control flow, not a fault, but is listed for completeness since it is the only opcode whose entire effect is raising an exception.

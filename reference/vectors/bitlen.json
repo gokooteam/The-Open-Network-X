@@ -1,0 +1,291 @@
+{
+  "adr": "ADR-0036",
+  "constants": {
+    "BIT_GRANULAR_FLAG": 16,
+    "MAX_DATA_BITS": 1024
+  },
+  "finalize": [
+    {
+      "data_hex": "a0",
+      "bit_len_in": 3,
+      "refs_hex": [],
+      "tagged_data_hex": "b0",
+      "bit_granular": true,
+      "descriptor_hex": "1001",
+      "bit_len_out": 3,
+      "hash_hex": "4fe9329b05b65e10e185d26f4d3788930944d304f743fa13e3f82dba9adab6ee"
+    },
+    {
+      "data_hex": "a0",
+      "bit_len_in": 8,
+      "refs_hex": [],
+      "tagged_data_hex": "a0",
+      "bit_granular": false,
+      "descriptor_hex": "0001",
+      "bit_len_out": 8,
+      "hash_hex": "65fba929feec8f62e75eb11debdfc69fe2a443549553195b747e704b462ab233"
+    },
+    {
+      "data_hex": "00",
+      "bit_len_in": 1,
+      "refs_hex": [],
+      "tagged_data_hex": "40",
+      "bit_granular": true,
+      "descriptor_hex": "1001",
+      "bit_len_out": 1,
+      "hash_hex": "5db1dd4d3a3eb8fa506d9a9bc2c7f76093efe5671d6c87e48984582b711e226e"
+    },
+    {
+      "data_hex": "fe",
+      "bit_len_in": 7,
+      "refs_hex": [],
+      "tagged_data_hex": "ff",
+      "bit_granular": true,
+      "descriptor_hex": "1001",
+      "bit_len_out": 7,
+      "hash_hex": "404d0550e6babc40c4991cc6e991a7ba62460cabfc20631824c77e58be0c7506"
+    },
+    {
+      "data_hex": "ff00",
+      "bit_len_in": 9,
+      "refs_hex": [],
+      "tagged_data_hex": "ff40",
+      "bit_granular": true,
+      "descriptor_hex": "1002",
+      "bit_len_out": 9,
+      "hash_hex": "afa5317853fbc71edce8c1900ddc64044e3f6f614931c32584c0c8b620b6c2d2"
+    },
+    {
+      "data_hex": "ffff",
+      "bit_len_in": 16,
+      "refs_hex": [],
+      "tagged_data_hex": "ffff",
+      "bit_granular": false,
+      "descriptor_hex": "0002",
+      "bit_len_out": 16,
+      "hash_hex": "a4f193f7cbdf4f7c9a65915586c9ad50e02ec781f567cf1bca4ce43ba109e5b4"
+    },
+    {
+      "data_hex": "",
+      "bit_len_in": 0,
+      "refs_hex": [],
+      "tagged_data_hex": "",
+      "bit_granular": false,
+      "descriptor_hex": "0000",
+      "bit_len_out": 0,
+      "hash_hex": "9bb54f1dc19ff0ad46c133f083e58994a64a469ab6a9bc592b88dab1b1eb68fe"
+    },
+    {
+      "data_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bit_len_in": 1023,
+      "refs_hex": [],
+      "tagged_data_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bit_granular": true,
+      "descriptor_hex": "1080",
+      "bit_len_out": 1023,
+      "hash_hex": "4265179fdcce91c9aed38ee38bbd530e284d27d3562e32486527e3e971bd4321"
+    },
+    {
+      "data_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bit_len_in": 1024,
+      "refs_hex": [],
+      "tagged_data_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "bit_granular": false,
+      "descriptor_hex": "0080",
+      "bit_len_out": 1024,
+      "hash_hex": "06787fcadc69e312ea722ba77f24ba5a3c81ec81594ceb6f2d128112fc916b1a"
+    },
+    {
+      "data_hex": "deadb0",
+      "bit_len_in": 20,
+      "refs_hex": [
+        "1111111111111111111111111111111111111111111111111111111111111111"
+      ],
+      "tagged_data_hex": "deadb8",
+      "bit_granular": true,
+      "descriptor_hex": "1103",
+      "bit_len_out": 20,
+      "hash_hex": "d69e3f81f069936e1de8d52ad2ef84097062659b7317270f4342ecc5ba5fecee"
+    },
+    {
+      "data_hex": "0000",
+      "bit_len_in": 9,
+      "refs_hex": [],
+      "tagged_data_hex": "0040",
+      "bit_granular": true,
+      "descriptor_hex": "1002",
+      "bit_len_out": 9,
+      "hash_hex": "7f3150b6e0c5610337e88fe275cd90deeafa4fb6dcf7b2cd88ab70a298dc6c0f"
+    }
+  ],
+  "decode_reject": [
+    {
+      "encoding_hex": "100100",
+      "rule": "flagged_empty_last_0x00",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "100180",
+      "rule": "flagged_lone_tag_0x80",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "1000",
+      "rule": "flagged_empty_data",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "2001a0",
+      "rule": "reserved_d1_bit5",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "4001a0",
+      "rule": "reserved_d1_bit6",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "8001a0",
+      "rule": "reserved_d1_bit7",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "f001a0",
+      "rule": "reserved_d1_bits_all",
+      "status": "rejected"
+    },
+    {
+      "encoding_hex": "1003a0b0",
+      "rule": "flagged_d2_truncated",
+      "status": "rejected"
+    }
+  ],
+  "decode_accept": [
+    {
+      "encoding_hex": "1001b0",
+      "bit_granular": true,
+      "bit_len": 3,
+      "hash_hex": "4fe9329b05b65e10e185d26f4d3788930944d304f743fa13e3f82dba9adab6ee"
+    },
+    {
+      "encoding_hex": "0001a0",
+      "bit_granular": false,
+      "bit_len": 8,
+      "hash_hex": "65fba929feec8f62e75eb11debdfc69fe2a443549553195b747e704b462ab233"
+    },
+    {
+      "encoding_hex": "100140",
+      "bit_granular": true,
+      "bit_len": 1,
+      "hash_hex": "5db1dd4d3a3eb8fa506d9a9bc2c7f76093efe5671d6c87e48984582b711e226e"
+    },
+    {
+      "encoding_hex": "1002ff40",
+      "bit_granular": true,
+      "bit_len": 9,
+      "hash_hex": "afa5317853fbc71edce8c1900ddc64044e3f6f614931c32584c0c8b620b6c2d2"
+    },
+    {
+      "encoding_hex": "0000",
+      "bit_granular": false,
+      "bit_len": 0,
+      "hash_hex": "9bb54f1dc19ff0ad46c133f083e58994a64a469ab6a9bc592b88dab1b1eb68fe"
+    }
+  ],
+  "builder_append": [
+    {
+      "start_data_hex": "",
+      "start_bit_len": 0,
+      "append_hex": "a0",
+      "ok": true,
+      "data_hex": "a0",
+      "bit_len": 8
+    },
+    {
+      "start_data_hex": "a0",
+      "start_bit_len": 8,
+      "append_hex": "ff",
+      "ok": true,
+      "data_hex": "a0ff",
+      "bit_len": 16
+    },
+    {
+      "start_data_hex": "a0",
+      "start_bit_len": 3,
+      "append_hex": "ff",
+      "ok": true,
+      "data_hex": "bfe0",
+      "bit_len": 11
+    },
+    {
+      "start_data_hex": "a0",
+      "start_bit_len": 3,
+      "append_hex": "ff00",
+      "ok": true,
+      "data_hex": "bfe000",
+      "bit_len": 19
+    },
+    {
+      "start_data_hex": "",
+      "start_bit_len": 0,
+      "append_hex": "",
+      "ok": true,
+      "data_hex": "",
+      "bit_len": 0
+    },
+    {
+      "start_data_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "start_bit_len": 1024,
+      "append_hex": "00",
+      "ok": false,
+      "error": "MalformedCell"
+    },
+    {
+      "start_data_hex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe",
+      "start_bit_len": 1023,
+      "append_hex": "00",
+      "ok": false,
+      "error": "MalformedCell"
+    },
+    {
+      "start_data_hex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe",
+      "start_bit_len": 1023,
+      "append_hex": "",
+      "ok": true,
+      "data_hex": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe",
+      "bit_len": 1023
+    }
+  ],
+  "slice_remaining": [
+    {
+      "cell": "finalize(a0,3)",
+      "bit_offset": 0,
+      "remaining_bits": 3
+    },
+    {
+      "cell": "finalize(a0,3)",
+      "bit_offset": 3,
+      "remaining_bits": 0
+    },
+    {
+      "cell": "finalize(a0,8)",
+      "bit_offset": 0,
+      "remaining_bits": 8
+    },
+    {
+      "cell": "finalize(a0,8)",
+      "bit_offset": 5,
+      "remaining_bits": 3
+    },
+    {
+      "cell": "decode(1002ff40)",
+      "bit_offset": 0,
+      "remaining_bits": 9
+    },
+    {
+      "cell": "decode(1002ff40)",
+      "bit_offset": 9,
+      "remaining_bits": 0
+    }
+  ]
+}

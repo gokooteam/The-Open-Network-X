@@ -311,3 +311,157 @@ fn dictionary_supports_the_maximum_key_width() {
     assert_eq!(dictionary.dict_del(&key).unwrap(), Some(value));
     assert!(dictionary.root_cell().is_none());
 }
+
+// ADR-0036 opcode wiring tests: ENDC commits the builder's exact bit length,
+// STBYTES advances it at bit granularity, and slice readers honor it.
+
+/// PUSHINT bytecode pushing unsigned `value` (fits in one byte here).
+fn pushint_u8(value: u8) -> Vec<u8> {
+    let mut code = vec![0x08, 0x00];
+    code.extend_from_slice(&[0u8; 31]);
+    code.push(value);
+    code
+}
+
+/// STBITS bytecode: width (big-endian u16), unsigned flavor.
+fn stbits(width: u16) -> Vec<u8> {
+    vec![0x42, (width >> 8) as u8, (width & 0xFF) as u8, 0x00]
+}
+
+fn run_bytecode(
+    code: Vec<u8>,
+    stack: Vec<StackValue>,
+    message_body: Vec<u8>,
+) -> (ExecutionResult, Vec<StackValue>) {
+    let mut interpreter = Interpreter::new(
+        Cell::new(code, vec![]).unwrap(),
+        Cell::new(vec![], vec![]).unwrap(),
+        dummy_message(),
+        dummy_context(100_000),
+    );
+    interpreter.stack = stack;
+    interpreter.message_body = message_body;
+    let res = interpreter.run();
+    (res, interpreter.stack)
+}
+
+fn expect_success(res: &ExecutionResult) {
+    assert!(
+        matches!(res, ExecutionResult::Success { .. }),
+        "expected success, got {:?}",
+        res
+    );
+}
+
+#[test]
+fn test_endc_flags_partial_bit_cell() {
+    // NEWC, PUSHINT 5, STBITS 3, ENDC — stores 3-bit `101`.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(5));
+    code.extend(stbits(3));
+    code.push(0x41); // ENDC
+    let (res, stack) = run_bytecode(code, vec![], vec![]);
+    expect_success(&res);
+    match stack.last() {
+        Some(StackValue::Cell(cell)) => {
+            assert!(cell.is_bit_granular(), "partial-bit cell must be flagged");
+            assert_eq!(cell.data_bytes(), &[0xB0]);
+            assert_eq!(cell.bit_len(), 3);
+        }
+        other => panic!("expected Cell on stack, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_endc_leaves_byte_aligned_cell_unflagged() {
+    // NEWC, PUSHINT 0xA0-ish via STBITS 8, ENDC — byte-aligned stays unflagged.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(0xA0));
+    code.extend(stbits(8));
+    code.push(0x41);
+    let (res, stack) = run_bytecode(code, vec![], vec![]);
+    expect_success(&res);
+    match stack.last() {
+        Some(StackValue::Cell(cell)) => {
+            assert!(!cell.is_bit_granular());
+            assert_eq!(cell.data_bytes(), &[0xA0]);
+            assert_eq!(cell.bit_len(), 8);
+        }
+        other => panic!("expected Cell on stack, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_stbytes_advances_bit_len_at_bit_granularity() {
+    // Bytecode: NEWC, PUSHINT 5, STBITS 3, MSGBODY, STBYTES, ENDC.
+    // The message body byte's bits land at positions 3..11:
+    // cell = [0xBF, 0xF0], 11 bits.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(5));
+    code.extend(stbits(3));
+    code.push(0x82); // MSGBODY -> Bytes([0xFF])
+    code.push(0x44); // STBYTES
+    code.push(0x41); // ENDC
+    let (res, stack) = run_bytecode(code, vec![], vec![0xFF]);
+    expect_success(&res);
+    match stack.last() {
+        Some(StackValue::Cell(cell)) => {
+            assert!(cell.is_bit_granular());
+            assert_eq!(cell.data_bytes(), &[0xBF, 0xF0]);
+            assert_eq!(cell.bit_len(), 11);
+        }
+        other => panic!("expected Cell on stack, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sbits_reports_bit_len_not_byte_len() {
+    // NEWC, PUSHINT 5, STBITS 3, ENDC, CTOS, SBITS -> 3, not 8.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(5));
+    code.extend(stbits(3));
+    code.push(0x41); // ENDC
+    code.push(0x45); // CTOS
+    code.push(0x4B); // SBITS
+    let (res, stack) = run_bytecode(code, vec![], vec![]);
+    expect_success(&res);
+    match stack.last() {
+        Some(StackValue::Integer(n)) => assert_eq!(*n, Int257::from_u64(3)),
+        other => panic!("expected Integer on stack, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_ldu_cannot_read_completion_tag_as_data() {
+    // Flagged 3-bit cell: LDU 8 must fail — only 3 bits remain.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(5));
+    code.extend(stbits(3));
+    code.push(0x41); // ENDC
+    code.push(0x45); // CTOS
+    code.extend(vec![0x46, 0x00, 0x08]); // LDU 8
+    let (res, _) = run_bytecode(code, vec![], vec![]);
+    match res {
+        ExecutionResult::Exception { kind, .. } => {
+            assert_eq!(kind, ExceptionKind::MalformedCell)
+        }
+        other => panic!("expected MalformedCell, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_partial_bits_round_trip_through_slice() {
+    // NEWC, PUSHINT 5, STBITS 3, ENDC, CTOS, LDU 3 -> 5.
+    let mut code = vec![0x40];
+    code.extend(pushint_u8(5));
+    code.extend(stbits(3));
+    code.push(0x41); // ENDC
+    code.push(0x45); // CTOS
+    code.extend(vec![0x46, 0x00, 0x03]); // LDU 3
+    let (res, stack) = run_bytecode(code, vec![], vec![]);
+    expect_success(&res);
+    match stack.last() {
+        Some(StackValue::Integer(n)) => assert_eq!(*n, Int257::from_u64(5)),
+        other => panic!("expected Integer(5) on stack, got {:?}", other),
+    }
+}
