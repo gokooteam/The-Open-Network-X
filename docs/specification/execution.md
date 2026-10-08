@@ -69,7 +69,7 @@ Workchains other than the basic workchain may adopt a different VM entirely (`WH
 - Exception kinds (closed set; a conforming implementation must not raise any exception outside this list without an ONX specification amendment):
   - `OutOfGas` — the gas limit was reached.
   - `IntegerOverflow` — an unsigned/signed arithmetic or conversion result did not fit its declared width (§3.3, rule 2–3).
-  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell.
+  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell, or that does not resolve to any cell the executing node holds (`tvm-instruction-set.md` §3.5.3).
   - `MalformedCell` — a cell violates `state-model.md` §5's structural rules (e.g. data/reference-count limits) when accessed as a typed value.
   - `TypeMismatch` — code accessed a cell's contents as an algebraic-type shape its tag/descriptor does not support.
 - All five exception kinds have the same effect on state per §3.2: atomic rollback of `data`, retention of `gas_used`.

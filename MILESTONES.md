@@ -185,9 +185,17 @@ ticked.
       depth limit; tick this when that branch merges. Evidence: a test where
       a contract executed through the STF calls `CALLREF` and gets the right
       result.
-- [ ] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
+- [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
-      (ADR-0029). Make one of them match the other.
+      (ADR-0029). Make one of them match the other. **Done (spec follows
+      code):** the two cases were different. A *pruned* child is a cell the
+      node holds, and `LDREF` passes it through; the spec was right about
+      that and so was the code. An *unresolved* child has no `Cell` to push,
+      and any substitute would be invented data, so `LDREF` fails closed.
+      §3.5.3, the `LDREF` row, §5, §6, `execution.md` §3.4 and ADR-0024 now
+      say so. Evidence: `ldref_passes_pruned_child_through_and_only_ctos_raises`
+      and `ldref_on_unresolved_child_fails_closed_with_absent_node` in
+      `crates/protocol/onx-execution/tests/vm_child_cells.rs`.
 - [x] Measure the per-block account-map copy at 100k accounts. PR #7 noted
       27–53 ms. Then fix it, or write the budget into the spec. **Done
       (both):** measured, then fixed. The trie is now the only account store,
