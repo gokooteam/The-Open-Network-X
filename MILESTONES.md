@@ -158,7 +158,7 @@ same roots, and look at them in the explorer.
 | **Integrated and hardened** (on the replay/producer path, adversarially tested) | TASK-001 storage (realized as `onx-storage`/redb), TASK-020 genesis |
 | **Integrated, partial** | TASK-002/003 TVM: a deliberately minimal opcode set; `JMPREF`/`CALLREF` are broken from real contracts (see M4). TASK-012 `onxd`: single node only, no roles, no network. TASK-019 telemetry: `onxd` serves metrics on `127.0.0.1:9100`; there is no Grafana dashboard |
 | **Library only** (has unit tests, not used by `onxd`) | TASK-004/005/006 ADNL/RLDP/DHT, TASK-007 consensus engine, TASK-008 block sync, TASK-009 shard pipeline, TASK-010 hypercube router, TASK-011 election/slashing, TASK-013 RPC (2 unit tests, none over HTTP), TASK-015 system contracts, TASK-016 payment-channel daemon |
-| **Placeholder or not running** | TASK-014 `onx-cli` (placeholder encodings). TASK-017 simulation: a Python model, not real binaries, and not run in CI. TASK-018 fuzz targets exist, but no workflow runs them |
+| **Placeholder or not running** | TASK-014 `onx-cli` (placeholder encodings). TASK-017 simulation: a Python model, not real binaries, and not run in CI. TASK-018 fuzz targets exist, but no workflow runs them _(since resolved: see the fuzz criterion under M4)_ |
 
 ---
 
@@ -233,8 +233,14 @@ ticked.
       recent completed CI runs on `main` failed (runs #40–#55). Target: the
       last 10 merges to `main` are green on every required workflow
       _(proposed)_.
-- [ ] Add a finite fuzz regression run per target to CI, so all three
-      targets in `fuzz/` run on every PR.
+- [x] Add a finite fuzz regression run per target to CI, so all three
+      targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
+      runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
+      (one matrix job per target, pinned nightly) on every PR and push to
+      `main`, and uploads crash inputs as artifacts. A local 30 s run per
+      target found no crash. The scheduled long-running job and a
+      checked-in corpus are left for the maintenance gate's 24-hour
+      criterion.
 
 *Release hygiene*
 - [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.

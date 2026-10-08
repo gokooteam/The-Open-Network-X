@@ -13,12 +13,25 @@ boundaries that process untrusted input. It implements TASK-018 using
 - `block_header` parses block headers and feeds arbitrary public-key/signature
   pairs through BFT vote verification.
 
-Run a target locally after installing `cargo-fuzz`:
+Run a target locally from the repository root. `cargo-fuzz` needs a nightly
+toolchain, and `rust-toolchain.toml` pins stable, so select nightly
+explicitly (CI uses the dated nightly in `.github/workflows/fuzz.yml`):
 
 ```sh
-cargo install cargo-fuzz
-cargo fuzz run boc_parser --manifest-path fuzz/Cargo.toml
+rustup toolchain install nightly-2026-09-20 --profile minimal
+cargo install cargo-fuzz --locked
+cargo +nightly-2026-09-20 fuzz run boc_parser
+cargo +nightly-2026-09-20 fuzz run boc_parser -- -max_total_time=60  # bounded
 ```
+
+## CI
+
+`.github/workflows/fuzz.yml` runs every target for 60 seconds, one matrix job
+per target, on each pull request and push to `main`. Runs start from an empty
+corpus. A panic, abort, sanitizer report, timeout or out-of-memory fails the
+job, and the crashing input is uploaded as the `fuzz-artifacts-<target>`
+workflow artifact. Reproduce it locally with
+`cargo +nightly-2026-09-20 fuzz run <target> <artifact file>`.
 
 To replay saved regressions, place corpus inputs under
 `fuzz/corpus/<target>/` and run the corresponding target. Crash artifacts are

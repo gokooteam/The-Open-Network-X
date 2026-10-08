@@ -22,6 +22,10 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   and the maintenance gate that defines `1.0.0`.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
   key-derived address (`ONX_ADDR_V1`).
+- `Fuzz` CI workflow (`.github/workflows/fuzz.yml`): every PR and push to
+  `main` runs each `fuzz/` target (`boc_parser`, `tvm_execution`,
+  `block_header`) for 60 seconds on a pinned nightly and uploads crash
+  inputs as artifacts.
 
 ### Changed
 
