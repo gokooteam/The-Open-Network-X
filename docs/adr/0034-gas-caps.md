@@ -1,6 +1,11 @@
 # ADR-0034: Gas caps — per-message and per-block
 
-**Status:** Proposed (2026-10-07)
+**Status:** Accepted (2026-10-08; proposed 2026-10-07). Implemented in #32:
+`MAX_GAS_PER_MESSAGE`, `MAX_GAS_PER_BLOCK` and `StfError::BlockGasExceeded`
+in `onx-stf`, pinned by `reference/vectors/gas_caps.json`. The producer's
+handling of `BlockGasExceeded` is out of scope here (see Non-goals). It
+currently rejects the message that tips a block over the cap, which is a
+known M4 bug in `MILESTONES.md`. The cap rule itself stands.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 
 ## Context

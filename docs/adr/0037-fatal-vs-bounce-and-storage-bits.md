@@ -1,6 +1,20 @@
 # ADR-0037 — Fatal-vs-Bounce Failure Taxonomy + Bit-Precise Storage Stats (Wave 4, step 5)
 
-**Status:** Proposed (2026-10-07)
+**Status:** Accepted in part (2026-10-08; proposed 2026-10-07).
+- **Accepted:** bounce receipts report the gas the VM actually burned (§1,
+  "Gas accounting on failure"), and §2 (`StorageStat.bit_count`, derived on
+  decode).
+- **Rejected:** the rule that `OutOfGas` is fatal (§1, the table's first row
+  and "Fatal mechanics"). Its rationale does not hold. The sender pays the
+  full `fee_nanos` whether the budget is spent or not, so the fee already
+  pays for the gas; and the sender chooses the value (any non-zero amount),
+  so keeping it costs an attacker 1 nano. The rule adds no DoS cost. It only
+  takes the value from honest senders who underestimate gas. The TON
+  precedent is also misstated: TON bounces a bounceable message whose compute
+  phase fails, out-of-gas included, returning the value minus fees.
+  `OutOfGas` should bounce like the other kinds. The code (#32) still
+  implements the fatal rule. Reverting it is a consensus change, tracked as a
+  known M4 bug in `MILESTONES.md`.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Amends:** ADR-0004 (bounce semantics); `docs/specification/execution.md` §3.4
 

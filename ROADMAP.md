@@ -33,7 +33,7 @@ used the retired `docs/decisions/` numbering; see
   and `deploy-contract` commands were removed.
 - **PRs #24, #25 — `MILESTONES.md`:** milestones M0–M3 recorded, exit
   criteria for M4–M7, and the maintenance gate.
-- **PR #23 — Versioning (ADR-0034):** one workspace version, SemVer 2.0.0,
+- **PR #23 — Versioning (ADR-0040):** one workspace version, SemVer 2.0.0,
   `CHANGELOG.md`, release automation, and the `v0.2.0` tag.
 - **PR #22 — Sentry follow-ups** for `onxd` crash reporting.
 

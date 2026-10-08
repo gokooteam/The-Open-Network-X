@@ -146,7 +146,7 @@ link to the evidence. Work that isn't in the current milestone goes to
 
 ONX follows [Semantic Versioning 2.0.0](https://semver.org/) with one version
 for the whole workspace, set in `[workspace.package]` in the root
-`Cargo.toml` ([ADR-0034](docs/adr/0034-versioning-standard.md)). While the
+`Cargo.toml` ([ADR-0040](docs/adr/0040-versioning-standard.md)). While the
 version is `0.y.z`, a breaking change to wire formats, storage, consensus,
 RPC/CLI, or public API needs a **minor** bump; anything compatible is a
 **patch**.

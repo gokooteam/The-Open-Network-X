@@ -51,6 +51,13 @@
 //!   then retries; a second failure is logged loudly and the tick is
 //!   skipped with the mempool intact. There is no bulk quarantine: one bad
 //!   message must never take honest messages down with it.
+//! - `propose_block` failing with `BlockGasExceeded` is not a rejection:
+//!   every message is valid, there are just too many for one block
+//!   (ADR-0034's `MAX_GAS_PER_BLOCK`). The block ends before the message
+//!   that tipped it over; that message and everything after it stay in
+//!   `pending/` for a later block. Rejecting it instead would strand the
+//!   sender's later nonces behind it, and anyone could get honest messages
+//!   dropped by filling blocks with heavy calls.
 //! - A PANIC during the dry-run proposal (e.g. an interpreter bug on a
 //!   hostile message) is contained per message (ADR-0029): the panicking
 //!   message is isolated by prefix search, dropped as a LOCAL event with
@@ -613,6 +620,14 @@ fn run_tick(
 /// loop: without containment, the poison message sits in the drop dir and
 /// kills the process on every tick.
 ///
+/// Gas-cap path (ADR-0034): if the first failing prefix fails with
+/// `BlockGasExceeded`, its last message is valid but doesn't fit. The
+/// candidates are cut just before it (a prefix the bisection already saw
+/// propose cleanly) and the rest are held in `pending/` for the next block,
+/// nothing rejected. Only a message that exceeds the cap on its own (the
+/// cut would leave nothing) is rejected, since it can never fit in any
+/// block and would otherwise stall every candidate behind it.
+///
 /// A second full failure after isolation is a genuine STF bug: loud log,
 /// skip the tick, mempool intact. There is deliberately no bulk quarantine.
 fn propose_robust(
@@ -641,7 +656,7 @@ fn propose_robust(
                 eprintln!(
                     "producer: propose_block rejected filtered candidates ({e}); isolating offending message(s)"
                 );
-                match find_first_bad_prefix(state, &candidates, lt, fee_collector) {
+                match find_first_bad_prefix(state, &candidates, lt, fee_collector, e) {
                     Err(()) => {
                         // A bisection probe panicked: this is not a
                         // rejection — switch to panic isolation for the
@@ -665,17 +680,31 @@ fn propose_robust(
                                 .to_string(),
                         ));
                     }
-                    Ok(Some(k)) => {
+                    Ok(Some((k, StfError::BlockGasExceeded { used, cap }))) if k > 0 => {
+                        // Valid messages, just too many for one block: end the
+                        // block before the one that tipped it over and hold the
+                        // rest for the next block. Nothing is rejected.
+                        eprintln!(
+                            "producer: block gas cap reached ({used} > {cap}) at message {}; \
+                             holding {} message(s) for a later block",
+                            hex::encode(candidates[k].hash()),
+                            candidates.len() - k
+                        );
+                        candidates.truncate(k);
+                    }
+                    Ok(Some((k, err))) => {
                         let culprit = candidates.remove(k);
                         eprintln!(
                             "producer: dropping message {} from sender {}: rejected by block proposal",
                             hex::encode(culprit.hash()),
                             hex::encode(culprit.from.to_bytes())
                         );
-                        mempool.reject_candidate(
-                            &culprit.hash(),
-                            "propose_block rejected this message",
-                        );
+                        let reason = if matches!(err, StfError::BlockGasExceeded { .. }) {
+                            "message alone exceeds the block gas cap"
+                        } else {
+                            "propose_block rejected this message"
+                        };
+                        mempool.reject_candidate(&culprit.hash(), reason);
                         stats.txs_rejected += 1;
                         // Hold the culprit's same-sender successors for a later block:
                         // their nonces are gapped until the sender resubmits the missing
@@ -800,14 +829,16 @@ fn drop_panicking_message(
 }
 
 /// Binary search for the smallest `k` such that
-/// `propose_block(candidates[..=k])` fails. Returns `Ok(None)` only if the full
-/// set proposes cleanly (the caller already saw it fail, so this is
-/// defensive).
+/// `propose_block(candidates[..=k])` fails, returned with the error that
+/// prefix fails with (`full_err` is the full set's, which the caller already
+/// saw). Returns `Ok(None)` only if the full set proposes cleanly (the
+/// caller already saw it fail, so this is defensive).
 ///
 /// The predicate is monotonic: adding messages cannot repair an earlier
 /// wallet-handler rejection (balance only decreases through a block, and
-/// every other phase-1 check is per-message). Prefixes preserve per-sender
-/// nonce contiguity, so every probe is meaningful.
+/// every other phase-1 check is per-message), and block gas only grows with
+/// more deliveries. Prefixes preserve per-sender nonce contiguity, so every
+/// probe is meaningful.
 ///
 /// Probes run inside [`propose_block_caught`]: if a probe PANICS, `Err(())`
 /// is returned and the caller switches to panic isolation — a panicking
@@ -817,23 +848,29 @@ fn find_first_bad_prefix(
     candidates: &[ExternalMessage],
     lt: u64,
     fee_collector: AccountId,
-) -> Result<Option<usize>, ()> {
-    // Invariant: propose(candidates[..lo]) succeeds, propose(candidates[..hi]) fails.
+    full_err: StfError,
+) -> Result<Option<(usize, StfError)>, ()> {
+    // Invariant: propose(candidates[..lo]) succeeds, propose(candidates[..hi])
+    // fails with hi_err.
     // lo = 0 holds because the empty prefix has no messages to reject;
-    // hi = len holds because the caller saw the full set fail.
+    // hi = len holds because the caller saw the full set fail with full_err.
     let mut lo = 0usize;
     let mut hi = candidates.len();
+    let mut hi_err = full_err;
     while lo + 1 < hi {
         let mid = (lo + hi) / 2;
         match propose_block_caught(state, candidates[..mid].to_vec(), lt, fee_collector, 0) {
             Ok(Ok(_)) => lo = mid,
-            Ok(Err(_)) => hi = mid,
+            Ok(Err(e)) => {
+                hi = mid;
+                hi_err = e;
+            }
             Err(_) => return Err(()),
         }
     }
     // propose(..lo) ok, propose(..lo+1) fails → culprit is index lo.
     if lo < candidates.len() {
-        Ok(Some(lo))
+        Ok(Some((lo, hi_err)))
     } else {
         Ok(None)
     }
@@ -1086,6 +1123,187 @@ mod tests {
             "exactly the panicking message is dropped"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Contract code that burns ~9.8M gas and then halts successfully: a
+    /// loop of eight `DUP HASHCELL DROP`s on the data cell, run 6000 times.
+    ///
+    /// ```text
+    ///       PUSHINT 6000            ; data, n
+    /// loop: SWAP                    ; n, data
+    ///       (DUP HASHCELL DROP) x8  ; n, data
+    ///       SWAP                    ; data, n
+    ///       PUSHINT 1
+    ///       SUB 128                 ; data, n-1
+    ///       DUP ISZERO              ; data, n-1, n-1==0
+    ///       UNTIL loop              ; re-enter while n-1 != 0
+    ///       DROP                    ; data
+    /// ```
+    fn gas_burner_code() -> onx_state_model::Cell {
+        fn pushint(v: u16) -> Vec<u8> {
+            let mut out = vec![0x08, 0x00];
+            let mut word = [0u8; 32];
+            word[30..].copy_from_slice(&v.to_be_bytes());
+            out.extend_from_slice(&word);
+            out
+        }
+        let mut body = vec![0x03]; // SWAP
+        for _ in 0..8 {
+            body.extend_from_slice(&[0x02, 0x61, 0x01]); // DUP HASHCELL DROP
+        }
+        body.push(0x03); // SWAP
+        body.extend(pushint(1));
+        body.extend_from_slice(&[0x11, 0x00, 0x80, 0x00]); // SUB width=128
+        body.extend_from_slice(&[0x02, 0x16]); // DUP ISZERO
+        let back = -(body.len() as i16 + 2);
+        body.extend_from_slice(&[0x7B, back as i8 as u8]); // UNTIL loop
+        let mut code = pushint(6000);
+        code.extend(body);
+        code.push(0x01); // DROP
+        onx_state_model::Cell::new(code, vec![]).unwrap()
+    }
+
+    /// The block gas cap (ADR-0034) must split an over-cap batch across
+    /// blocks, never drop a valid message. Twelve ~9.8M-gas contract calls
+    /// (six senders, two nonces each) need ~118M gas against a 100M cap:
+    /// the first block takes ten, the next takes the other two, and
+    /// nothing goes to `rejected/`. Before the fix the producer bisected to
+    /// the eleventh call, rejected it, and stranded its sender's next nonce.
+    #[test]
+    fn block_gas_cap_splits_batch_across_blocks_without_rejecting() {
+        use onx_data_structures::{ShardIdent, WorkchainIdent};
+        use onx_primitives::SecretKey;
+        use onx_state_model::{AccountState, Cell, GenesisDocument, GenesisValidator, StorageStat};
+        use std::collections::BTreeMap;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("onxd-gascap-test-{}-{nanos}", std::process::id()));
+        let tx_pool_dir = root.join("pool");
+        std::fs::create_dir_all(&tx_pool_dir).unwrap();
+
+        let fee_collector = test_fee_collector();
+        let contract = AccountId::from_bytes([0xC0; 32]);
+        let senders: Vec<AccountId> = (0..6).map(test_account).collect();
+        let validator_key = SecretKey::from_seed(&[0x11; 32]).unwrap();
+
+        let stat = StorageStat {
+            cell_count: 0,
+            byte_count: 0,
+            bit_count: 0,
+        };
+        let mut accounts = BTreeMap::new();
+        for id in &senders {
+            accounts.insert(
+                *id,
+                AccountState::Active {
+                    balance_nanos: 1_000_000_000,
+                    last_trans_lt: 0,
+                    code: None,
+                    data: None,
+                    storage_stat: stat,
+                    pubkey: test_secret_key(id).public_key().encode(),
+                    nonce: 0,
+                },
+            );
+        }
+        accounts.insert(
+            contract,
+            AccountState::Active {
+                balance_nanos: 0,
+                last_trans_lt: 0,
+                code: Some(gas_burner_code()),
+                data: Some(Cell::new(vec![], vec![]).unwrap()),
+                storage_stat: stat,
+                pubkey: [0u8; 32],
+                nonce: 0,
+            },
+        );
+        let doc = GenesisDocument::new(
+            WorkchainIdent::BASIC,
+            ShardIdent::root(WorkchainIdent::BASIC),
+            vec![GenesisValidator {
+                pubkey: validator_key.public_key().encode(),
+                stake: 1_000,
+            }],
+            accounts,
+        )
+        .unwrap();
+        let store = ChainStore::open(root.join("db")).unwrap();
+        store.init_genesis(&doc).unwrap();
+        let state = store.load_state().unwrap().unwrap();
+
+        // Each call buys the full per-message gas (10_000 nanos * 1_000).
+        let mut sent = Vec::new();
+        for id in &senders {
+            for nonce in 0..2 {
+                let msg = ExternalMessage::new_signed(
+                    state.chain_id,
+                    MsgKind::ContractCall,
+                    *id,
+                    nonce,
+                    contract,
+                    1,
+                    10_000,
+                    vec![0x01],
+                    [0u8; 32],
+                    &test_secret_key(id),
+                );
+                let name = format!("{}.msg", hex::encode(msg.hash()));
+                std::fs::write(tx_pool_dir.join(name), msg.to_bytes()).unwrap();
+                sent.push(msg.hash());
+            }
+        }
+
+        let cfg = ProducerConfig {
+            fee_collector,
+            poll_interval: Duration::from_millis(0),
+            tx_pool_dir: tx_pool_dir.clone(),
+            blocks_dir: root.join("blocks"),
+            telemetry: None,
+            signing_key: Some(validator_key),
+        };
+        std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
+        let mut mempool = Mempool::new(&tx_pool_dir, 1000, state.chain_id, fee_collector).unwrap();
+        let mut stats = ProducerStats::default();
+
+        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        assert_eq!(stats.msgs_committed, 10, "ten calls fit under the cap");
+        assert_eq!(mempool.len(), 2, "the other two are held, not dropped");
+
+        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        assert_eq!(stats.blocks_produced, 2);
+        assert_eq!(stats.msgs_committed, 12, "every call is committed");
+        assert_eq!(stats.txs_rejected, 0);
+        assert!(mempool.is_empty());
+        assert_eq!(
+            tx_pool_dir.join("rejected").read_dir().unwrap().count(),
+            0,
+            "nothing went to rejected/"
+        );
+
+        // Both blocks together carry exactly the twelve calls, and every
+        // sender's nonce advanced to 2.
+        let mut committed = Vec::new();
+        for seqno in 1..=2 {
+            let hash = store.block_hash_for_seqno(seqno).unwrap().unwrap();
+            let body = store.get_block_body(&hash).unwrap().unwrap();
+            committed.extend(body.messages.iter().map(|m| m.hash()));
+        }
+        committed.sort();
+        sent.sort();
+        assert_eq!(committed, sent);
+        let head = store.load_state().unwrap().unwrap();
+        for id in &senders {
+            match head.tree.get(id) {
+                Some(AccountState::Active { nonce, .. }) => assert_eq!(*nonce, 2),
+                other => panic!("sender {id:?} not active: {other:?}"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

@@ -143,7 +143,7 @@ def adrs() -> list[dict]:
         if m.group(1) != p.name[:4]:
             raise SystemExit(f"{p.relative_to(ROOT)}: heading number ADR-{m.group(1)} != file number")
         status = "Unknown"
-        sm = re.search(r"^\*\*Status:?\*\*:?\s*([A-Za-z]+)", read(p), re.M)
+        sm = re.search(r"^\*\*Status:?\*\*:?\s*([A-Za-z]+(?: in part)?)", read(p), re.M)
         if sm:
             status = sm.group(1).capitalize()
         out.append({"num": m.group(1), "file": p.name, "title": m.group(2).strip(), "status": status})

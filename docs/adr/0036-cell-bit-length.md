@@ -1,6 +1,10 @@
 # ADR-0036 — Cell Bit-Length Commitment via Compatible Flag (Wave 4, step 4)
 
-**Status:** Proposed (2026-10-07)
+**Status:** Accepted (2026-10-08; proposed 2026-10-07). Implemented in #32,
+pinned by `reference/vectors/bitlen.json`. §5 covers slice readers only:
+the interpreter still measures *code* cells as `8 × data_bytes`, so the
+completion tag of a bit-granular code cell executes. That is a known M4 bug
+in `MILESTONES.md`. It is a gap in the implementation, not in this decision.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 
 ## Context
