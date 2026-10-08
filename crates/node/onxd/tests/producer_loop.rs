@@ -540,8 +540,10 @@ fn loop_drops_stale_msg_without_crashing() {
     let good = wallet.sign(0xaa, 0xab, 200, 2); // nonce 1
     h.drop_msg(&good);
 
-    // Head is at seqno 1 from the direct commit; wait for block 2.
-    let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
+    // Head is at seqno 1 from the direct commit; wait for block 2. Startup
+    // recovery regenerates block-00000001.blk before the first intake scan,
+    // so waiting for 1 file would return before the stale message is seen.
+    let (handle, shutdown) = h.run_until(10_000, 2, Duration::from_secs(20));
     shutdown.store(true, Ordering::Relaxed);
     let stats = handle
         .join()
