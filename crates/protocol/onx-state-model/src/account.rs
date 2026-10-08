@@ -143,6 +143,15 @@ impl AccountState {
         }
     }
 
+    /// Returns the next expected transaction nonce, or 0 if the account
+    /// has no nonce (uninitialized, frozen, or destroyed).
+    pub fn nonce(&self) -> u64 {
+        match self {
+            Self::Active { nonce, .. } => *nonce,
+            Self::Uninitialized | Self::Frozen { .. } | Self::Destroyed => 0,
+        }
+    }
+
     /// Serializes an active account state record according to docs/specification/state-model.md §4.1.
     ///
     /// Active layout (fixed 141-byte header, then optional cell payloads):
