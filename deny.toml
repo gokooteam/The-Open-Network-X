@@ -7,6 +7,11 @@ allow = [
     "BSD-1-Clause",
     "CC0-1.0",
     "Unicode-3.0",
+    # Sentry's rustls stack: aws-lc-rs, aws-lc-sys, rustls-webpki, untrusted
+    # are ISC; webpki-root-certs is CDLA-Permissive-2.0. Both permissive;
+    # accepted as project policy 2026-10-07 (Sentry audit round 2).
+    "ISC",
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 
