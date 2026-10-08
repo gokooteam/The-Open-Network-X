@@ -12,7 +12,7 @@ pub const MERGE_PREPARE: u16 = 0x0004;
 /// This is the last block of the pre-merge sibling shards; the next block belongs to the merged shard.
 pub const MERGE_COMMIT: u16 = 0x0008;
 /// This block is the first block of a shardchain formed by merging two
-/// sibling shards, and carries a second parent reference (ADR-0016,
+/// sibling shards, and carries a second parent reference (ADR-0023,
 /// `data-structures.md` §4.4). Structural validation of the two-parent
 /// relationship this flag gates is not yet implemented here: it requires
 /// `BlockHeader`'s `prev_ref_hash_2` field, which

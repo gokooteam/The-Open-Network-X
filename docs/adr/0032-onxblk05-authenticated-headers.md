@@ -1,7 +1,10 @@
 # ADR-0032 — ONXBLK05: Authenticated Block Headers (Producer Signatures)
 
-**Status:** Accepted (design; Rust decoder/verifier is ONXBLK05 step 3, not
-yet implemented)
+**Status:** Accepted. Implemented: the Rust decoder and verifier, producer
+signing and storage schema v4 shipped in PRs #12–#13, and the
+`protocol_version`/`block_time` header fields in #14. (The original status
+line said the decoder was "not yet implemented"; that was true when this ADR
+was written.)
 
 **Date:** 2026-10-07
 

@@ -8,7 +8,7 @@
 ## 1. Reference
 
 - `docs/specification/execution.md` §3.1–§3.4: the execution contract (`execute(code, data, message, context) -> ...`), the six required semantic categories, the closed five-member `ExceptionKind` set, and the explicit deferral of concrete opcodes and gas pricing to this document.
-- `docs/specification/execution.md` §3.5, ADR-0007: the reserved Merkle-proof "pruned branch" special-cell semantics and `AbsentNode`, which this instruction set's cell-access opcodes must respect.
+- `docs/specification/execution.md` §3.5, ADR-0014: the reserved Merkle-proof "pruned branch" special-cell semantics and `AbsentNode`, which this instruction set's cell-access opcodes must respect.
 - `docs/specification/state-model.md` §3.3–§4.2: the `Cell`/`BagOfCells` representation this instruction set's `code` and `data` operate on, including `MAX_CELL_DATA_BYTES = 128`, `MAX_CELL_REFS = 4`, and the `is_special` flag.
 - `docs/specification/protocol-primitives.md`: canonical fixed-width integer encoding (`Uint8`–`Uint256`, `Int8`–`Int256`) and domain-separated SHA-256/Ed25519 primitives this instruction set's arithmetic and cryptographic opcodes reuse rather than redefine.
 - `docs/specification/transactions.md`: `MAX_TENTATIVE_GAS = 10,000`, the External Inbound tentative-execution gas cap this document's cryptographic opcode pricing (§3.6) is checked against for plausibility.

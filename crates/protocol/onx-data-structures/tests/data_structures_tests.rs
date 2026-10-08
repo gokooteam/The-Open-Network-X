@@ -170,7 +170,7 @@ fn test_block_header_serialization_and_hashing() {
         Err(DataStructureError::HeaderMagicMismatch { magic: 0xDEADBEEF })
     ));
 
-    // Test Merge Result Block Header (ADR-0016)
+    // Test Merge Result Block Header (ADR-0023)
     let merge_header = BlockHeader {
         magic_constructor: Uint32::from(BLOCK_HEADER_MAGIC),
         shard,

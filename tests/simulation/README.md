@@ -22,7 +22,11 @@ python3 tests/simulation/run_simulation.py \
   --drop-pct 0.0
 ```
 
-This smoke test is wired into the GitHub Actions workflow under `.github/workflows/ci.yml`.
+**What this is, and isn't:** `run_simulation.py` is a self-contained Python
+model. It does not start `onxd` or call any Rust crate; the crate names
+above describe what the model stands in for. It is not run by any CI
+workflow. Milestone M5 replaces it with a multi-node test of the real
+binaries (see `MILESTONES.md`).
 
 ## Acceptance
 

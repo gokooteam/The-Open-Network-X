@@ -209,17 +209,31 @@ ticked.
       `trie_behaves_like_btreemap_model` tests in `onx-state-model`.
 
 *Docs that tell the truth*
-- [ ] README status table: the VM row still lists the `LDREF` child-cell bug
-      as open, but PR #7 fixed it. Re-grade the row.
-- [ ] ADR-0032's status line still says the Rust decoder is "not yet
-      implemented", but it shipped in #13.
+- [x] README status table: the VM row still lists the `LDREF` child-cell bug
+      as open, but PR #7 fixed it. Re-grade the row. **Done:** the row is
+      now ⚠️ partial: `LDREF` fixed (#7, `vm_child_cells.rs`), checked
+      arithmetic (#8), `tvm_execution` fuzzed in CI, with `JMPREF`/`CALLREF`
+      named as still open. Evidence: the VM row of the README status table.
+- [x] ADR-0032's status line still says the Rust decoder is "not yet
+      implemented", but it shipped in #13. **Done:** the status line names
+      what shipped where (#12–#14). Evidence: `docs/adr/0032-onxblk05-authenticated-headers.md`.
 - [ ] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
       *Proposed*.
-- [ ] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
-      but it isn't. Wire it in or correct the README.
+- [x] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
+      but it isn't. Wire it in or correct the README. **Done (corrected):**
+      the README now says it is a Python model that no workflow runs, and
+      that M5 replaces it. Evidence: `tests/simulation/README.md`.
 - [ ] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
       #12 (2026-09-10), and none of PRs #1–#23 added one. Revive the
       convention or retire it.
+- [x] Docs and websites are checked, not trusted. **Done:** the `Docs and
+      site` workflow (`.github/workflows/docs.yml`, job `site-and-docs`)
+      fails a PR on a broken Markdown link (`scripts/check-doc-links.py`), a
+      bad `WHITEPAPER.md §` citation, or an on-x.live / explorer page that
+      disagrees with the repository (`scripts/site.py check`). Old-series ADR
+      numbers in specs, crate docs and ROADMAP were renumbered. The sites are
+      deployed only from commits that pass it, and `Site monitor` compares
+      what is served with `main`. Evidence: `site/README.md`.
 - [x] `onx-cli`: make `transfer` produce a real `ONX_MSG_EXT_V1` message, or
       remove the placeholder commands. A command that looks like it works and
       doesn't is worse than no command. **Done (both):** `transfer` signs a

@@ -16,7 +16,7 @@
 - `WHITEPAPER.md`, §2.6.20–§2.6.21: Late-signature reward decay ($0.9^k$) and signature depth $d$.
 - `WHITEPAPER.md`, §2.6.22–§2.6.28: Relative validity, relative reliability, recursive reliability, and the 2-month challenge window.
 - `INSTRUCTIONS.md`, §10, §14, §15: Deterministic consensus, protocol boundaries, and state isolation.
-- `docs/specification/architecture.md`: Open question ONX-ARCH-005 (finality and invalid-block claims), resolved by this specification and ADR-0008.
+- `docs/specification/architecture.md`: Open question ONX-ARCH-005 (finality and invalid-block claims), resolved by this specification and ADR-0015.
 - `docs/specification/blocks.md`: Structural block validity, parent references, masterchain coupling, and header split/merge flags.
 - `docs/specification/data-structures.md`: Core data types (`ShardIdent`, `BlockHeader`, `Uint256`).
 

@@ -1,6 +1,6 @@
 //! ADNL UDP Transport Layer implementation.
 //!
-//! Complies with `docs/specification/networking-adnl.md` and `ADR-0009-networking-adnl-and-rldp.md`.
+//! Complies with `docs/specification/networking-adnl.md` and `docs/adr/0016-networking-adnl-and-rldp.md`.
 
 use crate::{derive_channel_id, KeyDescription, NetworkError};
 use aes::cipher::{KeyIvInit, StreamCipher};
