@@ -35,7 +35,25 @@ REPO_URL = re.compile(
 SKIP = {"WHITEPAPER.md"}
 # Inline links. Images use the same syntax with a leading "!", also checked.
 LINK = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
-FENCE = re.compile(r"^\s*(```|~~~)")
+FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def fence_step(line: str, open_fence: str | None) -> tuple[bool, str | None]:
+    """Track fenced code blocks (CommonMark): returns (is_fence_line, open fence).
+
+    A block closes only on a fence of the same character, at least as long as
+    the opening one, with nothing but whitespace after it. So a ``` line
+    inside a ```` block, or inside a ~~~ block, stays code.
+    """
+    m = FENCE.match(line)
+    if not m:
+        return False, open_fence
+    marker, rest = m.group(1), m.group(2)
+    if open_fence is None:
+        return True, marker
+    if marker[0] == open_fence[0] and len(marker) >= len(open_fence) and not rest.strip():
+        return True, None
+    return False, open_fence
 
 
 def tracked_markdown() -> list[Path]:
@@ -63,12 +81,10 @@ def slug(heading: str) -> str:
 def anchors(path: Path) -> frozenset[str]:
     found: dict[str, int] = {}
     result = set()
-    in_fence = False
+    fence = None
     for line in path.read_text(encoding="utf-8").splitlines():
-        if FENCE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
+        is_fence, fence = fence_step(line, fence)
+        if is_fence or fence is not None:
             continue
         m = re.match(r"^#{1,6}\s+(.*?)\s*#*\s*$", line)
         if not m:
@@ -111,12 +127,10 @@ def check_target(src: Path, target: str) -> str | None:
 def main() -> int:
     broken = []
     for md in tracked_markdown():
-        in_fence = False
+        fence = None
         for lineno, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
-            if FENCE.match(line):
-                in_fence = not in_fence
-                continue
-            if in_fence:
+            is_fence, fence = fence_step(line, fence)
+            if is_fence or fence is not None:
                 continue
             for target in LINK.findall(line):
                 reason = check_target(md, target)

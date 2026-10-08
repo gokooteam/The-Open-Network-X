@@ -34,12 +34,18 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          # Always compare against main, also for a manual run on another branch.
+          ref: main
           persist-credentials: false
 
       - name: Compare live sites with main
         id: live
         continue-on-error: true
-        run: python3 scripts/site.py live --attempts 6 --json "$RUNNER_TEMP/live.json" | tee "$RUNNER_TEMP/live.txt"
+        # pipefail: without it the step's status is tee's, which always
+        # succeeds, and drift would be reported as "everything matches".
+        run: |
+          set -o pipefail
+          python3 scripts/site.py live --attempts 6 --json "$RUNNER_TEMP/live.json" | tee "$RUNNER_TEMP/live.txt"
 
       - name: Open, update or close the drift issue
         env:

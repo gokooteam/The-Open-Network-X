@@ -1851,6 +1851,14 @@ window.ONX_CONFIG = {
     $('replay-text').value = '';
   }
 
+  // Drop any source read still in flight: its result must not land on top
+  // of what the user did meanwhile (Clear, local files, another network).
+  function cancelRead() {
+    S.readToken++;
+    S.busy = false;
+    S.reading = false;
+  }
+
   // Read from the wired source (HOOK 2). fresh = start over from block 1;
   // otherwise (polling) only look for blocks after the ones already loaded.
   async function readFromSource(fresh) {
@@ -1915,6 +1923,7 @@ window.ONX_CONFIG = {
         else ignored.push(f.name);
       }
     }
+    if (blocks.length || genesis) cancelRead();
     if ((blocks.length || genesis) && S.origin === 'source') clearLoaded();
     if (blocks.length) S.blockFiles = blocks;
     if (genesis) S.genesisFile = genesis;
@@ -1982,9 +1991,7 @@ window.ONX_CONFIG = {
     if (!CFG.networks[net] || net === S.net) return;
     S.net = net;
     try { history.replaceState(null, '', '#' + net); } catch (e) { /* the frame may not allow it */ }
-    S.readToken++; // drop any read still running for the previous network
-    S.busy = false;
-    S.reading = false;
+    cancelRead(); // drop any read still running for the previous network
     if (S.origin === 'source') clearLoaded();
     S.readError = ''; S.readHint = ''; S.lastRead = null;
     schedulePoll();
@@ -2019,6 +2026,7 @@ window.ONX_CONFIG = {
     const files = await readFiles(e.target.files);
     e.target.value = '';
     if (!files.length) return;
+    cancelRead();
     if (S.origin === 'source') clearLoaded();
     S.blockFiles = files; S.origin = 'files'; S.note = '';
     await refresh();
@@ -2027,6 +2035,7 @@ window.ONX_CONFIG = {
     const files = await readFiles(e.target.files);
     e.target.value = '';
     if (!files.length) return;
+    cancelRead();
     if (S.origin === 'source') clearLoaded();
     S.genesisFile = files[0]; S.origin = 'files';
     await refresh();
@@ -2043,7 +2052,7 @@ window.ONX_CONFIG = {
     replayTimer = setTimeout(() => { S.replayText = e.target.value; refresh(); }, 250);
   });
   $('btn-reload').addEventListener('click', () => readFromSource(true));
-  $('btn-clear').addEventListener('click', () => { clearLoaded(); refresh(); });
+  $('btn-clear').addEventListener('click', () => { cancelRead(); clearLoaded(); refresh(); });
   $('search').addEventListener('submit', (e) => { e.preventDefault(); search($('q').value); });
 
   // Drop overlay: visible only while files are being dragged over the page.

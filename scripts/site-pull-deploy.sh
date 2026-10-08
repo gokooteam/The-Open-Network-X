@@ -9,7 +9,8 @@
 # What it does, in order, and why:
 #  1. Asks GitHub for the newest commit on the branch (default main).
 #  2. Refuses to deploy unless that commit's `site-and-docs` check run
-#     (.github/workflows/docs.yml) completed successfully, so a page whose
+#     (.github/workflows/docs.yml), created by GitHub Actions, completed
+#     successfully, so a page whose
 #     facts disagree with the repository never goes out.
 #  3. Downloads the file *at that commit SHA* (immutable URL, so GitHub's
 #     raw-file cache can't hand back an old copy).
@@ -28,6 +29,9 @@ set -eu
 
 REPO="gokooteam/The-Open-Network-X"
 CHECK_NAME="site-and-docs"
+# Only check runs created by GitHub Actions count. Any other GitHub App with
+# checks:write on the repository could post a run with the same name.
+ACTIONS_APP_ID=15368
 MIN_BYTES=20000
 
 src_path=${1:?usage: site-pull-deploy.sh <repo path> <served file> [branch]}
@@ -52,7 +56,7 @@ if [ -z "$sha" ]; then
 fi
 
 # 2. The docs/site check must have passed on exactly that commit.
-runs=$(api "commits/$sha/check-runs?check_name=$CHECK_NAME")
+runs=$(api "commits/$sha/check-runs?check_name=$CHECK_NAME&app_id=$ACTIONS_APP_ID")
 total=$(printf '%s' "$runs" | grep -o '"total_count": *[0-9]*' | head -n 1 | grep -o '[0-9]*$' || true)
 # One "conclusion" per check run: "success", another word, or null while running.
 conclusions=$(printf '%s' "$runs" | grep -o '"conclusion": *\("[a-z_]*"\|null\)' | sed 's/.*: *//; s/"//g' | sort -u)

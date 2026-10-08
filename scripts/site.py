@@ -158,9 +158,9 @@ def toml_value(path: Path, key: str) -> str:
 
 
 def rust_const(rel: str, name: str) -> str:
-    m = re.search(rf"pub const {name}\s*:[^=]+=\s*(.+?);", read(ROOT / rel))
+    m = re.search(rf"^\s*(?:pub(?:\([^)]*\))?\s+)?const {name}\s*:[^=]+=\s*(.+?);", read(ROOT / rel), re.M)
     if not m:
-        raise SystemExit(f"{rel}: no pub const {name}")
+        raise SystemExit(f"{rel}: no const {name}")
     return m.group(1).strip()
 
 
@@ -358,6 +358,9 @@ def render_replay(replay: dict, golden: dict) -> dict[str, str]:
         "replay_final_short": kv["final_state_root"][:8],
         "replay_commit": f"<a href=\"{REPO}/commit/{replay['commit']}\">{replay['commit'][:7]}</a>",
         "replay_terminal": "\n".join(esc(l) for l in replay["lines"]),
+        # The page's script animates the same replay; keep it on the same data.
+        "replay_roots_js": "[" + ", ".join(f"'{b['root'][:8]}'" for b in blocks) + "]",
+        "replay_final_js": f"'{kv['final_state_root']}'",
     }
     return out
 
@@ -441,6 +444,8 @@ def explorer_constants(d: dict) -> list[str]:
         "BLOCK_MAGIC": d["block_magic"],
         "HEADER_LEN": str(d["header_len"]),
         "CELL_MAX_DATA": rust_const("crates/protocol/onx-state-model/src/cell.rs", "MAX_CELL_DATA_BYTES"),
+        "CELL_MAX_REFS": rust_const("crates/protocol/onx-state-model/src/cell.rs", "MAX_CELL_REFS"),
+        "EMBEDDED_CELL_MAX": rust_const("crates/protocol/onx-state-model/src/account.rs", "MAX_EMBEDDED_CELL_BYTES"),
         "MSG_MAX_PAYLOAD": rust_const("crates/protocol/onx-stf/src/message.rs", "MAX_MESSAGE_BYTES").replace("_", ""),
         "GAS_PER_NANO": rust_const("crates/protocol/onx-stf/src/stf.rs", "GAS_PER_NANO").replace("_", ""),
     }

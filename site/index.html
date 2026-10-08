@@ -1547,7 +1547,9 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
   /* -----------------------------------------------------------------------
      DETERMINISM: replay of recorded output, three processes converge
      ----------------------------------------------------------------------- */
-  const ROOTS = ['4b7def00', 'd6b5e7a8', '3fbb03b2', '49c137e2', '8b2f6aa6'];
+  // Generated from site/state.json (the recorded onx replay output).
+  const ROOTS = /*gen:replay_roots_js*/['4b7def00', 'd6b5e7a8', '3fbb03b2', '49c137e2', '8b2f6aa6']/*/gen:replay_roots_js*/;
+  const FINAL_ROOT = /*gen:replay_final_js*/'8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098'/*/gen:replay_final_js*/;
   const detRun = document.getElementById('det-run');
   const detStatus = document.getElementById('det-status');
   const detFinal = document.getElementById('det-final');
@@ -1597,7 +1599,7 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
     detVerdict.textContent = same ? '3 of 3 runs identical' : 'mismatch';
     detFinal.classList.toggle('is-match', same);
     detStatus.textContent = same
-      ? 'All three runs reached final_state_root 8b2f6aa6…, the frozen golden vector.'
+      ? `All three runs reached final_state_root ${FINAL_ROOT.slice(0, 8)}…, the frozen golden vector.`
       : 'Runs disagree.';
     detRun.disabled = false;
     detBusy = false;
@@ -1743,7 +1745,7 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
       desc: 'The process receives SIGKILL while writing a block, 100 times over. Each time it is restarted on the same database.',
       input: 'SIGKILL during commit, \u00d7100', sys: 'ChainStore (redb)', check: 'one write transaction per block',
       verdict: 'RECOVERED', rule: 'each block is written fully or not at all',
-      out: '100 of 100 kills: the database holds the previous block or the next one, never a mixture\nresumed replay: final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098',
+      out: '100 of 100 kills: the database holds the previous block or the next one, never a mixture\nresumed replay: final_state_root=' + FINAL_ROOT,
       test: ['storage_crash_kill9_recovery', T.p4]
     },
     dbcorrupt: {
@@ -1767,7 +1769,7 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
       desc: 'The full chain is replayed a second time over a database that already holds it.',
       input: 'blocks 1\u20135, already committed', sys: 'onx replay', check: 'committed hash per seqno',
       verdict: 'NO-OP', rule: 'replay is idempotent',
-      out: 'seqno=1 status=skipped\nseqno=2 status=skipped\nseqno=3 status=skipped\nseqno=4 status=skipped\nseqno=5 status=skipped\nfinal_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098',
+      out: 'seqno=1 status=skipped\nseqno=2 status=skipped\nseqno=3 status=skipped\nseqno=4 status=skipped\nseqno=5 status=skipped\nfinal_state_root=' + FINAL_ROOT,
       test: ['replay_rerun_is_idempotent_noop', T.p5]
     }
   };
