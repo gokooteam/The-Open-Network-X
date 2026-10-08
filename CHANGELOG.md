@@ -16,6 +16,11 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ## [Unreleased]
 
+### Added
+
+- `MILESTONES.md`: completed milestones M0–M3, exit criteria for M4–M7,
+  and the maintenance gate that defines `1.0.0`.
+
 ## [0.2.0] - 2026-10-08
 
 First tagged release. Rolls up everything merged since the 0.1.0 protocol

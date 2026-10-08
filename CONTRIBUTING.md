@@ -135,10 +135,12 @@ consensus-critical code.
 
 ## Picking up work
 
-`ROADMAP.md` maintains a changelog and a prioritized, up-for-grabs
-checklist. Before starting something from it, check for an open PR or issue
-already claiming it. If you start something not on the list, add it once
-you open the PR so the roadmap stays accurate.
+`MILESTONES.md` holds the prioritized, up-for-grabs work: each milestone's
+exit criteria are the checklist, and `ROADMAP.md` keeps the per-PR
+changelog. Before starting something, check for an open PR or issue
+already claiming it. Tick a criterion in the same PR that earns it, with a
+link to the evidence. Work that isn't in the current milestone goes to
+`MILESTONES.md`'s parking lot rather than into the milestone.
 
 ## Versioning and releases
 
