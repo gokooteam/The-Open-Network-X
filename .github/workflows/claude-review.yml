@@ -22,8 +22,11 @@ permissions:
 jobs:
   audit:
     name: Claude audit
-    # Skip drafts, and fork PRs (GitHub does not expose secrets to them).
+    # Only run in gokooteam/The-Open-Network-X (not in the upstream
+    # quickerup repo, which also carries this file via merges). Skip drafts,
+    # and PRs from other forks (GitHub does not expose secrets to them).
     if: >-
+      github.repository == 'gokooteam/The-Open-Network-X' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
