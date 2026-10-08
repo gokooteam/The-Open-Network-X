@@ -176,7 +176,17 @@ pub fn wallet_create(out_dir: impl AsRef<Path>) -> Result<WalletCreateResponse, 
     let tmp = write_unique_temp(out_dir, "wallet", json.as_bytes(), true)?;
     let linked = fs::hard_link(&tmp, &path);
     let _ = fs::remove_file(&tmp);
-    linked.map_err(|err| format!("cannot create {}: {err}", path.display()))?;
+    match linked {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+            return Err(format!("cannot create {}: {err}", path.display()));
+        }
+        // No hard links on this filesystem (vfat/exFAT, some FUSE and
+        // network mounts): write `wallet.json` directly. `create_new` still
+        // never overwrites, and a failed write removes the partial file.
+        Err(_) => write_exclusive(&path, json.as_bytes(), true)
+            .map_err(|err| format!("cannot create {}: {err}", path.display()))?,
+    }
     Ok(response)
 }
 
@@ -314,36 +324,44 @@ fn write_unique_temp(
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     let mut attempts = 0;
-    let (tmp, mut file) = loop {
+    loop {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let tmp = dir.join(format!(
             ".{stem}.{}.{started}.{seq}.tmp",
             std::process::id()
         ));
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        if private {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(not(unix))]
-        let _ = private;
-        match options.open(&tmp) {
-            Ok(file) => break (tmp, file),
+        match write_exclusive(&tmp, bytes, private) {
+            Ok(()) => return Ok(tmp),
             // Defensive: a name collision with a stale temp file.
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempts < 16 => {
                 attempts += 1;
             }
-            Err(err) => return Err(format!("cannot create {}: {err}", tmp.display())),
+            Err(err) => return Err(format!("cannot write {}: {err}", tmp.display())),
         }
-    };
-    if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
-        drop(file);
-        let _ = fs::remove_file(&tmp);
-        return Err(format!("cannot write {}: {err}", tmp.display()));
     }
-    Ok(tmp)
+}
+
+/// Create `path` exclusively (`create_new`: fails with `AlreadyExists` on
+/// any existing entry, symlinks included), write and sync `bytes`. If the
+/// write or sync fails, the file this call created is removed. `private`
+/// sets mode 0600 on Unix.
+fn write_exclusive(path: &Path, bytes: &[u8], private: bool) -> io::Result<()> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let mut file = options.open(path)?;
+    let written = file.write_all(bytes).and_then(|()| file.sync_all());
+    drop(file);
+    if written.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -573,6 +591,19 @@ mod tests {
         }
         let tmp = write_unique_temp(&dir, "x", b"fresh", false).unwrap();
         assert_eq!(fs::read(&tmp).unwrap(), b"fresh");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_exclusive_never_overwrites() {
+        // The no-hard-link fallback for `wallet.json` relies on this.
+        let dir = scratch_dir("exclusive");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wallet.json");
+        write_exclusive(&path, b"first", true).unwrap();
+        let err = write_exclusive(&path, b"second", true).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&path).unwrap(), b"first");
         let _ = fs::remove_dir_all(&dir);
     }
 
