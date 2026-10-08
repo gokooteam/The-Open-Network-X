@@ -31,4 +31,4 @@ pub use genesis::{
     parse_or_derive_pubkey, GenesisDocument, GenesisValidator, GENESIS_MAGIC, GENESIS_VERSION,
     ONX_GENESIS_ADDR_V1, ONX_GENESIS_V1, ONX_GENESIS_VALKEY_V1,
 };
-pub use tree::{MerkleProof, ShardStateTree, MAX_TRIE_VALUE_BYTES, MERKLE_PROOF_MAGIC};
+pub use tree::{Accounts, MerkleProof, ShardStateTree, MAX_TRIE_VALUE_BYTES, MERKLE_PROOF_MAGIC};
