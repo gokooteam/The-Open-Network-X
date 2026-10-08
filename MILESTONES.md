@@ -22,7 +22,7 @@ notes. This file is the forward plan and the finish line.
   check links to evidence.** Evidence means a PR, a CI run, or a named test.
   "The code exists" does not count. The bar is the same as the README's
   "Adversarially tested" column: something tried to break it and it held.
-- **One milestone, one minor version** (per ADR-0034). M4 ships as `0.3.0`,
+- **One milestone, one minor version** (per ADR-0040). M4 ships as `0.3.0`,
   M5 as `0.4.0`, and so on. `1.0.0` is the maintenance gate. SemVer 1.0 is
   the point where you promise compatibility, which is the same point where
   you stop developing and start maintaining.
@@ -124,14 +124,14 @@ notes. This file is the forward plan and the finish line.
   actionlint, dependency review, cargo-machete/taplo/typos, cargo-audit,
   OpenSSF Scorecard, labelers, and Codecov.
 - SemVer 2.0.0 with one workspace version, `CHANGELOG.md`, release
-  automation, and the `v0.2.0` tag (#23, ADR-0034).
+  automation, and the `v0.2.0` tag (#23, ADR-0040).
 
 ### Where that leaves us
 
 | Measure | Value (2026-10-08) |
 | --- | --- |
 | Workspace crates | 20 |
-| Specifications / ADRs | 15 / 34 (ADR-0029 and ADR-0034 still *Proposed*) |
+| Specifications / ADRs | 15 / 34 (ADR-0029 and ADR-0034 still *Proposed*) _(since resolved: all accepted on 2026-10-08, ADR-0037 in part; the versioning ADR is now ADR-0040)_ |
 | Tests (`cargo test --workspace --all-targets`) | 426 passed, 0 failed, 6 ignored across 72 test binaries (local run, Rust 1.98.1) |
 | Golden-vector files / fuzz targets | 5 / 3 |
 | CI on `main` @ `d907e2c` | ✅ green (run #56), after 6 red of the previous 7 |
@@ -172,7 +172,8 @@ harder to fix once networking adds a second moving part.
 
 **Merged:** Wave 4 (#32, 2026-10-08) hardens the VM: gas caps, 257-bit
 ints, cell bit-length, storage stats, chain-bound `CHKSIGNU`, and live
-`code_refs` (ADR-0034 `gas-caps` to ADR-0039, all *Proposed*). Review of
+`code_refs` (ADR-0034 `gas-caps` to ADR-0039, accepted 2026-10-08, ADR-0037
+only in part). Review of
 #32 found bugs it introduced or exposed; the ones reproduced are listed
 under *Known bugs* below.
 
@@ -241,6 +242,16 @@ under *Known bugs* below.
       call. Fix: seed the code DAG at genesis, or resolve a child only when
       `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
       contract that `CALLREF`s through the STF.
+- [ ] Out-of-gas should bounce, not be fatal. ADR-0037 made `OutOfGas`
+      fatal (the destination keeps the value). That rule was rejected on
+      2026-10-08 (ADR-0037's status explains why: it adds no cost to an
+      attack and takes the value from honest senders). The code still
+      implements it: `is_fatal_exception` in `onx-stf/src/stf.rs`,
+      `reference/vectors/fatal_bounce.json`, and `execution.md` §3.4. This is
+      a consensus change. Fix: map `OutOfGas` to bounce, keep reporting the
+      burned gas on bounce receipts, regenerate the vectors, and amend the
+      spec. Evidence needed: an STF test where an out-of-gas delivery bounces
+      its value back to the sender.
 - [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other. **Done (spec follows
@@ -275,11 +286,20 @@ under *Known bugs* below.
 - [x] ADR-0032's status line still says the Rust decoder is "not yet
       implemented", but it shipped in #13. **Done:** the status line names
       what shipped where (#12–#14). Evidence: `docs/adr/0032-onxblk05-authenticated-headers.md`.
-- [ ] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
+- [x] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
       *Proposed*. Since #32 there are two ADR-0034 records,
       `0034-versioning-standard.md` and `0034-gas-caps.md`, and the Wave 4
       records ADR-0035 to ADR-0039 are *Proposed* too. Renumber one of the
       ADR-0034s (and every reference to it), then accept or reject each.
+      **Done:** the versioning standard is now ADR-0040
+      (`docs/adr/0040-versioning-standard.md`), and every reference to it
+      moved with it. Gas caps keep 0034: they sit inside the Wave 4 run, and
+      code and `gas_caps.json` cite them. ADR-0029, ADR-0034 to ADR-0036,
+      ADR-0038, ADR-0039 and ADR-0040 are *Accepted*. ADR-0037 is *Accepted
+      in part*: its rule that out-of-gas is fatal is rejected (see the known
+      bug above). Each status line names its evidence and the known bugs it
+      carries. Evidence: the `Status` lines in `docs/adr/`, and `python3
+      scripts/site.py check`.
 - [x] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
       but it isn't. Wire it in or correct the README. **Done (corrected):**
       the README now says it is a Python model that no workflow runs, and

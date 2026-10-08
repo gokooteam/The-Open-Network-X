@@ -1,6 +1,10 @@
-# ADR-0034: Versioning standard — SemVer 2.0.0, one workspace version
+# ADR-0040: Versioning standard — SemVer 2.0.0, one workspace version
 
-**Status:** Proposed (2026-10-08)
+**Status:** Accepted (2026-10-08). In use since #23: `v0.2.0` is tagged and
+`versioning.yml` enforces the rules. This record was numbered ADR-0034 until
+#32 added a second ADR-0034 (gas caps). Gas caps kept 0034 because it sits
+inside the Wave 4 run 0034–0039, and code and golden vectors cite it. This
+record became ADR-0040.
 **Decider:** Amethyst
 
 ## Context

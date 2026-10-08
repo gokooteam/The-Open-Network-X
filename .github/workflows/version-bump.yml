@@ -3,7 +3,7 @@ name: Version Bump
 # Manually start a release: bumps [workspace.package] version, refreshes
 # Cargo.lock, moves CHANGELOG.md "Unreleased" under the new version, and opens
 # a release/vX.Y.Z PR. Merging it lets versioning.yml tag and draft the release.
-# Policy: docs/adr/0034-versioning-standard.md.
+# Policy: docs/adr/0040-versioning-standard.md.
 
 on:
   workflow_dispatch:
@@ -87,6 +87,6 @@ jobs:
           # The backticks in the format string are literal Markdown, not
           # command substitution.
           # shellcheck disable=SC2016
-          body=$(printf 'Bumps the workspace version %s → %s (see docs/adr/0034-versioning-standard.md).\n\nMerging this PR tags `v%s` and drafts the GitHub Release.\n\n## Changelog\n\n%s\n' "$OLD" "$NEW" "$NEW" "$notes")
+          body=$(printf 'Bumps the workspace version %s → %s (see docs/adr/0040-versioning-standard.md).\n\nMerging this PR tags `v%s` and drafts the GitHub Release.\n\n## Changelog\n\n%s\n' "$OLD" "$NEW" "$NEW" "$notes")
           gh pr create --repo "$REPO" --base main --head "$branch" \
             --title "release: v$NEW" --body "$body"
