@@ -49,6 +49,11 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   existing wallet.
 - `onx-cli --version` reports the workspace version instead of a hardcoded
   `0.1.0`.
+- `tvm-instruction-set.md` §3.5.3 (and the `LDREF` row, §5 and §6),
+  `execution.md` §3.4 and ADR-0024: `LDREF` raises `AbsentNode` on an
+  unresolved child (no `Cell` held for its hash) and never on a pruned
+  child. This matches what the VM already did; the spec previously said
+  `LDREF` never raises `AbsentNode`. No behavior change.
 
 ### Removed
 
