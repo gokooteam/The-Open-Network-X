@@ -1,3 +1,4 @@
+use crate::int257::Int257;
 use onx_data_structures::Message;
 use onx_state_model::{Cell, StateModelError};
 use std::fmt;
@@ -89,19 +90,22 @@ impl Slice {
         self.cell.cell_refs().len().saturating_sub(self.ref_offset)
     }
 
-    /// Reads up to 256 bits as a 32-byte big-endian slice.
-    pub fn read_bits(&mut self, width_bits: usize) -> Result<[u8; 32], ExceptionKind> {
+    /// Reads up to 256 bits as a canonical 33-byte big-endian 257-bit
+    /// value (bits right-aligned into the low 257 bits; the top 7 bits of
+    /// byte 0 stay zero, so the result is always a canonical [`Int257`]
+    /// encoding — the caller converts with `Int257::from_bytes33`).
+    pub fn read_bits(&mut self, width_bits: usize) -> Result<[u8; 33], ExceptionKind> {
         if self.remaining_bits() < width_bits || width_bits > 256 {
             return Err(ExceptionKind::MalformedCell);
         }
 
-        let mut res = [0u8; 32];
+        let mut res = [0u8; 33];
         let data = self.cell.data_bytes();
 
         for i in 0..width_bits {
             // Every index below is in-range: the guard above keeps
             // `bit_offset + i` inside the cell's data bits and
-            // `dest_bit_idx` inside the 32-byte buffer, so the
+            // `dest_bit_idx` inside the 33-byte buffer, so the
             // `saturating_*`/`wrapping_*` forms below are exact, not
             // silent clamps. They exist to name the overflow behavior
             // explicitly per the crate's `arithmetic_side_effects` policy.
@@ -110,7 +114,12 @@ impl Slice {
             let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (data[src_byte_idx] >> src_bit_in_byte) & 1;
 
-            let dest_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            // Big-endian read: the first bit read is the most significant
+            // of the `width_bits`. The value occupies buffer bits
+            // [264 - width_bits, 264); bits [0, 264 - width_bits) stay zero,
+            // which keeps byte 0's top 7 bits zero (canonical) for
+            // width_bits <= 256.
+            let dest_bit_idx = 264usize.saturating_sub(width_bits).saturating_add(i);
             let dest_byte_idx = dest_bit_idx.wrapping_div(8);
             let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx.wrapping_rem(8));
 
@@ -133,10 +142,11 @@ pub struct Builder {
 }
 
 impl Builder {
-    /// Appends the lower `width_bits` from a 32-byte big-endian value.
+    /// Appends the lower `width_bits` of a canonical 33-byte big-endian
+    /// 257-bit value (the low bits of its two's-complement encoding).
     pub fn append_bits(
         &mut self,
-        val_bytes: &[u8; 32],
+        val_bytes: &[u8; 33],
         width_bits: usize,
     ) -> Result<(), ExceptionKind> {
         if width_bits > 256 {
@@ -150,7 +160,9 @@ impl Builder {
         for i in 0..width_bits {
             // In-range by the same argument as `read_bits`: the guard above
             // keeps every index exact, so the explicit forms are not clamps.
-            let src_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            // The value's low `width_bits` bits are buffer bits
+            // [264 - width_bits, 264).
+            let src_bit_idx = 264usize.saturating_sub(width_bits).saturating_add(i);
             let src_byte_idx = src_bit_idx.wrapping_div(8);
             let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (val_bytes[src_byte_idx] >> src_bit_in_byte) & 1;
@@ -176,51 +188,12 @@ impl Builder {
 /// Stack values over the five TVM kinds per docs/specification/tvm-instruction-set.md §3.2.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StackValue {
-    /// 256-bit big-endian integer representation.
-    Integer([u8; 32]),
+    /// Canonical 257-bit signed integer (ADR-0035).
+    Integer(Int257),
     Bytes(Vec<u8>),
     Cell(Cell),
     Slice(Slice),
     Builder(Builder),
-}
-
-impl StackValue {
-    pub fn from_i128(val: i128) -> Self {
-        let mut bytes = [0u8; 32];
-        if val < 0 {
-            bytes[..16].fill(0xFF);
-        }
-        bytes[16..32].copy_from_slice(&val.to_be_bytes());
-        StackValue::Integer(bytes)
-    }
-
-    pub fn from_u128(val: u128) -> Self {
-        // Unsigned 128-bit carrier for wrap-flavor results in [0, 2^128):
-        // the high 128 bits are zero, never a sign extension.
-        let mut bytes = [0u8; 32];
-        bytes[16..32].copy_from_slice(&val.to_be_bytes());
-        StackValue::Integer(bytes)
-    }
-
-    pub fn to_i128(&self) -> Result<i128, ExceptionKind> {
-        match self {
-            StackValue::Integer(bytes) => {
-                // Fail closed (P1-minimal): the low 128 bits are only a
-                // faithful i128 when the high 128 bits are the sign
-                // extension of bit 127. A 256-bit value that does not fit
-                // raises IntegerOverflow instead of silently truncating to
-                // its low bits (which made CMP(2^127, 0) return -1).
-                let sign_fill = if bytes[16] & 0x80 == 0 { 0x00 } else { 0xFF };
-                if bytes[..16].iter().any(|&b| b != sign_fill) {
-                    return Err(ExceptionKind::IntegerOverflow);
-                }
-                let mut arr = [0u8; 16];
-                arr.copy_from_slice(&bytes[16..32]);
-                Ok(i128::from_be_bytes(arr))
-            }
-            _ => Err(ExceptionKind::TypeMismatch),
-        }
-    }
 }
 
 /// Successful or exceptional execution result per docs/specification/execution.md §3.2.

@@ -59,7 +59,7 @@ Every arithmetic and conversion opcode (§4.2) carries a `width : uint16` (`1 �
 - **Unsigned/signed flavors** (`0`/`1`) raise `IntegerOverflow` (`execution.md` §3.4) when the true mathematical result does not fit in `width` bits under that signedness — per `execution.md` §3.3 rule 2, this is the default, not opt-in.
 - **Modulo flavor** (`2`) never raises `IntegerOverflow`: the result is reduced modulo `2^width` and stored as its unsigned bit pattern (per `execution.md` §3.3 rule 1's "no automatic overflow checks in the modulo flavor only"). A contract wanting wrapped *signed* semantics reinterprets the same bit pattern via a signed-flavor `CONV` (§4.2), since two's-complement wraparound is bit-identical regardless of the signedness label attached afterward.
 - **Division/modulo by zero** (`DIVMOD`, §4.2) raises `IntegerOverflow`: no result exists that could fit any declared width, and `execution.md`'s closed exception set has no dedicated "arithmetic fault" kind, so this document maps it to the closest existing one rather than extending the set.
-- **Range checks precede flavor.** Operand-validity checks are evaluated before flavor selection and raise `IntegerOverflow` for *every* flavor: a shift amount below `0` or at/above `width` (`LSHIFT`/`RSHIFT`), and division by zero (`DIV`/`DIVMOD` — §5 test 2 pins this for all flavors). "Modulo never raises" describes the *result* reduction only. (Opcodes `0x10`–`0x14` ignore the flavor operand entirely; enforcing width/flavor there is a Wave 4 integer-model non-goal, ADR-0028.)
+- **Range checks precede flavor.** Operand-validity checks are evaluated before flavor selection and raise `IntegerOverflow` for *every* flavor: a shift amount below `0` or at/above `width` (`LSHIFT`/`RSHIFT`), and division by zero (`DIV`/`DIVMOD` — §5 test 2 pins this for all flavors). "Modulo never raises" describes the *result* reduction only. Every arithmetic opcode (`0x10`–`0x14` and `0x17`–`0x19`) enforces its `width`/`flavor` operands exactly as defined here — the Wave-3 deviation where some opcodes ignored flavor or bypassed the width limit is closed (ADR-0035).
 
 ### 3.4 Bit-strings and byte-strings
 
@@ -123,7 +123,7 @@ Every instruction is `opcode : uint8` followed by zero or more immediate operand
 | `0x05` | `ROT` | — | `(a, b, c) -> (b, c, a)` | 1 |
 | `0x06` | `PICK` | `depth: uint8` | copies `stack[depth]` (0 = top) to top | 1 |
 | `0x07` | `ROLL` | `depth: uint8` | moves `stack[depth]` to top | 1 |
-| `0x08` | `PUSHINT` | `signed: uint8`, `value: [u8; 32]` | `() -> (Integer)` | 1 |
+| `0x08` | `PUSHINT` | `signed: uint8`, `value: [u8; 32]` | `() -> (Integer)`; `signed = 0` decodes `value` as an unsigned 256-bit integer (`[0, 2^256)`), `signed = 1` as a signed 256-bit two's-complement integer (`[-2^255, 2^255)`) | 1 |
 | `0x09` | `PUSHBYTES` | `len: uint16`, then `len` raw bytes | `() -> (Bytes)` | `1 + ceil(len / 32)` |
 | `0x0A` | `NIP` | — | `(a, b) -> (b)` | 1 |
 | `0x0B` | `TUCK` | — | `(a, b) -> (b, a, b)` | 1 |
@@ -161,12 +161,12 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | --- | --- | --- | --- | --- | --- |
 | `0x40` | `NEWC` | — | `() -> (Builder)`, empty | 10 | — |
 | `0x41` | `ENDC` | — | `(Builder) -> (Cell)` | 10 | — |
-| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)` | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 128 bytes |
+| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)`; `width = 0` stores nothing and is accepted as a no-op | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 128 bytes |
 | `0x43` | `STREF` | — | `(Builder, Cell) -> (Builder)` | 10 | `MalformedCell` if the builder already has 4 references |
 | `0x44` | `STBYTES` | — | `(Builder, Bytes) -> (Builder)` | `10 + ceil(len / 32)` | `MalformedCell` if appending would exceed 128 bytes |
 | `0x45` | `CTOS` | — | `(Cell) -> (Slice)`, at `(0, 0)` | 10 | `AbsentNode` if `Cell` is a pruned special cell (§3.5.3) |
 | `0x46` | `LDU` | `width: uint16` | `(Slice) -> (Slice, Integer)`, unsigned | 10 | `MalformedCell` if fewer than `width` bits remain |
-| `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed | 10 | `MalformedCell` if fewer than `width` bits remain |
+| `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed: the `width`-bit two's-complement field is sign-extended into the full Integer domain | 10 | `MalformedCell` if fewer than `width` bits remain |
 | `0x48` | `LDREF` | — | `(Slice) -> (Slice, Cell)` | 10 | `MalformedCell` if no references remain; never `AbsentNode` (§3.5.3) |
 | `0x49` | `ISEXOTIC` | — | `(Cell) -> (bool)` | 10 | — |
 | `0x4A` | `SEMPTY` | — | `(Slice) -> (bool)`, true iff both bits and refs are exhausted | 1 | — |

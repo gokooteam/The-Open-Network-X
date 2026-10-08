@@ -1290,6 +1290,7 @@ dependencies = [
  "onx-state-model",
  "onx-system-contracts",
  "onx-transactions",
+ "serde_json",
 ]
 
 [[package]]

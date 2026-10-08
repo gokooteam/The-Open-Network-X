@@ -6,7 +6,9 @@
 //!    opcodes (`MSGSENDER`, `MSGVALUE`, `MSGBODY`).
 
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
-use onx_execution::{ExceptionKind, ExecutionContext, ExecutionResult, Interpreter, StackValue};
+use onx_execution::{
+    ExceptionKind, ExecutionContext, ExecutionResult, Int257, Interpreter, StackValue,
+};
 use onx_primitives::{Uint128, Uint256, Uint64};
 use onx_state_model::Cell;
 use std::collections::BTreeMap;
@@ -185,9 +187,7 @@ fn message_opcodes_expose_sender_value_and_body() {
     }
     match interp.stack.pop() {
         Some(StackValue::Integer(b)) => {
-            let mut expected = [0u8; 32];
-            expected[16..32].copy_from_slice(&12345u128.to_be_bytes());
-            assert_eq!(b, expected);
+            assert_eq!(b, Int257::from_u128(12345));
         }
         other => panic!("expected MSGVALUE integer, got {other:?}"),
     }

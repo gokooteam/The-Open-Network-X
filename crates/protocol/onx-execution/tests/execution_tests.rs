@@ -3,7 +3,7 @@
 use onx_consensus::{run_election, CandidateValidatorSpec, ElectionConfig};
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
 use onx_execution::{
-    execute, Builder, ExceptionKind, ExecutionContext, ExecutionResult, Interpreter, Slice,
+    execute, Builder, ExceptionKind, ExecutionContext, ExecutionResult, Int257, Interpreter, Slice,
     StackValue,
 };
 use onx_primitives::{SecretKey, Uint128, Uint256, Uint64};
@@ -99,21 +99,19 @@ fn test_slice_ldu_bit_reading() {
 
     // Read 4 bits: should be 1010 = 10
     let bits1 = slice.read_bits(4).unwrap();
-    let val1 = bits1[31] & 0x0F;
+    let val1 = bits1[32] & 0x0F;
     assert_eq!(val1, 10);
 
     // Read remaining 4 bits: should be 0101 = 5
     let bits2 = slice.read_bits(4).unwrap();
-    let val2 = bits2[31] & 0x0F;
+    let val2 = bits2[32] & 0x0F;
     assert_eq!(val2, 5);
 }
 
 #[test]
 fn test_builder_stbits_packing() {
     let mut builder = Builder::default();
-    let val_bytes = StackValue::from_i128(0xA5).to_i128().unwrap();
-    let mut arr = [0u8; 32];
-    arr[31] = val_bytes as u8;
+    let arr = Int257::from_i64(0xA5).to_bytes33();
 
     builder.append_bits(&arr, 8).unwrap();
     assert_eq!(builder.data_bytes, vec![0xA5]);
@@ -279,7 +277,10 @@ fn exception_jumps_to_c2_continuation() {
         interpreter.run(),
         ExecutionResult::Success { gas_used: 5, .. }
     ));
-    assert_eq!(interpreter.stack.last(), Some(&StackValue::from_i128(3)));
+    assert_eq!(
+        interpreter.stack.last(),
+        Some(&StackValue::Integer(Int257::from_i64(3)))
+    );
 }
 
 #[test]

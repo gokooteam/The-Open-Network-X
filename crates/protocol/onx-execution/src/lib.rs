@@ -15,11 +15,13 @@ pub mod continuation;
 pub mod dictionary;
 #[cfg(test)]
 mod fuzz;
+pub mod int257;
 pub mod interpreter;
 pub mod types;
 
 pub use continuation::{Continuation, ControlRegisters};
 pub use dictionary::{Dictionary, DictionaryError};
+pub use int257::Int257;
 pub use interpreter::Interpreter;
 pub use types::{Builder, ExceptionKind, ExecutionContext, ExecutionResult, Slice, StackValue};
 
