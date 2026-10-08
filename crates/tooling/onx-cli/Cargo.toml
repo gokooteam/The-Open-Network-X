@@ -2,7 +2,7 @@
 name = "onx-cli"
 version.workspace = true
 edition = "2021"
-description = "Deterministic ONX CLI wallet and contract command scaffold."
+description = "ONX command-line wallet: key generation and signed external-message construction."
 license = "Apache-2.0"
 publish = false
 
@@ -15,6 +15,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 hex = "0.4"
-tokio = { version = "1.38", features = ["full"] }
 bip39 = { version = "2", features = ["rand"] }
 onx-primitives = { path = "../../protocol/onx-primitives" }
+onx-data-structures = { path = "../../protocol/onx-data-structures" }
+onx-stf = { path = "../../protocol/onx-stf" }
+onx-genesis = { path = "../onx-genesis" }
+
+[dev-dependencies]
+onx-economics = { path = "../../protocol/onx-economics" }
