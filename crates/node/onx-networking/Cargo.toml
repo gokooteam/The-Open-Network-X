@@ -8,7 +8,6 @@ publish = false
 
 [dependencies]
 onx-primitives = { path = "../../protocol/onx-primitives" }
-onx-data-structures = { path = "../../protocol/onx-data-structures" }
 tokio = { version = "1.38", features = ["net", "rt", "sync", "time", "macros"] }
 aes = "0.8"
 ctr = "0.9"

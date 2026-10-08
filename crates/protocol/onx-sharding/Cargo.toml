@@ -10,7 +10,6 @@ publish = false
 onx-primitives = { path = "../onx-primitives" }
 onx-data-structures = { path = "../onx-data-structures" }
 onx-state-model = { path = "../onx-state-model" }
-onx-blocks = { path = "../onx-blocks" }
 
 [dev-dependencies]
 hex = "0.4"
