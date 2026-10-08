@@ -1,6 +1,6 @@
 [package]
 name = "onx-economics"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX economics, token supply, fee schedule, storage fee accrual, and validator reward distribution per docs/specification/economics.md"
 license = "Apache-2.0"

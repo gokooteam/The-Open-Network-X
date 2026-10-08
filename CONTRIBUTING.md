@@ -140,6 +140,22 @@ checklist. Before starting something from it, check for an open PR or issue
 already claiming it. If you start something not on the list, add it once
 you open the PR so the roadmap stays accurate.
 
+## Versioning and releases
+
+ONX follows [Semantic Versioning 2.0.0](https://semver.org/) with one version
+for the whole workspace, set in `[workspace.package]` in the root
+`Cargo.toml` ([ADR-0034](docs/adr/0034-versioning-standard.md)). While the
+version is `0.y.z`, a breaking change to wire formats, storage, consensus,
+RPC/CLI, or public API needs a **minor** bump; anything compatible is a
+**patch**.
+
+- Every PR that changes behaviour adds a line under `## [Unreleased]` in
+  `CHANGELOG.md`.
+- Do not edit version numbers by hand. Run the **Version Bump** workflow
+  (Actions → Version Bump → patch/minor/major); it opens a `release/vX.Y.Z`
+  PR. Merging it tags the release and drafts the GitHub Release.
+- `python3 scripts/version.py check` runs the same consistency check as CI.
+
 ## Minimum supported Rust version
 
 ONX pins Rust **1.98.1** in `rust-toolchain.toml`. It is the oldest installed stable toolchain selected for the complete workspace; CI runs the full build and test matrix on that exact version. CI uses that exact toolchain so dependency updates that

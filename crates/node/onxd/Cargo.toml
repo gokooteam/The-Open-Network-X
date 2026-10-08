@@ -1,6 +1,6 @@
 [package]
 name = "onxd"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX node daemon bootstrap: config parsing, role selection, storage, consensus, execution, networking, and transaction routing summary."
 license = "Apache-2.0"

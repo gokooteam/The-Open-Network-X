@@ -1,6 +1,6 @@
 [package]
 name = "onx-rpc"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Deterministic HTTP JSON-RPC and binary Lite Client gateway for ONX nodes."
 license = "Apache-2.0"

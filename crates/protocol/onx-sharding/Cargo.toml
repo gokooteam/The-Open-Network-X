@@ -1,6 +1,6 @@
 [package]
 name = "onx-sharding"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX dynamic sharding, shard tree invariants, split/merge triggers, state migration, and routing continuity per docs/specification/sharding.md"
 license = "Apache-2.0"

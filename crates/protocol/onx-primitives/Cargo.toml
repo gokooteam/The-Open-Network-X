@@ -1,6 +1,6 @@
 [package]
 name = "onx-primitives"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX protocol primitives: canonical integer/bytestring encoding, domain-separated SHA-256 hashing, and Ed25519 signing per docs/specification/protocol-primitives.md"
 license = "Apache-2.0"
