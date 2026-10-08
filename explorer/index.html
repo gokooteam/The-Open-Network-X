@@ -929,12 +929,12 @@ window.ONX_CONFIG = {
     }
     const vEnd = o;
     need(4, 'account count');
-    const acount = u32(b, o);
-    field(fields, 'account count', o, b.subarray(o, o + 4), String(acount), 'u32');
+    const account = u32(b, o);
+    field(fields, 'account count', o, b.subarray(o, o + 4), String(account), 'u32');
     o += 4;
     const accounts = [];
     let prevId = null;
-    for (let i = 0; i < acount; i++) {
+    for (let i = 0; i < account; i++) {
       need(36, `account ${i + 1}`);
       const id = b.subarray(o, o + 32);
       if (prevId && compare(id, prevId) <= 0) throw new DecodeError('genesis accounts are not in strictly ascending order', o);
