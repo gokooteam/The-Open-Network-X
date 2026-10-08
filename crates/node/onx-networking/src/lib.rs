@@ -1,3 +1,4 @@
+#![allow(clippy::disallowed_types)] // Scoped ban: HashMap/HashSet are banned in PROTOCOL crates (workspace clippy.toml) where iteration order could reach consensus encodings. This node crate uses them only for keyed lookup (sessions, caches, metrics) whose iteration order never touches consensus output.
 pub mod adnl_transport;
 pub mod dht_daemon;
 pub mod rldp;
@@ -21,6 +22,10 @@ pub enum NetworkError {
     TruncatedPacket,
     AbstractAddressMismatch,
     DecryptionFailed,
+    /// Underlying UDP socket I/O failure (carries the OS error message).
+    /// Kept distinct from [`Self::DecryptionFailed`]: conflating transport
+    /// faults with crypto faults sends debuggers down the wrong path.
+    TransportIo(String),
     InvalidSignature,
     ExpiredTimestamp,
     ZeroChannelAbuse,
@@ -43,6 +48,7 @@ impl fmt::Display for NetworkError {
                 write!(f, "Abstract address preimage SHA-256 hash mismatch")
             }
             Self::DecryptionFailed => write!(f, "Payload decryption or integrity check failed"),
+            Self::TransportIo(e) => write!(f, "UDP transport I/O error: {e}"),
             Self::InvalidSignature => write!(f, "Invalid packet digital signature"),
             Self::ExpiredTimestamp => write!(f, "Packet timestamp is outside valid window"),
             Self::ZeroChannelAbuse => {

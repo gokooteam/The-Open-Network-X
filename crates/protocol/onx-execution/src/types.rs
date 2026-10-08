@@ -47,25 +47,31 @@ pub struct ExecutionContext {
 }
 
 /// A read cursor over a Cell's data bytes and child cell references.
+///
+/// `child_cells` is positional: entry `i` corresponds to `cell.cell_refs()[i]`.
+/// `Some(cell)` means the host provided the referenced child's content (via
+/// the interpreter's cell store); `None` means the content is absent and
+/// `LDREF` must fail closed (`AbsentNode`) rather than invent data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Slice {
     pub cell: Cell,
     pub bit_offset: usize,
     pub ref_offset: usize,
-    pub child_cells: Vec<Cell>,
+    pub child_cells: Vec<Option<Cell>>,
 }
 
 impl Slice {
     pub fn new(cell: Cell) -> Self {
+        let refs = cell.cell_refs().len();
         Self {
             cell,
             bit_offset: 0,
             ref_offset: 0,
-            child_cells: Vec::new(),
+            child_cells: vec![None; refs],
         }
     }
 
-    pub fn new_with_children(cell: Cell, child_cells: Vec<Cell>) -> Self {
+    pub fn new_with_children(cell: Cell, child_cells: Vec<Option<Cell>>) -> Self {
         Self {
             cell,
             bit_offset: 0,
@@ -75,7 +81,7 @@ impl Slice {
     }
 
     pub fn remaining_bits(&self) -> usize {
-        let total_bits = self.cell.data_bytes().len() * 8;
+        let total_bits = self.cell.data_bytes().len().saturating_mul(8);
         total_bits.saturating_sub(self.bit_offset)
     }
 
@@ -93,21 +99,27 @@ impl Slice {
         let data = self.cell.data_bytes();
 
         for i in 0..width_bits {
-            let src_bit_idx = self.bit_offset + i;
-            let src_byte_idx = src_bit_idx / 8;
-            let src_bit_in_byte = 7 - (src_bit_idx % 8);
+            // Every index below is in-range: the guard above keeps
+            // `bit_offset + i` inside the cell's data bits and
+            // `dest_bit_idx` inside the 32-byte buffer, so the
+            // `saturating_*`/`wrapping_*` forms below are exact, not
+            // silent clamps. They exist to name the overflow behavior
+            // explicitly per the crate's `arithmetic_side_effects` policy.
+            let src_bit_idx = self.bit_offset.saturating_add(i);
+            let src_byte_idx = src_bit_idx.wrapping_div(8);
+            let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (data[src_byte_idx] >> src_bit_in_byte) & 1;
 
-            let dest_bit_idx = (256 - width_bits) + i;
-            let dest_byte_idx = dest_bit_idx / 8;
-            let dest_bit_in_byte = 7 - (dest_bit_idx % 8);
+            let dest_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            let dest_byte_idx = dest_bit_idx.wrapping_div(8);
+            let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx.wrapping_rem(8));
 
             if bit_val == 1 {
                 res[dest_byte_idx] |= 1 << dest_bit_in_byte;
             }
         }
 
-        self.bit_offset += width_bits;
+        self.bit_offset = self.bit_offset.saturating_add(width_bits);
         Ok(res)
     }
 }
@@ -130,20 +142,22 @@ impl Builder {
         if width_bits > 256 {
             return Err(ExceptionKind::MalformedCell);
         }
-        let target_total_bits = self.current_bit_len + width_bits;
-        if target_total_bits > 128 * 8 {
+        let target_total_bits = self.current_bit_len.saturating_add(width_bits);
+        if target_total_bits > 128usize.saturating_mul(8) {
             return Err(ExceptionKind::MalformedCell);
         }
 
         for i in 0..width_bits {
-            let src_bit_idx = (256 - width_bits) + i;
-            let src_byte_idx = src_bit_idx / 8;
-            let src_bit_in_byte = 7 - (src_bit_idx % 8);
+            // In-range by the same argument as `read_bits`: the guard above
+            // keeps every index exact, so the explicit forms are not clamps.
+            let src_bit_idx = 256usize.saturating_sub(width_bits).saturating_add(i);
+            let src_byte_idx = src_bit_idx.wrapping_div(8);
+            let src_bit_in_byte = 7usize.saturating_sub(src_bit_idx.wrapping_rem(8));
             let bit_val = (val_bytes[src_byte_idx] >> src_bit_in_byte) & 1;
 
-            let dest_bit_idx = self.current_bit_len + i;
-            let dest_byte_idx = dest_bit_idx / 8;
-            let dest_bit_in_byte = 7 - (dest_bit_idx % 8);
+            let dest_bit_idx = self.current_bit_len.saturating_add(i);
+            let dest_byte_idx = dest_bit_idx.wrapping_div(8);
+            let dest_bit_in_byte = 7usize.saturating_sub(dest_bit_idx.wrapping_rem(8));
 
             if dest_byte_idx >= self.data_bytes.len() {
                 self.data_bytes.push(0);
@@ -180,9 +194,26 @@ impl StackValue {
         StackValue::Integer(bytes)
     }
 
+    pub fn from_u128(val: u128) -> Self {
+        // Unsigned 128-bit carrier for wrap-flavor results in [0, 2^128):
+        // the high 128 bits are zero, never a sign extension.
+        let mut bytes = [0u8; 32];
+        bytes[16..32].copy_from_slice(&val.to_be_bytes());
+        StackValue::Integer(bytes)
+    }
+
     pub fn to_i128(&self) -> Result<i128, ExceptionKind> {
         match self {
             StackValue::Integer(bytes) => {
+                // Fail closed (P1-minimal): the low 128 bits are only a
+                // faithful i128 when the high 128 bits are the sign
+                // extension of bit 127. A 256-bit value that does not fit
+                // raises IntegerOverflow instead of silently truncating to
+                // its low bits (which made CMP(2^127, 0) return -1).
+                let sign_fill = if bytes[16] & 0x80 == 0 { 0x00 } else { 0xFF };
+                if bytes[..16].iter().any(|&b| b != sign_fill) {
+                    return Err(ExceptionKind::IntegerOverflow);
+                }
                 let mut arr = [0u8; 16];
                 arr.copy_from_slice(&bytes[16..32]);
                 Ok(i128::from_be_bytes(arr))

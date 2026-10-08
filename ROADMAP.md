@@ -11,6 +11,35 @@ tooling ecosystem, see [`docs/planning/development-tasks.md`](docs/planning/deve
 
 ## Changelog
 
+### 2026-10-05
+
+- **PR #5 — Message-based single-shard chain (actor model):** Replaced the
+  synchronous transfer dispatch with external/internal messages per
+  `docs/specification/transactions.md`. New `docs/adr/0001`–`0007` record
+  the design: wallet handler (chain-ID/key/nonce/signature checks),
+  FIFO per-pair delivery, bounce with refund-minus-fees, chain-ID-bound
+  signatures (`ONX_MSG_EXT_V1`), key-derived addresses (`ONX_ADDR_V1`),
+  and redelivery rejection. Block magic `ONXBLK04`; vectors refrozen via
+  independent Python derivation. V1/V2/V3 transaction encodings retired
+  (pre-release, never shipped).
+- **PR #4 — TVM on the spine:** Real single-node `onxd` block-production
+  loop (spool-directory mempool, demand-based blocks, no wall-clock in
+  blocks) and TVM integration (determinism audit clean, gas metering,
+  `SETDATA` opcode, contract accounts with code/data cells). Eight
+  hand-derived golden vectors computed independently in Python; all
+  matched. Trie encoding, domain-tag registry, and `Transaction::hash`
+  preimage pinned in the spec.
+- **PR #3 — CI green-up:** Fixed a real crash-recovery bug (kill -9 during
+  first-time redb init left a half-written database); `ChainStore::open`
+  now builds at a temp path and renames into place. Bumped rustls to
+  0.23.45 for RUSTSEC-2026-0285.
+- **PR #2 — Transaction authorization and hardening:** Stored-head pinning,
+  root verification on resume, Ed25519 authorization with per-account
+  nonces (`ONX_TX_V2`), schema v2, removed write-only cells table.
+- **PR #1 — Deterministic replay:** Real genesis, pure STF, atomic redb
+  storage, `onx replay` CLI, crash recovery, byte-identical roots across
+  OS processes, fail-closed rejection of bad blocks.
+
 ### 2026-09-10
 
 - **ADR-0016 Applied:** Updated `crates/protocol/onx-data-structures` `BlockHeader` layout to 242 bytes with `prev_ref_hash_2` and `MERGE_RESULT` bit flag (`0x0010`) consistency checks. Updated `crates/protocol/onx-blocks` with merge-block successor structural validation logic.
@@ -20,4 +49,4 @@ tooling ecosystem, see [`docs/planning/development-tasks.md`](docs/planning/deve
 - **Implemented `onx-networking` crate:** Implemented `networking-adnl.md`, `networking-dht.md`, and `networking-overlay.md` (ADR-0009–0011) in code (`crates/node/onx-networking`), including ADNL peer identity, key descriptions, abstract address derivation, channel ID calculation, Kademlia XOR distance metric, signed DHT records, and overlay structures.
 - **Implemented `onx-sharding` crate:** Implemented `docs/specification/sharding.md` (ADR-0012) in code (`crates/protocol/onx-sharding`), including binary shard tree invariants, leaf splitting, and load-based 75% split and 20% merge trigger evaluations.
 - **ADR-0018 Accepted & Applied:** Resolved **ONX-ARCH-011** (hypercube fast-path adoption triggers) and **ONX-ARCH-012** (cross-workchain exchange rates and message queue expiration bounds).
-- **ADR-0019 Accepted & Implemented `onx-economics` crate:** Resolved **ONX-ARCH-008** and implemented `docs/specification/economics.md` (ADR-0013) in code (`crates/protocol/onx-economics`), including 5 billion Onyx supply cap, storage fee accrual calculation, 50% transaction fee burn split, and annual validator inflation reward distribution.
+- **ADR-0019 Accepted & Implemented `onx-economics` crate:** Resolved **ONX-ARCH-008** and implemented `docs/specification/economics.md` (ADR-0013) in code (`crates/protocol/onx-economics`), including 5 billion Onyxi supply cap, storage fee accrual calculation, 50% transaction fee burn split, and annual validator inflation reward distribution.

@@ -1,3 +1,15 @@
+# ONX genesis configuration (human-readable input to `onx-genesis`).
+#
+# Addresses and validator keys accept two forms:
+# - a 64-character hex string: decoded literally (real key material — the
+#   only form suitable for a real network);
+# - any other string: a DEV label, mapped to key material by a documented
+#   domain-separated hash. Derived keys have no known private key and can
+#   never sign. See phase2-genesis.md for the full derivation story.
+#
+# Workchain ids follow the protocol definition: -1 = masterchain,
+# 0 = basic workchain. The name must match the id.
+
 [[balances]]
 address = "onx:alice"
 amount = 1000000
@@ -6,12 +18,28 @@ amount = 1000000
 address = "onx:bob"
 amount = 2000000
 
+[[balances]]
+# Devnet faucet (added 2026-10-07, post-audit config change): address and key
+# are the validator pubkey above. The seed [0x11; 32] is public,
+# deterministic test material, so this account CAN sign — it funds the first
+# transfer (block 1) and future devnet test transfers. The producer never
+# makes empty blocks, and no other funded account has a known key, so without
+# this entry the devnet could never leave genesis.
+# TEST-ONLY: never use this key on a real network.
+address = "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+amount = 1000000
+public_key = "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
+
 [[validators]]
-public_key = "validator-01"
+# Rekeyed 2026-10-07 (was the DEV label "validator-01", whose derived key has
+# no known private key and could never sign): this is the public key of
+# test_secret_key(0x11) = SecretKey::from_seed(&[0x11; 32]) — a public,
+# deterministic test key, so fixture blocks can actually be signed (ONXBLK05).
+# TEST-ONLY: never use this key on a real network.
+public_key = "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737"
 stake = 1000
 
 [[workchains]]
-id = 0
+id = -1
 name = "masterchain"
-shard_prefix = "0x00"
 enabled = true

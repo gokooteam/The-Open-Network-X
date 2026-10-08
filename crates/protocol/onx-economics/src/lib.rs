@@ -1,3 +1,4 @@
+#![deny(clippy::disallowed_types)] // Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
 use std::fmt;
 
 /// Errors in economic calculations and parameter application.
@@ -32,7 +33,7 @@ pub use slashing::{
 impl std::error::Error for EconomicsError {}
 
 /// Economic parameters per docs/specification/economics.md and ADR-0019.
-pub const INITIAL_SUPPLY_NANOS: u128 = 5_000_000_000_000_000_000; // 5 Billion Onyx
+pub const INITIAL_SUPPLY_NANOS: u128 = 5_000_000_000_000_000_000; // 5 Billion Onyxi
 pub const ANNUAL_INFLATION_RATE_BPS: u64 = 175; // 1.75% (175 bps)
 pub const FEE_BURN_RATIO_PERCENT: u64 = 50; // 50% burned
 pub const STORAGE_FEE_RATE_PER_BYTE_PER_MLT: u128 = 10; // 10 nanos per byte per 10^6 lt

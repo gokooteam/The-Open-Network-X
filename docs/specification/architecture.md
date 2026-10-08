@@ -65,7 +65,7 @@ ONX retains the following concepts as distinct protocol domains:
    block propagation, and archival storage may support the protocol, but they
    do not define consensus validity unless an ONX specification explicitly
    says they do.
-9. **Economics.** Onyx denomination, supply, issuance, fees, rewards, staking,
+9. **Economics.** Onyxi denomination, supply, issuance, fees, rewards, staking,
    and penalties are intentionally undecided protocol parameters.
 
 ## Required boundaries
@@ -104,7 +104,7 @@ interpretations, serialization, malformed-input behavior, and test plan.
    synchronization, and propagation.
 9. **Dynamic sharding:** shard-tree invariants, split/merge lifecycle, state
    migration, validator responsibility, and routing continuity.
-10. **Economics:** Onyx monetary and fee rules after the consensus and resource
+10. **Economics:** Onyxi monetary and fee rules after the consensus and resource
     model are sufficiently specified.
 
 ## Minimum invariants for the first specifications
@@ -140,7 +140,7 @@ These are intentionally unresolved, not defaults:
 | ONX-ARCH-005 | What constitutes finality, and how are invalid-block claims and corrections processed? | Resolved in `docs/specification/consensus.md` and ADR-0008. |
 | ONX-ARCH-006 | What initial workchains exist, and which VM rules apply to each? | Partially resolved: `docs/specification/execution.md` (ADR-0007) defines the execution contract, gas-accounting shape, and exception set, and `docs/specification/tvm-instruction-set.md` (ADR-0017) defines the concrete opcodes, stack model, and gas prices for the basic workchain's VM. Still open: which VM(s) other workchains use. |
 | ONX-ARCH-007 | What split/merge thresholds, timing, and state-transition rules apply? | Resolved in `docs/specification/sharding.md` and ADR-0012. |
-| ONX-ARCH-008 | What are Onyx supply, denomination, fee, reward, stake, and penalty rules? | Resolved in `docs/specification/economics.md` and ADR-0019. |
+| ONX-ARCH-008 | What are Onyxi supply, denomination, fee, reward, stake, and penalty rules? | Resolved in `docs/specification/economics.md` and ADR-0019. |
 | ONX-ARCH-009 | What are the payment-channel and payment-channel-network protocol rules and required VM primitives? | Resolved in `payment-channels.md` and ADR-0014. |
 | ONX-ARCH-010 | What are peer identity/transport, DHT, and overlay/gossip rules? | Resolved in `networking-adnl.md`, `networking-dht.md`, `networking-overlay.md` and ADR-0009–0011. |
 | ONX-ARCH-011 | Under what conditions, if any, will ONX adopt or reactivate Instant Hypercube Routing ("fast path" direct relay with Merkle proofs)? | Resolved in ADR-0018: activated when queue latency exceeds 8 blocks or for high-urgency priority. |

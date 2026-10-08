@@ -26,6 +26,12 @@ pub fn ed25519_to_x25519_public(pk: &PublicKey) -> Result<x25519_dalek::PublicKe
 }
 
 /// Converts an Ed25519 secret key into an X25519 static secret key using its scalar representation.
+///
+/// Note: this stores the *unclamped* SHA-512 expansion; x25519-dalek applies
+/// clamping at DH time (`mul_clamped`), which yields the same clamped scalar
+/// behind [`ed25519_to_x25519_public`]'s Montgomery conversion. Do NOT
+/// pre-reduce the scalar (e.g. via `to_scalar()`): re-clamping a reduced
+/// scalar sets bit 254 and silently changes the DH result.
 pub fn ed25519_to_x25519_secret(sk: &SecretKey) -> StaticSecret {
     StaticSecret::from(sk.to_scalar_bytes())
 }
@@ -398,7 +404,7 @@ impl AdnlTransportNode {
         self.socket
             .send_to(&wire, remote_endpoint)
             .await
-            .map_err(|_| NetworkError::DecryptionFailed)?;
+            .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
 
         Ok(())
     }
@@ -410,7 +416,7 @@ impl AdnlTransportNode {
             .socket
             .recv_from(&mut buf)
             .await
-            .map_err(|_| NetworkError::TruncatedPacket)?;
+            .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
 
         let wire = &buf[..len];
         if wire.len() < 32 {

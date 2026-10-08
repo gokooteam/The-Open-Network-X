@@ -59,6 +59,7 @@ Every arithmetic and conversion opcode (§4.2) carries a `width : uint16` (`1 �
 - **Unsigned/signed flavors** (`0`/`1`) raise `IntegerOverflow` (`execution.md` §3.4) when the true mathematical result does not fit in `width` bits under that signedness — per `execution.md` §3.3 rule 2, this is the default, not opt-in.
 - **Modulo flavor** (`2`) never raises `IntegerOverflow`: the result is reduced modulo `2^width` and stored as its unsigned bit pattern (per `execution.md` §3.3 rule 1's "no automatic overflow checks in the modulo flavor only"). A contract wanting wrapped *signed* semantics reinterprets the same bit pattern via a signed-flavor `CONV` (§4.2), since two's-complement wraparound is bit-identical regardless of the signedness label attached afterward.
 - **Division/modulo by zero** (`DIVMOD`, §4.2) raises `IntegerOverflow`: no result exists that could fit any declared width, and `execution.md`'s closed exception set has no dedicated "arithmetic fault" kind, so this document maps it to the closest existing one rather than extending the set.
+- **Range checks precede flavor.** Operand-validity checks are evaluated before flavor selection and raise `IntegerOverflow` for *every* flavor: a shift amount below `0` or at/above `width` (`LSHIFT`/`RSHIFT`), and division by zero (`DIV`/`DIVMOD` — §5 test 2 pins this for all flavors). "Modulo never raises" describes the *result* reduction only. (Opcodes `0x10`–`0x14` ignore the flavor operand entirely; enforcing width/flavor there is a Wave 4 integer-model non-goal, ADR-0028.)
 
 ### 3.4 Bit-strings and byte-strings
 
@@ -138,10 +139,10 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x11` | `SUB` | `width`, `flavor` | `(a, b) -> (a - b)` | 4 | `IntegerOverflow` |
 | `0x12` | `NEG` | `width`, `flavor` | `(a) -> (-a)` | 4 | `IntegerOverflow` |
 | `0x13` | `MUL` | `width`, `flavor` | `(a, b) -> (a * b)` | 8 | `IntegerOverflow` |
-| `0x14` | `DIVMOD` | `width`, `flavor` | `(a, b) -> (a div b, a mod b)`, floored | 8 | `IntegerOverflow` (incl. `b = 0`, §3.3) |
+| `0x14` | `DIVMOD` | `width`, `flavor` | `(a, b) -> (a div b, a mod b)`, floored: `q = floor(a/b)`, `r = a − q·b`, `sign(r) = sign(b)` or `r = 0` | 8 | `IntegerOverflow` (incl. `b = 0`, §3.3) |
 | `0x15` | `CMP` | `width`, `flavor` | `(a, b) -> (r)`, `r ∈ {-1, 0, 1}` as a signed 8-bit `Integer` | 4 | — |
 | `0x16` | `ISZERO` | — | `(a) -> (bool)`, `bool` a 1-bit unsigned `Integer` | 4 | — |
-| `0x17` | `DIV` | `width`, `flavor` | `(a, b) -> (a div b)` | 8 | `IntegerOverflow` (incl. `b = 0`) |
+| `0x17` | `DIV` | `width`, `flavor` | `(a, b) -> (a div b)`, floored exactly as `DIVMOD`'s quotient: `q = floor(a/b)` | 8 | `IntegerOverflow` (incl. `b = 0`) |
 | `0x18` | `LSHIFT` | `width`, `flavor` | `(a, shift) -> (a << shift)` | 4 | `IntegerOverflow` |
 | `0x19` | `RSHIFT` | `width`, `flavor` | `(a, shift) -> (a >> shift)` | 4 | `IntegerOverflow` |
 | `0x20` | `CONV` | `width: uint16`, `signed: uint8` | `(a) -> (a')`, re-checked at `width` | 4 | `IntegerOverflow` |
@@ -150,7 +151,9 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x32` | `SUBBYTES` | — | `(Bytes, offset: Integer, len: Integer) -> (Bytes)` | `4 + ceil(len / 32)` | `MalformedCell` if `offset + len` exceeds the input length |
 | `0x33` | `BYTEEQ` | — | `(Bytes, Bytes) -> (bool)` | `1 + ceil(min(len1, len2) / 32)` | — |
 
-`0x17`–`0x1F`, `0x21`–`0x2F`, and `0x34`–`0x3F` are reserved.
+`0x1A`–`0x1F`, `0x21`–`0x2F`, and `0x34`–`0x3F` are reserved.
+
+**Floored division, stated exactly.** "Floored" in the table above is not a label awaiting a pin: it is `q = floor(a/b)` — the greatest integer less than or equal to the exact quotient — fully defined for negative divisors as well as positive ones. The remainder follows as `r = a − q·b`, so `sign(r) = sign(b)` or `r = 0` (this is TON's round-toward-negative-infinity convention). Examples: `7 DIVMOD 2 → (3, 1)`; `-7 DIVMOD 2 → (-4, 1)`; `7 DIVMOD -2 → (-4, -1)`; `-7 DIVMOD -2 → (3, -1)`. `DIV` (0x17) returns exactly `DIVMOD`'s quotient. See ADR-0030 for the correction history.
 
 ### 4.4 Cell / value access (`0x40`–`0x5F`)
 

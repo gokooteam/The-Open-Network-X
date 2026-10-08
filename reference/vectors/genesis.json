@@ -1,0 +1,35 @@
+{
+  "chain_id": "58758ecb51f0f2e7fc1353896392e43e2554aa9bef02a335fc350cd804484683",
+  "workchain": -1,
+  "genesis_root": "079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d",
+  "accounts": [
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "balance_nanos": "1000000000000",
+      "pubkey": "e734ea6c2b6257de72355e472aa05a4c487e6b463c029ed306df2f01b5636b58",
+      "nonce": 0,
+      "lt": 0
+    },
+    {
+      "id": "abababababababababababababababababababababababababababababababab",
+      "balance_nanos": "1000000000000",
+      "pubkey": "248acbdbaf9e050196de704bea2d68770e519150d103b587dae2d9cad53dd930",
+      "nonce": 0,
+      "lt": 0
+    },
+    {
+      "id": "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+      "balance_nanos": "1000000000000",
+      "pubkey": "f9b439834644d493ba526939f77f7cdadf5220486962e808867bac0a513b92b8",
+      "nonce": 0,
+      "lt": 0
+    },
+    {
+      "id": "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+      "balance_nanos": "1000000000000",
+      "pubkey": "64a08e659c4e7500c83a60e453ee608de74d8cf4437e8a0779b7b1cf20532c8a",
+      "nonce": 0,
+      "lt": 0
+    }
+  ]
+}

@@ -1,21 +1,97 @@
-use onx_consensus::{ConsensusEngine, RoundTimeouts, ValidatorSetEntry};
-use onx_data_structures::{ShardIdent, WorkchainIdent};
-use onx_execution::ExecutionContext;
-use onx_networking::{
-    AdnlTransportNode, DhtContact, DhtDaemon, DhtRpc, DhtRpcResponse, DhtTransport, NetworkError,
-    RldpConfig, RldpSender,
-};
-use onx_primitives::{SecretKey, Uint256, Uint64};
-use onx_state_model::StateStorage;
+pub mod mempool;
+pub mod producer;
+
+use crate::mempool::Mempool;
+use crate::producer::{run_producer_loop, ProducerConfig};
+use onx_data_structures::AccountId;
+use onx_primitives::SecretKey;
+use onx_storage::ChainStore;
 use onx_telemetry::{serve_metrics, TelemetryConfig, TelemetryHandle};
 use std::fs;
-use std::future::Future;
-use std::net::SocketAddr;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::time::{interval, sleep};
+use std::time::Duration;
+use tokio::time::sleep;
+
+/// Best-effort memory wipe for key material. Uses volatile writes so the
+/// compiler cannot optimize the wipe away.
+fn zeroize(buf: &mut [u8]) {
+    for b in buf.iter_mut() {
+        unsafe { std::ptr::write_volatile(b, 0) };
+    }
+}
+
+/// Load a validator signing key (ONXBLK05, TRAP 4).
+///
+/// - The file must contain exactly 32 bytes (the seed).
+/// - The file must have mode 0600 (owner read/write only) and be owned
+///   by the effective uid.
+/// - The derived pubkey must match a genesis validator's pubkey.
+///
+/// The file is opened FIRST and all checks run against the open file
+/// descriptor (`File::metadata` stats the fd, not the path), so there is
+/// no stat→read race window. Symlinks are refused outright.
+///
+/// Any violation is a startup refusal, never a warning.
+fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    // Open with O_NOFOLLOW: the key path must be a real file, never a
+    // symlink. This closes the symlink race that a symlink_metadata check
+    // alone leaves open.
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|e| format!("signing key {path}: cannot open (not a regular file?): {e}"))?;
+    // Stat the open fd — the checks below apply to the exact bytes we read.
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("signing key {path}: cannot stat open file: {e}"))?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode != 0o600 {
+        return Err(format!(
+            "signing key {path}: bad permissions {mode:o} (must be 600)"
+        ));
+    }
+    if metadata.uid() != unsafe { libc::geteuid() } {
+        return Err(format!("signing key {path}: not owned by the current user"));
+    }
+    let mut seed = Vec::with_capacity(32);
+    file.read_to_end(&mut seed)
+        .map_err(|e| format!("signing key {path}: cannot read: {e}"))?;
+    if seed.len() != 32 {
+        // Zero the buffer before returning: it may hold a partial key.
+        zeroize(&mut seed);
+        return Err(format!(
+            "signing key {path}: must be 32 bytes, got {}",
+            seed.len()
+        ));
+    }
+    let secret =
+        SecretKey::from_seed(&seed).map_err(|e| format!("signing key {path}: bad seed: {e}"))?;
+    // The seed has served its purpose; wipe it from memory. (SecretKey
+    // manages its own material from here.)
+    zeroize(&mut seed);
+    let pubkey = secret.public_key().encode();
+
+    // The key must belong to a genesis validator.
+    let doc = store
+        .genesis_document()
+        .map_err(|e| format!("signing key: cannot load genesis: {e}"))?
+        .ok_or_else(|| "signing key: no genesis in store".to_string())?;
+    let matches = doc.validators.iter().any(|v| v.pubkey == pubkey);
+    if !matches {
+        return Err(
+            "signing key: derived pubkey matches no genesis validator — refusing to start"
+                .to_string(),
+        );
+    }
+    Ok(secret)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeRole {
@@ -44,6 +120,20 @@ pub struct OnxdConfig {
     pub peers: Vec<String>,
     pub bootstrap_genesis: Option<String>,
     pub shutdown_after_ms: Option<u64>,
+    /// Directory where signed transaction files are dropped for the
+    /// mempool. Created with `pending/` and `rejected/` subdirectories.
+    pub tx_pool_dir: String,
+    /// Account receiving the validator half of fees. Hex-encoded 32 bytes.
+    /// Required: block production is explicit about who collects.
+    pub fee_collector: Option<String>,
+    /// Mempool idle poll interval (liveness only, never in block content).
+    pub block_poll_interval_ms: u64,
+    /// Mempool bound; new submissions are rejected when full.
+    pub mempool_max_txs: usize,
+    /// Path to the validator signing key file (32-byte seed). If set, the
+    /// producer signs blocks (ONXBLK05); on startup the key's pubkey must
+    /// match a genesis validator and the file must be mode 0600.
+    pub signing_key_path: Option<String>,
 }
 
 impl Default for OnxdConfig {
@@ -56,6 +146,11 @@ impl Default for OnxdConfig {
             peers: Vec::new(),
             bootstrap_genesis: None,
             shutdown_after_ms: None,
+            tx_pool_dir: "./onx-txpool".to_string(),
+            fee_collector: None,
+            block_poll_interval_ms: 200,
+            mempool_max_txs: 10_000,
+            signing_key_path: None,
         }
     }
 }
@@ -75,6 +170,11 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
     let mut peers = Vec::new();
     let mut bootstrap_genesis = None;
     let mut shutdown_after_ms = None;
+    let mut tx_pool_dir = "./onx-txpool".to_string();
+    let mut fee_collector: Option<String> = None;
+    let mut block_poll_interval_ms = 200u64;
+    let mut mempool_max_txs = 10_000usize;
+    let mut signing_key_path: Option<String> = None;
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -109,6 +209,19 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
                             .map_err(|_| format!("invalid shutdown_after_ms value: {value}"))?,
                     );
                 }
+                "tx_pool_dir" => tx_pool_dir = value.to_string(),
+                "fee_collector" => fee_collector = Some(value.to_string()),
+                "block_poll_interval_ms" => {
+                    block_poll_interval_ms = value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid block_poll_interval_ms value: {value}"))?;
+                }
+                "mempool_max_txs" => {
+                    mempool_max_txs = value
+                        .parse::<usize>()
+                        .map_err(|_| format!("invalid mempool_max_txs value: {value}"))?;
+                }
+                "signing_key_path" => signing_key_path = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -122,6 +235,11 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
         peers,
         bootstrap_genesis,
         shutdown_after_ms,
+        tx_pool_dir,
+        fee_collector,
+        block_poll_interval_ms,
+        mempool_max_txs,
+        signing_key_path,
     })
 }
 
@@ -173,9 +291,39 @@ pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
                 }
                 config.peers.push(args[idx].clone());
             }
+            "--tx-pool-dir" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--tx-pool-dir requires a value".to_string());
+                }
+                config.tx_pool_dir = args[idx].clone();
+            }
+            "--fee-collector" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--fee-collector requires a value".to_string());
+                }
+                config.fee_collector = Some(args[idx].clone());
+            }
+            "--block-poll-interval-ms" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--block-poll-interval-ms requires a value".to_string());
+                }
+                config.block_poll_interval_ms = args[idx]
+                    .parse::<u64>()
+                    .map_err(|_| "invalid --block-poll-interval-ms value".to_string())?;
+            }
+            "--signing-key" => {
+                idx += 1;
+                if idx >= args.len() {
+                    return Err("--signing-key requires a value".to_string());
+                }
+                config.signing_key_path = Some(args[idx].clone());
+            }
             "--help" | "-h" => {
                 return Err(
-                    "usage: onxd --config onxd.toml [--role full|validator|lite]".to_string(),
+                    "usage: onxd --config onxd.toml [--role full|validator|lite] [--tx-pool-dir DIR] [--fee-collector HEX] [--block-poll-interval-ms MS] [--signing-key PATH]".to_string(),
                 );
             }
             _ => {}
@@ -183,19 +331,6 @@ pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
         idx += 1;
     }
     Ok(config)
-}
-
-#[derive(Clone)]
-struct NullDhtTransport;
-
-impl DhtTransport for NullDhtTransport {
-    fn call<'a>(
-        &'a self,
-        _recipient: DhtContact,
-        _request: DhtRpc,
-    ) -> Pin<Box<dyn Future<Output = Result<DhtRpcResponse, NetworkError>> + Send + 'a>> {
-        Box::pin(async { Ok(DhtRpcResponse::Pong) })
-    }
 }
 
 pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
@@ -206,20 +341,80 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         )
     })?;
 
-    let storage = StateStorage::open(&config.storage_path)
-        .map_err(|err| format!("failed to initialize state storage: {err}"))?;
-    let _storage = storage;
+    let store = ChainStore::open(Path::new(&config.storage_path).join("chain.redb"))
+        .map_err(|err| format!("failed to initialize chain store: {err}"))?;
 
-    if let Some(genesis_path) = &config.bootstrap_genesis {
-        let genesis = fs::read(genesis_path)
-            .map_err(|err| format!("failed to read bootstrap genesis {}: {err}", genesis_path))?;
-        if genesis.is_empty() {
-            return Err(format!("bootstrap genesis is empty: {genesis_path}"));
+    // Genesis is real now, not a non-empty check: parse the TOML config,
+    // build the canonical document, and initialize the store (idempotent
+    // for the same genesis, fail-closed on a different one).
+    match &config.bootstrap_genesis {
+        Some(genesis_path) => {
+            let cfg = onx_genesis::parse_config(genesis_path)
+                .map_err(|err| format!("genesis config {genesis_path}: {err}"))?;
+            let doc = onx_genesis::build_genesis_document(&cfg)
+                .map_err(|err| format!("genesis build {genesis_path}: {err}"))?;
+            store
+                .init_genesis(&doc)
+                .map_err(|err| format!("genesis init: {err}"))?;
+        }
+        None => {
+            let has_genesis = store
+                .genesis_hash()
+                .map_err(|err| format!("failed to read genesis marker: {err}"))?
+                .is_some();
+            if !has_genesis {
+                return Err(
+                    "no genesis: set bootstrap_genesis to a genesis TOML config \
+                     (the store is empty and no genesis was provided)"
+                        .to_string(),
+                );
+            }
         }
     }
 
+    // Fee collector: explicit operator identity, parsed fail-fast. No magic
+    // accounts anywhere in the pipeline.
+    let fee_collector_hex = config.fee_collector.as_deref().ok_or_else(|| {
+        "no fee collector: set fee_collector to the 64-char hex account id \
+         receiving the validator half of fees"
+            .to_string()
+    })?;
+    let fee_collector_bytes = hex::decode(fee_collector_hex)
+        .map_err(|_| format!("fee_collector is not valid hex: {fee_collector_hex}"))?;
+    if fee_collector_bytes.len() != 32 {
+        return Err(format!(
+            "fee_collector must be 32 bytes hex, got {} bytes",
+            fee_collector_bytes.len()
+        ));
+    }
+    let mut fee_collector_arr = [0u8; 32];
+    fee_collector_arr.copy_from_slice(&fee_collector_bytes);
+    let fee_collector = AccountId::from_bytes(fee_collector_arr);
+
+    // Validator signing key (ONXBLK05, TRAP 4): if configured, load the
+    // 32-byte seed, require mode 0600, and refuse to start unless the
+    // derived pubkey matches a genesis validator.
+    let signing_key = match &config.signing_key_path {
+        None => None,
+        Some(path) => Some(load_signing_key(path, &store)?),
+    };
+
+    // Fail fast before spawning anything: a daemon without a signing key
+    // cannot produce a single valid block. Refusing here (not inside the
+    // producer thread) guarantees the process exits non-zero at startup
+    // instead of sitting idle behind a healthy-looking PID.
+    if signing_key.is_none() {
+        return Err(
+            "no signing key configured (signing_key_path in config or --signing-key): \
+             refusing to start"
+                .to_string(),
+        );
+    }
+
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
-    metrics.set_connected_peers(config.peers.len() as i64);
+    // Networking is frozen: reporting a peer count would imply a network
+    // exists. Zero is the honest value until the real loop lands.
+    metrics.set_connected_peers(0);
     metrics.set_tx_pool_size(0);
 
     let metrics_cfg = TelemetryConfig::default();
@@ -227,118 +422,116 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         let _ = serve_metrics(metrics_cfg).await;
     });
 
+    // Networking stays frozen: refusing to pretend a network exists.
+    if config.network_enabled {
+        return Err(
+            "networking is frozen until the deterministic-replay milestone passes: \
+             refusing to start with network_enabled=true (there is no real network \
+             loop yet). Set network_enabled=false to run the single-node producer."
+                .to_string(),
+        );
+    }
+
+    // Block production runs on a dedicated blocking thread: propose/commit
+    // are synchronous store operations. The async side only watches for
+    // shutdown and joins the producer afterwards.
+    //
+    // Role note: the loop runs for every role in this milestone. There is
+    // one honest producer and no validator set yet; role-differentiated
+    // block production is consensus-phase work.
+    let mempool_chain_id = store
+        .chain_id()
+        .map_err(|err| format!("failed to read chain id: {err}"))?
+        .ok_or_else(|| "no genesis: chain id unavailable (genesis not initialized)".to_string())?;
+    let mempool = Mempool::new(
+        Path::new(&config.tx_pool_dir),
+        config.mempool_max_txs,
+        mempool_chain_id,
+        fee_collector,
+    )?;
+    fs::create_dir_all(&config.tx_pool_dir).map_err(|err| {
+        format!(
+            "failed to initialize tx pool dir {}: {err}",
+            config.tx_pool_dir
+        )
+    })?;
+    let producer_cfg = ProducerConfig {
+        fee_collector,
+        poll_interval: Duration::from_millis(config.block_poll_interval_ms),
+        tx_pool_dir: Path::new(&config.tx_pool_dir).to_path_buf(),
+        blocks_dir: Path::new(&config.storage_path).join("blocks"),
+        telemetry: Some(metrics),
+        signing_key,
+    };
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let producer_shutdown = shutdown.clone();
+    let producer_task = tokio::task::spawn_blocking(move || {
+        run_producer_loop(store, mempool, producer_cfg, producer_shutdown)
+    });
+    let mut producer_task = producer_task;
+
     let runtime_shutdown = config
         .shutdown_after_ms
         .map(|ms| sleep(Duration::from_millis(ms)));
 
-    let mut network_loop = None;
-    if config.network_enabled {
-        let bind = config.network_bind.clone();
-        let role = config.role;
-        let peers = config.peers.clone();
-        let _ = (bind.clone(), role, peers);
-
-        let addr = bind
-            .parse::<SocketAddr>()
-            .map_err(|err| format!("invalid network bind address: {err}"))?;
-        let seed = [1u8; 32];
-        let secret_key = SecretKey::from_seed(&seed)
-            .map_err(|err| format!("failed to build deterministic secret key: {err}"))?;
-        let public_key = secret_key.public_key();
-        let adnl = AdnlTransportNode::bind(secret_key, addr)
-            .await
-            .map_err(|err| format!("failed to bind ADNL transport: {err}"))?;
-        let _public = public_key;
-        let dht = DhtDaemon::new(public_key, Arc::new(NullDhtTransport));
-        let _ = dht;
-
-        let shard = ShardIdent::root(WorkchainIdent::BASIC);
-        let exec_context = ExecutionContext {
-            gen_utime: 0,
-            start_lt: 0,
-            end_lt: 1,
-            gas_limit: 1_000_000,
-        };
-        let _ = exec_context;
-
-        let validator_entries = vec![ValidatorSetEntry {
-            validator_id: 0,
-            public_key,
-            actual_stake: Uint64::from(1),
-        }];
-        let mut engine = ConsensusEngine::new(
-            shard,
-            0,
-            validator_entries.clone(),
-            0,
-            RoundTimeouts::default(),
-        )
-        .map_err(|err| format!("failed to initialize consensus engine: {err}"))?;
-        let metrics = metrics.clone();
-        let started_at = Instant::now();
-
-        let mut rldp = RldpSender::new(Uint256([0u8; 32]), &[0u8; 1], RldpConfig::default())
-            .map_err(|err| format!("failed to initialize RLDP sender: {err}"))?;
-
-        let handle = tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_millis(10));
-            let target = Uint256([0u8; 32]);
-            loop {
-                ticker.tick().await;
-                let _ = adnl.local_addr();
-                let _ = dht.contact();
-                let _ = dht.closest_contacts(target, 8);
-                let now = started_at.elapsed().as_secs();
-                if engine.on_timeout(now) {
-                    metrics.track_consensus_phase("timeout");
-                }
-                let _ = engine.round();
-                let _ = engine.step();
-                let _ = engine.leader();
-                let height = engine
-                    .finalized()
-                    .map(|block| block.height as i64)
-                    .unwrap_or(0);
-                metrics.set_block_height(height);
-                let _ = rldp.next_round();
-            }
-        });
-        network_loop = Some(handle);
-    }
-
-    let shutdown = tokio::signal::ctrl_c();
+    let shutdown_sig = tokio::signal::ctrl_c();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .map_err(|err| format!("failed to install SIGTERM watcher: {err}"))?;
 
-    let outcome = tokio::select! {
-        _ = shutdown => {
-            if let Some(handle) = network_loop {
-                handle.abort();
-            }
-            Ok(())
-        }
-        _ = sigterm.recv() => {
-            if let Some(handle) = network_loop {
-                handle.abort();
-            }
-            Ok(())
-        }
+    tokio::select! {
+        _ = shutdown_sig => {},
+        _ = sigterm.recv() => {},
         _ = async {
             if let Some(timer) = runtime_shutdown {
                 timer.await;
             } else {
                 std::future::pending::<()>().await;
             }
-        } => {
-            if let Some(handle) = network_loop {
-                handle.abort();
+        } => {},
+        // The producer task is supervised: if it exits (error or panic)
+        // the daemon must not sit idle behind a healthy PID — break out
+        // and propagate the failure as a non-zero exit below.
+        res = &mut producer_task => {
+            match res {
+                Ok(Ok(stats)) => {
+                    eprintln!(
+                        "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
+                        stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
+                    );
+                    return Ok(());
+                }
+                Ok(Err(e)) => {
+                    return Err(format!("onxd: producer exited with error: {e}"));
+                }
+                Err(e) => {
+                    return Err(format!("onxd: producer task panicked: {e}"));
+                }
             }
+        }
+    }
+
+    // Graceful shutdown: the flag stops the producer after its current tick
+    // — an in-flight commit_block is atomic, so the store is always left in
+    // a fully-committed state. Uncommitted mempool messages stay in
+    // pending/ and are re-proposed on the next startup.
+    shutdown.store(true, Ordering::Relaxed);
+    let result = match producer_task.await {
+        Ok(Ok(stats)) => {
+            eprintln!(
+                "onxd: producer stopped cleanly: {} blocks, {} msgs committed, {} rejected",
+                stats.blocks_produced, stats.msgs_committed, stats.txs_rejected
+            );
             Ok(())
         }
+        // A producer that fails on its final tick after the shutdown signal
+        // is still a failure: propagate it as a non-zero exit, don't just
+        // log it.
+        Ok(Err(e)) => Err(format!("onxd: producer exited with error: {e}")),
+        Err(e) => Err(format!("onxd: producer task panicked: {e}")),
     };
 
     metrics_task.abort();
-    outcome
+    result
 }
 
 #[cfg(test)]

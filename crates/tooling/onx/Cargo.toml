@@ -1,0 +1,30 @@
+[package]
+name = "onx"
+version = "0.1.0"
+edition = "2021"
+description = "ONX deterministic replay command: onx replay --genesis genesis.toml --blocks ./blocks/"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "onx"
+path = "src/main.rs"
+
+[lib]
+name = "onx"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+onx-genesis = { path = "../onx-genesis" }
+onx-stf = { path = "../../protocol/onx-stf" }
+onx-storage = { path = "../../protocol/onx-storage" }
+onx-state-model = { path = "../../protocol/onx-state-model" }
+onx-data-structures = { path = "../../protocol/onx-data-structures" }
+onx-primitives = { path = "../../protocol/onx-primitives" }
+
+[dev-dependencies]
+# (none — tests use std::process against the built binary)
+onx-primitives = { path = "../../protocol/onx-primitives" }
+serde_json = "1"

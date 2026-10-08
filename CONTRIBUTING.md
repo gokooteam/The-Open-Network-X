@@ -69,11 +69,12 @@ When submitting changes to the codebase, contributors must:
 3. Provide an answer to the previous question under a section containing the `[ANSWER]` label.
 4. Ask a new research/development question about ONX under a section containing the `[QUESTION]` label.
 
-CI enforces these rules and will fail if the required keywords/labels (`[ANSWER]` and `[QUESTION]`) are missing from new entries or if formatting rules are violated.
+The logbook is a convention, not a gate: no CI workflow checks it today.
+(If enforcement is ever added, this paragraph must name the workflow.)
 
 ## Decision records
 
-Add an ADR (`docs/decisions/ADR-NNNN-title.md`, next number after the
+Add an ADR (`docs/adr/NNNN-title.md`, next number after the
 highest existing one) when a PR:
 
 - Chooses one of several defensible interpretations of an ambiguous spec
@@ -85,8 +86,8 @@ highest existing one) when a PR:
 
 You don't need one for a straightforward implementation of an already-clear
 spec section — that's just code. When in doubt, check
-`docs/decisions/ADR-0001-preserve-multichain-architecture.md` through
-`ADR-0004-implementation-language.md` for the expected shape: Status,
+`docs/adr/0008-preserve-multichain-architecture.md` through
+`docs/adr/0011-implementation-language.md` for the expected shape: Status,
 Context, Reference, Problem, Decision, Alternatives Considered,
 Consequences, Implementation, Tests.
 

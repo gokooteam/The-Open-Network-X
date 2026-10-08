@@ -91,7 +91,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-001: Persistent State Storage Engine & Key-Value DB Integration
 - **Subsystem:** Storage / State Model (`crates/protocol/onx-state-model`)
-- **References:** `docs/specification/state-model.md`, `docs/decisions/ADR-0003-state-model-and-account-lifecycle.md`
+- **References:** `docs/specification/state-model.md`, `docs/adr/0010-state-model-and-account-lifecycle.md`
 - **Priority:** Critical
 - **Description:**
   Integrate a high-performance disk-backed key-value storage engine (e.g., RocksDB or Sled) to persist Bag of Cells (BoC), account states, block data, and Merkle proof trees across node restarts.
@@ -110,7 +110,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-002: TVM Opcode Suite Expansion (Arithmetic, Stack & Control Flow)
 - **Subsystem:** Execution / VM (`crates/protocol/onx-execution`)
-- **References:** `docs/specification/tvm-instruction-set.md`, `docs/decisions/ADR-0017-tvm-instruction-set.md`
+- **References:** `docs/specification/tvm-instruction-set.md`, `docs/adr/0024-tvm-instruction-set.md`
 - **Priority:** High
 - **Description:**
   Expand the execution engine from the baseline 46 opcodes to support full TVM standard operations, including 64-bit/257-bit signed integer arithmetic (`ADD`, `SUB`, `MUL`, `DIV`, `LSHIFT`, `RSHIFT`), stack manipulation (`SWAP`, `NIP`, `TUCK`, `ROLL`, `BLKSWAP`), and conditional branching (`IFELSE`, `IFRET`, `REPEAT`, `UNTIL`).
@@ -128,7 +128,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-003: Continuations Register Model & Dictionary Engine
 - **Subsystem:** Execution / VM (`crates/protocol/onx-execution`)
-- **References:** `docs/specification/execution.md`, `docs/decisions/ADR-0007-execution-model-and-merkle-proof-reservation.md`
+- **References:** `docs/specification/execution.md`, `docs/adr/0014-execution-model-and-merkle-proof-reservation.md`
 - **Priority:** High
 - **Description:**
   Implement control registers (`c0`–`c7`) for TVM continuations, exception handlers, and Patricia tree-based cell dictionaries (`DictGet`, `DictSet`, `DictDel`).
@@ -146,7 +146,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-004: ADNL UDP Network Transport Layer & Session Handshake
 - **Subsystem:** Networking (`crates/node/onx-networking`)
-- **References:** `docs/specification/networking-adnl.md`, `docs/decisions/ADR-0009-networking-adnl-and-rldp.md`
+- **References:** `docs/specification/networking-adnl.md`, `docs/adr/0016-networking-adnl-and-rldp.md`
 - **Priority:** High
 - **Description:**
   Implement the asynchronous UDP network transport layer for Abstract Datagram Network Layer (ADNL) using Tokio.
@@ -164,7 +164,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-005: RLDP Reliable Datagram Transfer Protocol Implementation
 - **Subsystem:** Networking (`crates/node/onx-networking`)
-- **References:** `docs/specification/networking-adnl.md`, `docs/decisions/ADR-0009-networking-adnl-and-rldp.md`
+- **References:** `docs/specification/networking-adnl.md`, `docs/adr/0016-networking-adnl-and-rldp.md`
 - **Priority:** High
 - **Description:**
   Implement the Reliable Large Datagram Protocol (RLDP) over ADNL UDP transport for transmitting multi-megabyte block data and state updates.
@@ -182,7 +182,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-006: Kademlia DHT Discovery Daemon & Routing Table
 - **Subsystem:** Networking (`crates/node/onx-networking`)
-- **References:** `docs/specification/networking-dht.md`, `docs/decisions/ADR-0010-networking-dht.md`
+- **References:** `docs/specification/networking-dht.md`, `docs/adr/0017-networking-dht.md`
 - **Priority:** Medium
 - **Description:**
   Build a running Kademlia DHT discovery protocol runtime on top of `onx-networking` distance metric logic.
@@ -200,7 +200,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-007: Catchain BFT Consensus Engine & Round State Machine
 - **Subsystem:** Consensus (`crates/protocol/onx-consensus`)
-- **References:** `docs/specification/consensus.md`, `docs/decisions/ADR-0008-consensus-and-validator-operation.md`
+- **References:** `docs/specification/consensus.md`, `docs/adr/0015-consensus-and-validator-operation.md`
 - **Priority:** Critical
 - **Description:**
   Build the round-based Catchain Byzantine Fault Tolerant (BFT) consensus engine, managing candidate proposals, vote collection, and block commit finalization.
@@ -218,7 +218,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-008: Block Synchronization Protocol & Sync Engine
 - **Subsystem:** Blockchain / Sync (`crates/protocol/onx-blocks`)
-- **References:** `docs/specification/blocks.md`, `docs/decisions/ADR-0006-blocks-and-masterchain-coupling.md`
+- **References:** `docs/specification/blocks.md`, `docs/adr/0013-blocks-and-masterchain-coupling.md`
 - **Priority:** High
 - **Description:**
   Implement the block synchronization service for fetching historical and missing blocks from network peers.
@@ -236,7 +236,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-009: Dynamic Shard Split & Merge Execution Pipeline
 - **Subsystem:** Sharding (`crates/protocol/onx-sharding`)
-- **References:** `docs/specification/sharding.md`, `docs/decisions/ADR-0012-dynamic-sharding.md`
+- **References:** `docs/specification/sharding.md`, `docs/adr/0019-dynamic-sharding.md`
 - **Priority:** High
 - **Description:**
   Implement the operational pipeline for executing shard splits and merges triggered by load evaluation in `onx-sharding`.
@@ -254,7 +254,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-010: Hypercube Cross-Shard Message Routing Engine
 - **Subsystem:** Transactions / Messaging (`crates/protocol/onx-transactions`)
-- **References:** `docs/specification/transactions.md`, `docs/decisions/ADR-0018-hypercube-fast-path-and-cross-workchain-rules.md`
+- **References:** `docs/specification/transactions.md`, `docs/adr/0025-hypercube-fast-path-and-cross-workchain-rules.md`
 - **Priority:** High
 - **Description:**
   Build the cross-shard message routing daemon executing Hypercube fast-path delivery and fallback masterchain queueing.
@@ -284,13 +284,13 @@ To transition from protocol specifications and standalone libraries to a fully f
   - `crates/protocol/onx-consensus/src/election.rs` and `crates/protocol/onx-economics/src/slashing.rs`.
   - Validator lifecycle test suite.
 - **Acceptance Criteria:**
-  Election lifecycle runs end-to-end: validators stake Onyx, active set is chosen, rewards accrue, and double-signing triggers automatic stake slashing.
+  Election lifecycle runs end-to-end: validators stake Onyxi, active set is chosen, rewards accrue, and double-signing triggers automatic stake slashing.
 
 ---
 
 ### TASK-012: ONX Node Daemon (`onxd`) Process Integration
 - **Subsystem:** Node Runtime (`bin/onxd`)
-- **References:** `docs/specification/architecture.md`, `docs/decisions/ADR-0001-preserve-multichain-architecture.md`
+- **References:** `docs/specification/architecture.md`, `docs/adr/0008-preserve-multichain-architecture.md`
 - **Priority:** Critical
 - **Description:**
   Create the main `onxd` executable binary that wires together storage, execution, consensus, networking, and transaction routing into a unified daemon process.
@@ -362,7 +362,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-016: Payment Channel Hub Daemon & Resolution Arbiter
 - **Subsystem:** Off-Chain / Channels (`crates/protocol/onx-payment-channels`)
-- **References:** `docs/specification/payment-channels.md`, `docs/decisions/ADR-0014-payment-channels.md`
+- **References:** `docs/specification/payment-channels.md`, `docs/adr/0021-payment-channels.md`
 - **Priority:** Medium
 - **Description:**
   Build an off-chain daemon daemon service operating bi-directional payment channels based on `onx-payment-channels`.
@@ -438,7 +438,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 - **Description:**
   Build the genesis block generator tool (`onx-genesis`) for creating initial chain states and launching private/public testnets.
 - **Requirements:**
-  1. Read network initial configuration parameters (initial Onyx balances, initial validator public keys, initial workchain config).
+  1. Read network initial configuration parameters (initial Onyxi balances, initial validator public keys, initial workchain config).
   2. Construct canonical Masterchain Genesis Block (#0) and initial Shard Block headers.
   3. Export genesis BoC files and bootstrap node configuration files.
 - **Deliverables:**

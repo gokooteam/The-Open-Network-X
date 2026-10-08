@@ -357,3 +357,159 @@ fn ed25519_rfc8032_test_vector_1_raw_primitive() {
 fn hex_decode(s: &str) -> Vec<u8> {
     hex::decode(s).unwrap()
 }
+
+// --- Strict public-key validation: the `verify_strict` bar ---
+
+/// `decode_strict` accepts a genuine large-order key.
+#[test]
+fn strict_accepts_valid_large_order_key() {
+    let key = SecretKey::from_seed(&[7u8; 32]).unwrap().public_key();
+    let bytes = key.encode();
+    assert_eq!(PublicKey::decode_strict(&bytes).unwrap(), key);
+}
+
+/// `decode_exact` rejects the identity point (order 1): it is a canonical
+/// on-curve encoding, so it passes decompress and recompress-compare — the
+/// strict predicate rejects it only on the large-order check, the same bar
+/// `verify_strict` applies.
+#[test]
+fn strict_rejects_identity_point() {
+    let mut identity = [0u8; 32];
+    identity[0] = 0x01;
+    assert_eq!(
+        PublicKey::decode_exact(&identity).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+    assert_eq!(
+        PublicKey::decode_strict(&identity).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+}
+
+/// `decode_exact` rejects the all-zeros encoding (the order-4 point):
+/// canonical and on-curve, so it passes decompress and recompress-compare,
+/// but it is small-order.
+#[test]
+fn strict_rejects_order_four_point() {
+    let zeros = [0u8; 32];
+    assert_eq!(
+        PublicKey::decode_exact(&zeros).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+    assert_eq!(
+        PublicKey::decode_strict(&zeros).unwrap_err(),
+        PrimitiveError::SmallOrderPublicKey
+    );
+}
+
+/// `decode_strict` propagates off-curve rejection: y=2 is a canonical
+/// encoding that fails the curve equation, rejected by both predicates.
+#[test]
+fn strict_rejects_off_curve_point() {
+    let mut off_curve = [0u8; 32];
+    off_curve[0] = 0x02;
+    assert_eq!(
+        PublicKey::decode_exact(&off_curve).unwrap_err(),
+        PrimitiveError::NonCanonicalEncoding
+    );
+    assert_eq!(
+        PublicKey::decode_strict(&off_curve).unwrap_err(),
+        PrimitiveError::NonCanonicalEncoding
+    );
+}
+
+// --- Canonicality hole: non-canonical `y + p` encodings ---
+
+/// Of the y values below 19, exactly these ten are on-curve (verified
+/// against the Python reference `reference/ed25519.py`).
+const SMALL_Y_ON_CURVE: [u8; 10] = [3, 4, 5, 6, 9, 10, 14, 15, 16, 18];
+
+/// Canonical encoding of the small-y point: y as 32 LE bytes, sign bit
+/// clear. All ten decode successfully — they are genuine large-order
+/// points (the Python reference confirms `8*P != identity`).
+fn canonical_small_y_encoding(y: u8) -> [u8; 32] {
+    let mut enc = [0u8; 32];
+    enc[0] = y;
+    enc
+}
+
+/// Non-canonical `y + p` encoding: p = 2^255 - 19 is
+/// `0x7fff...ffec` LE, and every y here is < 19, so `y + p` as a 256-bit
+/// integer is just p's LE bytes with `0xec + y` in the low byte — no
+/// carry, bit 255 clear (sign bit 0, matching the canonical form above).
+/// This encoding decodes to the *same* point as the canonical one but
+/// must be rejected: one point, one encoding.
+fn noncanonical_yp_encoding(y: u8) -> [u8; 32] {
+    debug_assert!(y < 19);
+    let mut enc = [0xffu8; 32];
+    enc[0] = 0xec + y;
+    enc[31] = 0x7f;
+    enc
+}
+
+/// The canonical small-y encodings are accepted (large-order points).
+#[test]
+fn canonical_small_y_encodings_accepted() {
+    for y in SMALL_Y_ON_CURVE {
+        let enc = canonical_small_y_encoding(y);
+        assert!(
+            PublicKey::decode_exact(&enc).is_ok(),
+            "canonical encoding of y={y} must decode"
+        );
+    }
+}
+
+/// The ten `y + p` non-canonical encodings are REJECTED by `decode_exact`.
+/// Before the recompress-compare fix these passed both decompress and
+/// `is_weak` — the hole in the "canonical + on-curve + large-order"
+/// predicate.
+#[test]
+fn noncanonical_yp_encodings_rejected() {
+    for y in SMALL_Y_ON_CURVE {
+        let enc = noncanonical_yp_encoding(y);
+        assert_ne!(enc, canonical_small_y_encoding(y));
+        assert_eq!(
+            PublicKey::decode_exact(&enc).unwrap_err(),
+            PrimitiveError::NonCanonicalEncoding,
+            "y + p encoding of y={y} must be rejected as non-canonical"
+        );
+        assert_eq!(
+            PublicKey::decode_strict(&enc).unwrap_err(),
+            PrimitiveError::NonCanonicalEncoding,
+            "y + p encoding of y={y} must be rejected as non-canonical (strict)"
+        );
+    }
+}
+
+// --- The eight small-order (torsion) points ---
+
+/// Compressed encodings of the eight torsion points (orders 1, 2, 4, 8),
+/// generated with the Python reference (`8*P == identity`, all distinct).
+/// All must be REJECTED by `decode_exact` with `SmallOrderPublicKey` —
+/// they are canonical on-curve encodings, so only the large-order check
+/// catches them.
+const SMALL_ORDER_ENCODINGS: [&str; 8] = [
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+    "0000000000000000000000000000000000000000000000000000000000000080",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+];
+
+#[test]
+fn all_small_order_points_rejected() {
+    for hex_enc in SMALL_ORDER_ENCODINGS {
+        let enc = hex_decode(hex_enc);
+        assert_eq!(enc.len(), 32);
+        let mut buf = [0u8; 32];
+        buf.copy_from_slice(&enc);
+        assert_eq!(
+            PublicKey::decode_exact(&buf).unwrap_err(),
+            PrimitiveError::SmallOrderPublicKey,
+            "torsion point {hex_enc} must be rejected as small-order"
+        );
+    }
+}

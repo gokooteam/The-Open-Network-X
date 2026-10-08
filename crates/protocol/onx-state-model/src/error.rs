@@ -30,6 +30,13 @@ pub enum StateModelError {
     },
     /// Merkle proof verification failure.
     InvalidMerkleProof(String),
+    /// Genesis document construction or validation failure.
+    InvalidGenesis(String),
+    /// State trie construction failed while computing a root hash.
+    /// This is fail-closed by design: it must never be silently replaced
+    /// with a constant (Phase 0 bug 4 — the old `Err(_) => EMPTY_TREE`
+    /// fallback would have collapsed distinct states onto one root).
+    TrieConstruction(String),
 }
 
 impl fmt::Display for StateModelError {
@@ -77,6 +84,10 @@ impl fmt::Display for StateModelError {
                 expected, actual
             ),
             Self::InvalidMerkleProof(msg) => write!(f, "Invalid Merkle proof: {}", msg),
+            Self::InvalidGenesis(msg) => write!(f, "Invalid genesis: {}", msg),
+            Self::TrieConstruction(msg) => {
+                write!(f, "State trie construction failed: {}", msg)
+            }
         }
     }
 }

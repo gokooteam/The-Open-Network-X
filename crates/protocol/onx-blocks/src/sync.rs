@@ -11,7 +11,7 @@ use crate::{
 };
 use onx_data_structures::BlockHeader;
 use onx_primitives::Uint256;
-use std::{collections::HashMap, fmt};
+use std::{collections::BTreeMap, fmt};
 
 /// A downloaded header together with the data required for deterministic
 /// relative-validity and masterchain-canonicality checks.
@@ -37,7 +37,7 @@ struct StoredBlock {
 /// deliberately outside this type: callers supply the verified download data.
 #[derive(Debug, Clone, Default)]
 pub struct BlockSyncEngine {
-    blocks: HashMap<Uint256, StoredBlock>,
+    blocks: BTreeMap<Uint256, StoredBlock>,
 }
 
 /// Reasons an imported synchronization batch is rejected.
@@ -180,7 +180,7 @@ impl BlockSyncEngine {
     fn validate_candidate(
         &self,
         candidate: &SyncCandidate,
-        staged: &mut HashMap<Uint256, StoredBlock>,
+        staged: &mut BTreeMap<Uint256, StoredBlock>,
     ) -> Result<(), SyncError> {
         self.validate_role_fields(candidate)?;
         let hash = candidate.header.block_hash();

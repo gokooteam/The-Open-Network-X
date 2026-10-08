@@ -40,7 +40,7 @@ ONX
 
 The native currency is:
 
-Onyx
+Onyxi
 
 Do not describe ONX as:
 
@@ -376,7 +376,7 @@ The host implementation merely executes that definition.
 
 18. Economics
 
-Onyx economics must be explicitly specified.
+Onyxi economics must be explicitly specified.
 
 Do not introduce tokenomics simply because a conventional blockchain normally has them.
 
@@ -536,7 +536,7 @@ Use Architecture Decision Records where appropriate.
 
 Recommended format:
 
-docs/decisions/ADR-NNNN-title.md
+docs/adr/NNNN-title.md
 
 Each ADR should contain:
 

@@ -1207,6 +1207,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
+name = "onx"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "hex",
+ "onx-data-structures",
+ "onx-genesis",
+ "onx-primitives",
+ "onx-state-model",
+ "onx-stf",
+ "onx-storage",
+ "serde_json",
+]
+
+[[package]]
 name = "onx-blocks"
 version = "0.1.0"
 dependencies = [
@@ -1281,6 +1296,9 @@ dependencies = [
 name = "onx-genesis"
 version = "0.1.0"
 dependencies = [
+ "onx-data-structures",
+ "onx-primitives",
+ "onx-state-model",
  "serde",
  "toml",
 ]
@@ -1361,6 +1379,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "onx-stf"
+version = "0.1.0"
+dependencies = [
+ "onx-data-structures",
+ "onx-economics",
+ "onx-execution",
+ "onx-primitives",
+ "onx-state-model",
+]
+
+[[package]]
+name = "onx-storage"
+version = "0.1.0"
+dependencies = [
+ "onx-data-structures",
+ "onx-primitives",
+ "onx-state-model",
+ "onx-stf",
+ "redb",
+]
+
+[[package]]
 name = "onx-system-contracts"
 version = "0.1.0"
 dependencies = [
@@ -1398,12 +1438,18 @@ dependencies = [
 name = "onxd"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "libc",
+ "onx",
  "onx-consensus",
  "onx-data-structures",
  "onx-execution",
+ "onx-genesis",
  "onx-networking",
  "onx-primitives",
  "onx-state-model",
+ "onx-stf",
+ "onx-storage",
  "onx-telemetry",
  "onx-transactions",
  "tokio",
@@ -1823,6 +1869,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "redb"
+version = "2.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d64e07496d293ad8ed401c4d193d5b9f0f97671fbd5bf21d691a0c7d2c53dc8"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1925,9 +1980,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.44"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6725596c3f2c3a0aef021139e145d4eafe314a6623e4680ca83852b2c67ab2ba"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "once_cell",
  "rustls-pki-types",

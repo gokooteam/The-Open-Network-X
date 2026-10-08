@@ -28,7 +28,7 @@ fn test_fee_burn_split() {
 
 #[test]
 fn test_inflation_reward_calculation() {
-    let total_stake = 1_000_000_000_000u128; // 1000 Onyx
+    let total_stake = 1_000_000_000_000u128; // 1000 Onyxi
     let epochs_per_year = 12u64; // Monthly epochs
 
     // 1.75% of 1,000,000,000,000 = 17,500_000_000 per year

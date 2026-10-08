@@ -26,8 +26,31 @@ pub struct Signature(ed25519_dalek::Signature);
 impl PublicKey {
     pub const BYTE_LEN: usize = 32;
 
-    /// Decodes a public key, rejecting truncated/over-length input and
-    /// non-canonical point encodings (§5, rules 1, 2, 3).
+    /// Decodes a public key under the full strict predicate: canonical
+    /// encoding, on-curve, and large-order (§5, rules 1, 2, 3).
+    ///
+    /// The three checks:
+    /// - *On-curve*: the encoding must satisfy the curve equation
+    ///   (rejected by `from_bytes`).
+    /// - *Canonical encoding*: `from_bytes` decompresses the point but does
+    ///   **not** enforce canonicity — e.g. the `y + p` encoding of a
+    ///   large-order point decompresses fine and is not weak, so a
+    ///   decompress+`is_weak` check lets it through. We recompress the
+    ///   decoded point and require the bytes to round-trip. Do NOT compare
+    ///   `key.to_bytes()`: the verifying key retains the input bytes, so
+    ///   that comparison would be vacuous.
+    /// - *Large-order*: torsion points are canonical on-curve encodings,
+    ///   so they pass the first two checks; they fail the strict bar
+    ///   `verify_strict` applies at verification time (cofactorless
+    ///   verification equations admit forgeries under small-order keys),
+    ///   so they are rejected here too.
+    ///
+    /// This is the single strict predicate every trust-root path uses —
+    /// genesis validator and balance keys, external messages, CHKSIGNU, and
+    /// block signatures all inherit it automatically. With canonicality
+    /// enforced at decode, one curve point has exactly one accepted byte
+    /// encoding, so byte-equality on decoded keys (validator dedup, sort
+    /// order, key-derived addresses) is sound.
     pub fn decode_exact(bytes: &[u8]) -> Result<Self, PrimitiveError> {
         if bytes.len() < Self::BYTE_LEN {
             return Err(PrimitiveError::Truncated {
@@ -45,7 +68,28 @@ impl PublicKey {
         buf.copy_from_slice(bytes);
         let key = ed25519_dalek::VerifyingKey::from_bytes(&buf)
             .map_err(|_| PrimitiveError::NonCanonicalEncoding)?;
+        // Recompress-compare: the only sound canonicity check. `from_bytes`
+        // keeps the input bytes, so `key.to_bytes() == buf` would be
+        // vacuous; recompressing the decoded point is not.
+        if key.to_edwards().compress().to_bytes() != buf {
+            return Err(PrimitiveError::NonCanonicalEncoding);
+        }
+        if key.is_weak() {
+            return Err(PrimitiveError::SmallOrderPublicKey);
+        }
         Ok(PublicKey(key))
+    }
+
+    /// Alias for [`Self::decode_exact`]: the small-order (torsion) rejection
+    /// now lives in `decode_exact` itself, so the "strict" predicate and the
+    /// plain decode are the same bar — canonical encoding (recompressed
+    /// bytes must match the input), on-curve, large-order.
+    ///
+    /// Kept so call sites that named the strict predicate (genesis
+    /// validator and balance keys) keep reading as before. Prefer
+    /// `decode_exact` in new code.
+    pub fn decode_strict(bytes: &[u8]) -> Result<Self, PrimitiveError> {
+        Self::decode_exact(bytes)
     }
 
     pub fn encode(&self) -> [u8; 32] {
@@ -63,8 +107,16 @@ impl PublicKey {
         signature: &Signature,
     ) -> Result<(), PrimitiveError> {
         let domain_message = domain_separated_message(tag, message);
+        self.verify_raw(&domain_message, signature)
+    }
+
+    /// Verifies `signature` over `message` with NO additional domain
+    /// separation. Use only when `message` is already domain-separated
+    /// (e.g. the ONXBLK05 block-signing preimage, which starts with
+    /// `pad32("ONX_BLOCK_SIG_V1")` per ADR-0032).
+    pub fn verify_raw(&self, message: &[u8], signature: &Signature) -> Result<(), PrimitiveError> {
         self.0
-            .verify_strict(&domain_message, &signature.0)
+            .verify_strict(message, &signature.0)
             .map_err(|_| PrimitiveError::SignatureVerificationFailed)
     }
 }
@@ -103,7 +155,14 @@ impl SecretKey {
     /// tag is always prepended before signing (§4.5).
     pub fn sign(&self, tag: &DomainTag, message: &[u8]) -> Signature {
         let domain_message = domain_separated_message(tag, message);
-        Signature(self.0.sign(&domain_message))
+        self.sign_raw(&domain_message)
+    }
+
+    /// Signs `message` with NO additional domain separation. Use only when
+    /// `message` is already domain-separated (e.g. the ONXBLK05
+    /// block-signing preimage per ADR-0032).
+    pub fn sign_raw(&self, message: &[u8]) -> Signature {
+        Signature(self.0.sign(message))
     }
 }
 

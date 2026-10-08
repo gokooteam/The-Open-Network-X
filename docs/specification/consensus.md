@@ -43,7 +43,7 @@ Global validator elections occur periodically at fixed epoch intervals:
 - **Election Epoch:** Global validator elections occur every $2^{19}$ masterchain blocks ($\approx 1\text{ month}$). The elected set is finalized $2^{19}$ blocks in advance of its active period.
 - **Candidate Submission:** A node becomes an election candidate by submitting a transaction to the Masterchain Validator Election Smart Contract containing:
   1. `public_key`: Ed25519 signing key for consensus messages (domain-separated per `protocol-primitives.md`);
-  2. `s_i`: proposed stake amount in Onyx base units ($s_i > 0$);
+  2. `s_i`: proposed stake amount in Onyxi base units ($s_i > 0$);
   3. `l_i`: maximum acceptable load factor relative to the minimal stake ($1 \le l_i \le L$, where $L$ is a global configuration parameter, default $L = 10$).
 - **Selection & Actual Stake Calculation:** The smart contract sorts candidates by proposed stake $s_i$ descending and selects up to the top $T$ candidates (where $T$ is the active global validator cap, e.g. $T = 100$ initially, scaling up to $1000$).
   Let $s_T$ be the proposed stake of the $T$-th selected validator. The **actual stake** $s'_i$ of the $i$-th selected validator is computed as:
@@ -135,7 +135,7 @@ Submitted during global validator elections:
 
 ```
 1. public_key  : [uint8; 32]  (Ed25519 public key)
-2. stake       : uint64       (Proposed stake s_i in Onyx base units)
+2. stake       : uint64       (Proposed stake s_i in Onyxi base units)
 3. max_load    : uint16       (Load factor l_i * 100, e.g., 1000 for l_i = 10.0)
 ```
 

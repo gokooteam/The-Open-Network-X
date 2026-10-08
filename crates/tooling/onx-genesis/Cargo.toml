@@ -13,3 +13,6 @@ path = "src/main.rs"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+onx-state-model = { path = "../../protocol/onx-state-model" }
+onx-data-structures = { path = "../../protocol/onx-data-structures" }
+onx-primitives = { path = "../../protocol/onx-primitives" }

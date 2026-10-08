@@ -7,7 +7,44 @@ use onx_primitives::{
     PublicKey, Signature,
 };
 use onx_state_model::Cell;
-const MAX_STACK_DEPTH: usize = 1023;
+use std::collections::BTreeMap;
+/// `pub(crate)` so the wave-3 fuzz scaffold (`fuzz.rs`) can assert the cap
+/// from a single source of truth instead of a magic number.
+pub(crate) const MAX_STACK_DEPTH: usize = 1023;
+
+/// True floor division for `DIVMOD` (0x14) / `DIV` (0x17), per the spec
+/// (`docs/specification/tvm-instruction-set.md` §4.3) and ADR-0030:
+/// `q = floor(a / b)`, `r = a - q*b`, so `sign(r) == sign(b)` or `r == 0`.
+/// This is TON's round-toward-negative-infinity convention, and it is fully
+/// defined for negative divisors — ADR-0028's "underspecified" premise was
+/// wrong (Euclidean was never the spec; `checked_div_euclid` was a bug).
+///
+/// Returns `None` when the quotient is unrepresentable (`MIN / -1`); the
+/// caller maps that — and `b == 0`, which must be rejected before calling —
+/// to `IntegerOverflow`. Every arithmetic step is `checked_*` because the
+/// crate denies `clippy::arithmetic_side_effects`.
+fn floored_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
+    debug_assert!(b != 0);
+    // `checked_div` truncates toward zero and returns `None` only for
+    // MIN / -1, whose true floor quotient (2^127) is unrepresentable.
+    let q_trunc = a.checked_div(b)?;
+    // `checked_rem` returns `None` only when b == 0 (excluded above) or for
+    // the MIN / -1 pair, which the line above already rejected.
+    let r_trunc = a.checked_rem(b)?;
+    if r_trunc != 0 && (r_trunc < 0) != (b < 0) {
+        // Truncation rounded toward zero, i.e. *up* past the floor: step
+        // the quotient down one and hand the remainder one divisor.
+        // Overflow audit of the two `checked_*` steps (both provably dead,
+        // kept `checked` for the lint):
+        // - `q_trunc - 1`: `q_trunc` can only be `i128::MIN` for the exact
+        //   pair MIN/1, whose remainder is 0, so this branch is unreachable.
+        // - `r_trunc + b`: in this branch the signs differ, so
+        //   |r_trunc + b| = |b| - |r_trunc| < |b| <= 2^127 — it shrinks.
+        Some((q_trunc.checked_sub(1)?, r_trunc.checked_add(b)?))
+    } else {
+        Some((q_trunc, r_trunc))
+    }
+}
 
 pub struct Interpreter {
     pub stack: Vec<StackValue>,
@@ -22,10 +59,42 @@ pub struct Interpreter {
     pub code_refs: Vec<Cell>,
     /// TVM continuation control registers c0 (return), c1 (alternative), c2 (exception).
     pub control_registers: ControlRegisters,
+    /// The inbound message that triggered this invocation. Readable by
+    /// contract code via the `0x80` message opcodes (`MSGSENDER`,
+    /// `MSGVALUE`, `MSGBODY`).
+    pub message: Message,
+    /// Raw inbound message body bytes. `Message` only commits to
+    /// `body_cell_hash`; the host holds the actual payload (e.g. the STF's
+    /// `InternalMessage.payload`) and sets it here so `MSGBODY` can expose
+    /// it. Empty when the host did not provide a body.
+    pub message_body: Vec<u8>,
+    /// Content-addressed cell store (`cell hash -> Cell`).
+    ///
+    /// Calling convention for cell persistence across invocations:
+    /// - Before execution, the host seeds this map with every cell in the
+    ///   DAGs of `code` and `data` (the constructor only seeds the two
+    ///   roots; the host must provide the rest, e.g. from the persisted
+    ///   `BagOfCells` of the contract's data).
+    /// - `CTOS` resolves each child reference through this map; resolved
+    ///   children are what `LDREF` returns.
+    /// - `ENDC` registers every materialized cell here automatically, so
+    ///   after execution the host can persist the full output DAG (any
+    ///   entries it does not already have) and the next invocation's
+    ///   `LDREF`s resolve to the actual stored children.
+    /// - A child reference whose content is absent fails closed at `LDREF`
+    ///   with `AbsentNode` — it is never answered with invented data.
+    pub cell_store: BTreeMap<[u8; 32], Cell>,
 }
 
 impl Interpreter {
-    pub fn new(code: Cell, data: Cell, _message: Message, context: ExecutionContext) -> Self {
+    pub fn new(code: Cell, data: Cell, message: Message, context: ExecutionContext) -> Self {
+        // Seed the cell store with the two roots. The host must additionally
+        // seed it with the rest of the code/data DAGs (see the `cell_store`
+        // calling-convention docs) or `LDREF` on their children fails
+        // closed with `AbsentNode`.
+        let mut cell_store = BTreeMap::new();
+        cell_store.insert(code.hash(), code.clone());
+        cell_store.insert(data.hash(), data.clone());
         Self {
             stack: Vec::new(),
             call_stack: Vec::new(),
@@ -38,6 +107,9 @@ impl Interpreter {
             context,
             code_refs: Vec::new(),
             control_registers: ControlRegisters::default(),
+            message,
+            message_body: Vec::new(),
+            cell_store,
         }
     }
 
@@ -124,9 +196,22 @@ impl Interpreter {
         }
     }
 
+    /// Builds a `Slice` over `cell`, resolving each child reference through
+    /// the cell store. Children the host did not provide are recorded as
+    /// `None`; they fail closed at `LDREF` (`AbsentNode`) instead of being
+    /// answered with invented placeholder data.
+    fn resolve_slice(&self, cell: Cell) -> Slice {
+        let child_cells = cell
+            .cell_refs()
+            .iter()
+            .map(|hash| self.cell_store.get(hash).cloned())
+            .collect();
+        Slice::new_with_children(cell, child_cells)
+    }
+
     pub fn read_uint8(&mut self) -> Result<u8, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len() * 8;
-        if self.pc_bits + 8 > total_bits {
+        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
+        if self.pc_bits.saturating_add(8) > total_bits {
             return Err(ExceptionKind::MalformedCell);
         }
         let byte_idx = self.pc_bits / 8;
@@ -136,10 +221,10 @@ impl Interpreter {
             data[byte_idx]
         } else {
             let b1 = data[byte_idx];
-            let b2 = data.get(byte_idx + 1).copied().unwrap_or(0);
-            (b1 << bit_rem) | (b2 >> (8 - bit_rem))
+            let b2 = data.get(byte_idx.saturating_add(1)).copied().unwrap_or(0);
+            (b1 << bit_rem) | (b2 >> 8usize.saturating_sub(bit_rem))
         };
-        self.pc_bits += 8;
+        self.pc_bits = self.pc_bits.saturating_add(8);
         Ok(val)
     }
 
@@ -158,7 +243,7 @@ impl Interpreter {
     }
 
     pub fn step(&mut self) -> Result<bool, ExceptionKind> {
-        let total_bits = self.current_code.data_bytes().len() * 8;
+        let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
         if self.pc_bits >= total_bits {
             if let Some((prev_code, prev_pc)) = self.call_stack.pop() {
                 self.current_code = prev_code;
@@ -205,7 +290,7 @@ impl Interpreter {
                 if len < 2 {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let second = self.stack[len - 2].clone();
+                let second = self.stack[len.saturating_sub(2)].clone();
                 self.push(second)?;
             }
             // 0x05: ROT
@@ -226,7 +311,9 @@ impl Interpreter {
                 if depth >= len {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let item = self.stack[len - 1 - depth].clone();
+                // Exact: the guard gives `depth <= len - 1`, so the chained
+                // saturating subtraction computes `len - 1 - depth`.
+                let item = self.stack[len.saturating_sub(1).saturating_sub(depth)].clone();
                 self.push(item)?;
             }
             // 0x07: ROLL depth
@@ -237,7 +324,10 @@ impl Interpreter {
                 if depth >= len {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let item = self.stack.remove(len - 1 - depth);
+                // Exact by the same guard argument as PICK above.
+                let item = self
+                    .stack
+                    .remove(len.saturating_sub(1).saturating_sub(depth));
                 self.push(item)?;
             }
             // 0x08: PUSHINT signed, value[32]
@@ -252,7 +342,7 @@ impl Interpreter {
             // 0x09: PUSHBYTES len[uint16], bytes
             0x09 => {
                 let len = self.read_uint16()? as usize;
-                let gas_cost = 1 + len.div_ceil(32);
+                let gas_cost = len.div_ceil(32).saturating_add(1);
                 self.consume_gas(gas_cost as u64)?;
                 let bytes = self.read_bytes_exact(len)?;
                 self.push(StackValue::Bytes(bytes))?;
@@ -290,7 +380,8 @@ impl Interpreter {
                 if left == 0 || right == 0 || self.stack.len() < count {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let start = self.stack.len() - count;
+                // Exact: the guard gives `count <= stack.len()`.
+                let start = self.stack.len().saturating_sub(count);
                 self.stack[start..].rotate_left(left);
             }
             // Arithmetic 0x10-0x15
@@ -336,14 +427,18 @@ impl Interpreter {
                         ))?;
                     }
                     0x14 => {
-                        // DIVMOD
+                        // DIVMOD — true floor division per spec §4.3 and
+                        // ADR-0030: q = floor(a/b), r = a - q*b with
+                        // sign(r) == sign(b) or r == 0. (ADR-0028 pinned the
+                        // Euclidean remainder by mistake; `checked_div_euclid`
+                        // disagrees with the spec on negative divisors, e.g.
+                        // 7 DIVMOD -2 was (-3, 1), must be (-4, -1).)
                         let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        let q = a / b;
-                        let r = a % b;
+                        let (q, r) = floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
                         self.push(StackValue::from_i128(q))?;
                         self.push(StackValue::from_i128(r))?;
                     }
@@ -381,52 +476,205 @@ impl Interpreter {
                 }
                 let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
                 let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
+                // Raw result before width/flavor application. `I128` is an exact
+                // i128; `U128` is an already-wrapped value in [0, 2^128) for
+                // results the i128 carrier cannot hold (wrap-flavor
+                // negatives at width 128, MIN / -1). F1/F2 hotfix.
+                enum Raw {
+                    I128(i128),
+                    U128(u128),
+                }
                 let result = match opcode {
-                    // DIV returns only the quotient; DIVMOD remains available at 0x14.
+                    // DIV returns only the quotient of the same true-floor
+                    // division DIVMOD uses, so the two opcodes agree on q
+                    // (ADR-0030). The old truncating `checked_div` did not.
                     0x17 => {
                         if b == 0 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a.checked_div(b).ok_or(ExceptionKind::IntegerOverflow)?
+                        if a == i128::MIN && b == -1 {
+                            // True quotient 2^127, unrepresentable as i128
+                            // (F2): route through the u128 carrier.
+                            match flavor {
+                                // Unsigned: 2^127 in [0, 2^width) only at
+                                // width 128.
+                                0 => {
+                                    if width == 128 {
+                                        Raw::U128(1u128 << 127)
+                                    } else {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                }
+                                // Signed: 2^127 >= 2^(width-1) for every
+                                // width <= 128.
+                                1 => return Err(ExceptionKind::IntegerOverflow),
+                                // Wrap: 2^127 mod 2^width (0 below 128).
+                                _ => Raw::U128(if width == 128 { 1u128 << 127 } else { 0 }),
+                            }
+                        } else {
+                            let (q, _) =
+                                floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
+                            Raw::I128(q)
+                        }
                     }
                     0x18 => {
                         if b < 0 || b >= width as i128 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a.checked_shl(b as u32)
-                            .ok_or(ExceptionKind::IntegerOverflow)?
+                        let r = a
+                            .checked_shl(b as u32)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        // F1: `checked_shl` only rejects shift amounts >=
+                        // 128; it silently discards shifted-out bits. A
+                        // lossless shift round-trips: (r >> b) == a.
+                        let lost_bits = b > 0 && (r >> b) != a;
+                        if lost_bits {
+                            match flavor {
+                                // Unsigned: t = a·2^b. Negative a → t < 0 →
+                                // raise. Non-negative a fits iff a < 2^(w-b);
+                                // the true product then goes through u128.
+                                0 => {
+                                    if a < 0 {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                    // b < width was checked above, so the
+                                    // subtraction is exact; checked for the
+                                    // arithmetic lint. shift in 1..=128.
+                                    let shift = (width as i128)
+                                        .checked_sub(b)
+                                        .ok_or(ExceptionKind::IntegerOverflow)?;
+                                    // a < 2^shift. shift in 1..=128; for
+                                    // shift >= 127 every non-negative i128 a
+                                    // fits (a ≤ 2^127 - 1 < 2^127 ≤ 2^shift).
+                                    let fits = if shift >= 127 {
+                                        true
+                                    } else {
+                                        let bound = 1i128
+                                            .checked_shl(shift as u32)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                                        a < bound
+                                    };
+                                    if !fits {
+                                        return Err(ExceptionKind::IntegerOverflow);
+                                    }
+                                    // t = a·2^b < 2^w ≤ 2^128: exact.
+                                    let t = (a as u128)
+                                        .checked_shl(b as u32)
+                                        .ok_or(ExceptionKind::IntegerOverflow)?;
+                                    Raw::U128(t)
+                                }
+                                // Wrap flavor keeps (a * 2^b) mod 2^width,
+                                // computed in two's-complement u128 so the
+                                // full product is exact before the modulo.
+                                2 => {
+                                    let shifted = (a as u128).wrapping_mul(1u128 << b as u32);
+                                    Raw::U128(if width == 128 {
+                                        shifted
+                                    } else {
+                                        // `width < 128` here, so the shift is
+                                        // exact; checked to satisfy the
+                                        // arithmetic lint.
+                                        let modulus = 1u128
+                                            .checked_shl(width as u32)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                                        shifted
+                                            .checked_rem(modulus)
+                                            .ok_or(ExceptionKind::IntegerOverflow)?
+                                    })
+                                }
+                                _ => return Err(ExceptionKind::IntegerOverflow),
+                            }
+                        } else {
+                            Raw::I128(r)
+                        }
                     }
                     0x19 => {
                         if b < 0 || b >= width as i128 {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        a >> b
+                        Raw::I128(a >> b)
                     }
                     _ => unreachable!(),
                 };
-                let limit = 1i128
-                    .checked_shl(width as u32 - 1)
-                    .ok_or(ExceptionKind::IntegerOverflow)?;
-                let fits = match flavor {
-                    0 => {
-                        result >= 0
-                            && result
-                                < limit.checked_mul(2).ok_or(ExceptionKind::IntegerOverflow)?
+                // Width is 1..=128 (checked above). The shift-based limit
+                // computation breaks at the top end — 2^127 and 2^128 are
+                // unrepresentable as i128 — so each flavor handles its
+                // boundary widths directly. All arithmetic below is
+                // checked (never saturating): an unrepresentable result
+                // is IntegerOverflow, not a clamped value. F2: the wrap
+                // flavor never raises *on the result* — values it cannot
+                // hold as i128 go through the u128 carrier (spec §3.3).
+                // Operand range checks (shift amount, division by zero)
+                // precede flavor selection and raise for every flavor.
+                let value = match (result, flavor) {
+                    // Already wrapped into [0, 2^128): push as-is.
+                    (Raw::U128(u), _) => StackValue::from_u128(u),
+                    // Unsigned, error on out-of-range: [0, 2^width).
+                    (Raw::I128(q), 0) => {
+                        if q < 0 {
+                            return Err(ExceptionKind::IntegerOverflow);
+                        }
+                        // For width >= 127, 2^width > i128::MAX, so every
+                        // non-negative i128 fits and no bound check applies.
+                        if width < 127 {
+                            let bound = 1i128
+                                .checked_shl(width as u32)
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            if q >= bound {
+                                return Err(ExceptionKind::IntegerOverflow);
+                            }
+                        }
+                        StackValue::from_i128(q)
                     }
-                    1 => result >= -limit && result < limit,
-                    2 => true,
+                    // Signed: [-2^(width-1), 2^(width-1)).
+                    (Raw::I128(q), 1) => {
+                        let checked = if width == 128 {
+                            // Exactly the i128 range: everything fits.
+                            q
+                        } else {
+                            let limit = 1i128
+                                .checked_shl((width as u32).saturating_sub(1))
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            // `limit` is a positive power of two, so the
+                            // negation is exact.
+                            if q < limit.wrapping_neg() || q >= limit {
+                                return Err(ExceptionKind::IntegerOverflow);
+                            }
+                            q
+                        };
+                        StackValue::from_i128(checked)
+                    }
+                    // Wrap-unsigned: result mod 2^width into [0, 2^width).
+                    // Never raises.
+                    (Raw::I128(q), 2) => {
+                        if width == 128 {
+                            // q mod 2^128 via two's-complement
+                            // reinterpretation: exact for every i128 q.
+                            StackValue::from_u128(q as u128)
+                        } else if width == 127 {
+                            // 2^127 is unrepresentable, but the wrap of a
+                            // negative result always lands in [0, 2^127):
+                            // result + 2^127 with 2^127 = i128::MAX + 1.
+                            // Exact for result < 0 (intermediates stay in
+                            // [-1, 2^127 - 1]); checked to satisfy the
+                            // arithmetic lint and fail closed regardless.
+                            StackValue::from_i128(if q < 0 {
+                                q.checked_add(i128::MAX)
+                                    .and_then(|r| r.checked_add(1))
+                                    .ok_or(ExceptionKind::IntegerOverflow)?
+                            } else {
+                                q
+                            })
+                        } else {
+                            let modulus = 1i128
+                                .checked_shl(width as u32)
+                                .ok_or(ExceptionKind::IntegerOverflow)?;
+                            StackValue::from_i128(q.rem_euclid(modulus))
+                        }
+                    }
                     _ => unreachable!(),
                 };
-                if !fits {
-                    return Err(ExceptionKind::IntegerOverflow);
-                }
-                let result = if flavor == 2 {
-                    let modulus = limit.checked_mul(2).ok_or(ExceptionKind::IntegerOverflow)?;
-                    result.rem_euclid(modulus)
-                } else {
-                    result
-                };
-                self.push(StackValue::from_i128(result))?;
+                self.push(value)?;
             }
             0x20 => {
                 // CONV width, signed
@@ -447,8 +695,8 @@ impl Interpreter {
                 // CONCAT
                 let b = self.pop_bytes()?;
                 let a = self.pop_bytes()?;
-                let total_len = a.len() + b.len();
-                self.consume_gas(4 + total_len.div_ceil(32) as u64)?;
+                let total_len = a.len().saturating_add(b.len());
+                self.consume_gas(4u64.saturating_add(total_len.div_ceil(32) as u64))?;
                 let mut res = a;
                 res.extend(b);
                 self.push(StackValue::Bytes(res))?;
@@ -459,17 +707,23 @@ impl Interpreter {
                 let len = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
                 let offset = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
                 let bytes = self.pop_bytes()?;
-                if offset + len > bytes.len() {
+                // `offset`/`len` arrive as i128 and wrap to huge `usize`
+                // values when negative; `checked_add` keeps an adversarial
+                // pair from panicking the producer via usize overflow.
+                let end = offset
+                    .checked_add(len)
+                    .ok_or(ExceptionKind::MalformedCell)?;
+                if end > bytes.len() {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                self.push(StackValue::Bytes(bytes[offset..offset + len].to_vec()))?;
+                self.push(StackValue::Bytes(bytes[offset..end].to_vec()))?;
             }
             0x33 => {
                 // BYTEEQ
                 let b = self.pop_bytes()?;
                 let a = self.pop_bytes()?;
                 let min_len = a.len().min(b.len());
-                self.consume_gas(1 + min_len.div_ceil(32) as u64)?;
+                self.consume_gas(1u64.saturating_add(min_len.div_ceil(32) as u64))?;
                 self.push(StackValue::from_i128(if a == b { 1 } else { 0 }))?;
             }
             // Cell access 0x40-0x4C
@@ -485,6 +739,10 @@ impl Interpreter {
                 let cell_refs = builder.references.iter().map(|c| c.hash()).collect();
                 let cell = Cell::new(builder.data_bytes, cell_refs)
                     .map_err(|_| ExceptionKind::MalformedCell)?;
+                // Register the materialized cell so the host can persist
+                // the full DAG after execution and so later LDREFs resolve
+                // to the actual stored child.
+                self.cell_store.insert(cell.hash(), cell.clone());
                 self.push(StackValue::Cell(cell))?;
             }
             0x42 => {
@@ -511,9 +769,9 @@ impl Interpreter {
             0x44 => {
                 // STBYTES
                 let bytes = self.pop_bytes()?;
-                self.consume_gas(10 + bytes.len().div_ceil(32) as u64)?;
+                self.consume_gas(10u64.saturating_add(bytes.len().div_ceil(32) as u64))?;
                 let mut builder = self.pop_builder()?;
-                if builder.data_bytes.len() + bytes.len() > 128 {
+                if builder.data_bytes.len().saturating_add(bytes.len()) > 128 {
                     return Err(ExceptionKind::MalformedCell);
                 }
                 builder.data_bytes.extend(bytes);
@@ -526,7 +784,8 @@ impl Interpreter {
                 if cell.is_special() {
                     return Err(ExceptionKind::AbsentNode);
                 }
-                self.push(StackValue::Slice(Slice::new(cell)))?;
+                let slice = self.resolve_slice(cell);
+                self.push(StackValue::Slice(slice))?;
             }
             0x46 => {
                 // LDU width
@@ -553,13 +812,15 @@ impl Interpreter {
                 if slice.remaining_refs() == 0 {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let ref_cell = if slice.ref_offset < slice.child_cells.len() {
-                    slice.child_cells[slice.ref_offset].clone()
-                } else {
-                    let ref_hash = slice.cell.cell_refs()[slice.ref_offset];
-                    Cell::new(vec![], vec![ref_hash]).unwrap()
+                // Return the actual stored child cell. A reference whose
+                // content the host did not provide fails closed here
+                // (AbsentNode) — it must never be answered with an invented
+                // placeholder cell.
+                let ref_cell = match slice.child_cells.get(slice.ref_offset) {
+                    Some(Some(child)) => child.clone(),
+                    _ => return Err(ExceptionKind::AbsentNode),
                 };
-                slice.ref_offset += 1;
+                slice.ref_offset = slice.ref_offset.saturating_add(1);
                 self.push(StackValue::Slice(slice))?;
                 self.push(StackValue::Cell(ref_cell))?;
             }
@@ -587,6 +848,16 @@ impl Interpreter {
                 self.consume_gas(1)?;
                 let slice = self.pop_slice()?;
                 self.push(StackValue::from_i128(slice.remaining_refs() as i128))?;
+            }
+            0x4D => {
+                // SETDATA: pop a cell and install it as the contract's
+                // persistent data (TVM c4). This is the integration hook
+                // the STF uses: on successful halt, the interpreter's
+                // `data` is the contract's new persistent data cell, which
+                // the STF writes back to the contract account.
+                self.consume_gas(10)?;
+                let cell = self.pop_cell()?;
+                self.data = cell;
             }
             // Cryptographic 0x60-0x62
             0x60 => {
@@ -684,8 +955,8 @@ impl Interpreter {
                 let offset = if condition { true_offset } else { false_offset };
                 self.pc_bits = self
                     .pc_bits
-                    .checked_add_signed((offset as isize) * 8)
-                    .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                    .checked_add_signed((offset as isize).saturating_mul(8))
+                    .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                     .ok_or(ExceptionKind::MalformedCell)?;
             }
             // 0x79: IFRET. Return from the current continuation if the condition is nonzero.
@@ -712,8 +983,8 @@ impl Interpreter {
                 if count > 0 {
                     self.pc_bits = self
                         .pc_bits
-                        .checked_add_signed((offset as isize) * 8)
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                        .checked_add_signed((offset as isize).saturating_mul(8))
+                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
             }
@@ -724,10 +995,37 @@ impl Interpreter {
                 if StackValue::Integer(self.pop_integer()?).to_i128()? == 0 {
                     self.pc_bits = self
                         .pc_bits
-                        .checked_add_signed((offset as isize) * 8)
-                        .filter(|pc| *pc <= self.current_code.data_bytes().len() * 8)
+                        .checked_add_signed((offset as isize).saturating_mul(8))
+                        .filter(|pc| *pc <= self.current_code.data_bytes().len().saturating_mul(8))
                         .ok_or(ExceptionKind::MalformedCell)?;
                 }
+            }
+            // Inbound-message access 0x80-0x82. These expose the `message`
+            // the host passed to `Interpreter::new`, so contract code can
+            // inspect what triggered its invocation.
+            0x80 => {
+                // MSGSENDER: () -> (Bytes). 36-byte sender address:
+                // workchain id (i32be) || account id (32 bytes).
+                self.consume_gas(4)?;
+                let sender = self.message.src_address.to_bytes();
+                self.push(StackValue::Bytes(sender.to_vec()))?;
+            }
+            0x81 => {
+                // MSGVALUE: () -> (Integer). Inbound value in nanos,
+                // as a 256-bit big-endian integer.
+                self.consume_gas(4)?;
+                let nanos: u128 = self.message.amount_nanos.into();
+                let mut bytes = [0u8; 32];
+                bytes[16..32].copy_from_slice(&nanos.to_be_bytes());
+                self.push(StackValue::Integer(bytes))?;
+            }
+            0x82 => {
+                // MSGBODY: () -> (Bytes). Raw inbound message body bytes.
+                // Empty when the host did not provide a body: `Message`
+                // only commits to `body_cell_hash`, so the host sets
+                // `interpreter.message_body` from its own payload copy.
+                self.consume_gas(4)?;
+                self.push(StackValue::Bytes(self.message_body.clone()))?;
             }
             _ => return Err(ExceptionKind::MalformedCell),
         }

@@ -38,7 +38,7 @@ The ONX protocol requires an authenticated, deterministic state model governing 
 
 2. **Account State Record (`AccountState`):**
    An active account state consists of:
-   - `balance_nanos`: 128-bit unsigned integer (`uint128`) tracking Onyx currency balance.
+   - `balance_nanos`: 128-bit unsigned integer (`uint128`) tracking Onyxi currency balance.
    - `last_trans_lt`: 64-bit unsigned integer (`uint64`) tracking the logical time of the latest executed transaction.
    - `code_hash`: 256-bit SHA-256 digest (`uint256`) of the contract code cell tree.
    - `data_hash`: 256-bit SHA-256 digest (`uint256`) of the contract storage cell tree.
@@ -63,7 +63,7 @@ The ONX protocol requires an authenticated, deterministic state model governing 
 ## 4. Serialization
 
 ### 4.1 Account State Record Layout
-Active account state record binary layout (`AccountState`):
+Active account state record binary layout (`AccountState`), 141 bytes total:
 ```
 1. state_type     : uint8   (0x01 for Active)
 2. balance_nanos  : uint128 (16 bytes, big-endian)
@@ -72,20 +72,43 @@ Active account state record binary layout (`AccountState`):
 5. data_hash     : uint256 (32 bytes, SHA-256 storage root hash)
 6. cell_count    : uint32  (4 bytes, total cells used)
 7. byte_count    : uint64  (8 bytes, total bytes used)
+8. pubkey        : uint256 (32 bytes, Ed25519 public key authorizing spends;
+                            all-zero = keyless: can receive, never spend)
+9. nonce         : uint64  (8 bytes, big-endian per-account sequence number)
 ```
+The `pubkey`/`nonce` pair is the message-authorization mechanism
+(`ONX_MSG_EXT_V1`, see `docs/adr/0002-message-encoding-and-domain-tags.md`):
+an external message is valid only if its signature verifies against the
+sender's `pubkey`, its `nonce` equals the account's `nonce`, and the
+message binds this chain's ID; successful application bumps the nonce by
+one, which is what makes message replay impossible. Nonces start at 0 for
+genesis accounts. Accounts created by receiving funds derive their
+address from their owner's public key (`ONX_ADDR_V1`,
+`docs/adr/0006-key-derived-addresses.md`), so a new account can receive
+first and spend later by revealing the key that hashes to its address
+(`pubkey` all-zero marks a keyless account that can receive but never
+spend).
 
 ### 4.2 Cell Binary Serialization
 A single Cell binary structure:
 ```
-1. descriptor_bytes : uint16 (byte 0: d1 = ref_count | is_special_flag; byte 1: d2 = data_byte_length)
+1. descriptor_bytes : uint16 (byte 0: d1 = ref_count | (is_special ? 0x08 : 0);
+                              byte 1: d2 = data_byte_length)
 2. data_bytes       : [uint8; d2] (0 to 128 raw payload bytes)
 3. cell_refs        : [uint256; ref_count] (32-byte SHA-256 child cell hashes, 0 to 4 refs)
 ```
+The special flag occupies bit 3 of `d1` (`d1 = ref_count | (special << 3)`);
+bits 0–2 carry the reference count (0–4). `d2` is the exact data length in
+bytes. All trie cells in §4.5 are non-special, so their `d1` equals the
+reference count exactly.
 
 ### 4.3 Domain-Separated Cell Hashing
 Cell representation hash $H(\text{Cell})$ is computed as:
-$$\text{CellHash} = \text{SHA256}(\text{ONX:CELL:HASH:V1} \parallel d_1 \parallel d_2 \parallel \text{data\_bytes} \parallel \text{ref\_hash}_1 \parallel \dots \parallel \text{ref\_hash}_k)$$
-Where `ONX:CELL:HASH:V1` is the 32-byte domain separation tag `ONX_CELL_HASH_V1\x00...` (padded with zeros to 32 bytes).
+$$\text{CellHash} = \text{SHA256}(\text{pad}_{32}(\text{"ONX_CELL_HASH_V1"}) \parallel d_1 \parallel d_2 \parallel \text{data\_bytes} \parallel \text{ref\_hash}_1 \parallel \dots \parallel \text{ref\_hash}_k)$$
+Where $\text{pad}_{32}$ is the ASCII tag `ONX_CELL_HASH_V1` zero-padded to
+32 bytes. The child reference hashes are concatenated in reference order.
+(An earlier draft of this formula wrote the tag as `ONX:CELL:HASH:V1`;
+the implementation and all golden vectors use `ONX_CELL_HASH_V1`.)
 
 ### 4.4 Merkle Proof Structure
 A Merkle proof object for an account state $A$ in shard root $R$:
@@ -95,6 +118,117 @@ A Merkle proof object for an account state $A$ in shard root $R$:
 3. root_hash     : uint256 (32 bytes, shard state_root_hash)
 4. proof_boc     : BoC     (Serialized Bag-of-Cells containing target path & sibling hashes)
 ```
+
+### 4.5 Shard State Trie Node Encoding
+
+The shard state is a binary Merkle-Patricia trie mapping 256-bit account
+IDs to serialized `AccountState` records (§4.1). Every trie node IS a cell
+(§4.2); node hashes are cell hashes (§4.3). There is no separate trie-node
+hash domain — a node is identified solely by its cell hash. (The
+implementation defines an `ONX_TRIE_NODE_V1` constant, but it is unused;
+all node hashing goes through the cell hash.)
+
+**Inputs.** The trie is built from the set of `(key, value)` pairs where
+`key` is the 32-byte account ID and `value` is the canonical
+`AccountState` byte string. Keys are unique. The tree shape is a pure
+function of the key set: input order does not affect the root.
+
+**Construction.** `build_trie(items, bit_depth)`, starting at `bit_depth = 0`:
+
+1. **Empty item set** → a cell with data = ASCII `"EMPTY_SUBTREE"`
+   (13 bytes, `0x454D5054595F53554254524545`), zero references. Its cell
+   hash is the empty-subtree hash. Cells are content-addressed, so every
+   empty subtree in the trie collapses to this single cell.
+
+2. **Exactly one item, or `bit_depth >= 256`** → leaf node:
+   - Split the value into 128-byte chunks (`ceil(len / 128)` chunks; the
+     last chunk may be shorter). Each chunk becomes its own cell
+     (data = chunk bytes, zero references); record the chunk hashes in
+     order.
+   - Leaf cell: data = the 32-byte key, references = the chunk hashes in
+     chunk order.
+   - A cell holds at most 4 references, so a value may be at most
+     $4 \times 128 = 512$ bytes. A larger value fails trie construction
+     fail-closed (no fallback root is ever substituted).
+   - `bit_depth >= 256` with more than one item is unreachable: keys are
+     unique 256-bit IDs, so at depth 256 every partition holds at most
+     one key.
+
+3. **Otherwise** → branch node:
+   - `byte_idx = bit_depth / 8`, `bit_idx = 7 - (bit_depth % 8)`.
+   - Test bit `(key[byte_idx] >> bit_idx) & 1` of each key: bit `0` goes
+     left, bit `1` goes right. (Most-significant bit of key byte 0 is
+     tested first; traversal proceeds MSB-to-LSB, byte by byte.)
+   - Recurse into `build_trie(left, bit_depth + 1)` and
+     `build_trie(right, bit_depth + 1)`.
+   - Branch cell: data = empty (0 bytes), references =
+     `[left_child_hash, right_child_hash]` (left first).
+
+**State root.** `state_root_hash()` is the cell hash of the cell returned
+for the full account set at depth 0. For an empty state, the root is the
+hash of the `"EMPTY_SUBTREE"` cell.
+
+**Descriptor values.** Trie cells are never special, so `d1` (§4.2) equals
+the reference count exactly:
+| Node type     | `d1` (refs) | `d2` (data len) | data         | refs              |
+|---------------|-------------|-----------------|--------------|-------------------|
+| Empty subtree | 0           | 13              | `"EMPTY_SUBTREE"` | —              |
+| Leaf          | 1–4         | 32              | account ID   | value-chunk hashes|
+| Branch        | 2           | 0               | —            | [left, right]     |
+
+**Proof-path walk (verifier's view).** Node types are distinguished
+structurally, never by a type tag:
+- 32-byte data → **leaf**: the data MUST equal the target key, and every
+  referenced value-chunk cell must be present.
+- empty data with exactly 2 references → **branch**: the key bit at the
+  current depth (same `byte_idx`/`bit_idx` rule) selects the child.
+- anything else → malformed; verification fails closed.
+- paths deeper than 256 are rejected.
+
+### 4.6 Transaction Identity and Signature Domains (`ONX_TX_V2`)
+
+> **SUPERSEDED.** The V2 transaction format below was retired with the
+> message-model milestone (PR #5) and replaced by external/internal
+> messages. Do not implement from this section. The current encodings are
+> `ONX_MSG_EXT_V1` / `ONX_MSG_INT_V1`; see
+> `docs/adr/0001-message-based-transaction-model.md`,
+> `docs/adr/0002-message-encoding-and-domain-tags.md`, and the domain-tag
+> registry in `docs/specification/protocol-primitives.md` §4.5. The V2
+> details are preserved here for archaeology (old test vectors, git
+> history).
+
+A V2 transaction's canonical encodings:
+```
+body_bytes (104 bytes, big-endian):
+  from         : uint256 (32 bytes, sender account ID)
+  to           : uint256 (32 bytes, recipient account ID)
+  amount_nanos : uint128 (16 bytes)
+  fee_nanos    : uint128 (16 bytes)
+  nonce        : uint64  (8 bytes, sender's per-account sequence number)
+
+wire encoding (168 bytes): body_bytes || signature (64 bytes, Ed25519)
+```
+
+- **Signature message:** Ed25519 signs
+  `SHA256(pad32("ONX_TX_V2_SIGN") || body_bytes)` — a 136-byte preimage.
+  The signature covers every transaction field except itself.
+- **Transaction identity hash** `Transaction::hash()`:
+  `SHA256(pad32("ONX_TX_V2") || wire_bytes)` — the **full 168-byte wire
+  encoding, signature included**. The identity commits to the
+  authorization itself: two different signatures over the same body are
+  two different transactions and can never share an identity.
+- **Transaction-set commitment** (`txs_root`, committed in the block
+  header): `SHA256(pad32("ONX_TXS_ROOT_V2") || tx_hash_0 || tx_hash_1 ||
+  ...)` over the ordered transaction hashes; the empty body commits to
+  `SHA256(pad32("ONX_TXS_ROOT_V2") || b"")`.
+- **Block header identity**: `SHA256(pad32("ONX_BLOCK_HDR_V1") || header_bytes)`
+  over the 160-byte canonical header encoding (ADR-0032; was 148 bytes
+  before ONXBLK05).
+
+The complete registry of domain separation tags — spine, orphan-crate,
+and retired — is maintained in `docs/specification/protocol-primitives.md`
+§4.5. Code is the authority for tag strings: tags are frozen in golden
+vectors and MUST NOT be renamed.
 
 ---
 
