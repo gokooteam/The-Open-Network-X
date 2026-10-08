@@ -1,0 +1,11 @@
+# actionlint configuration (read automatically by the Workflow Security job).
+paths:
+  .github/workflows/codex-review.yml:
+    ignore:
+      # actionlint's bundled metadata for openai/codex-action@v1 predates the
+      # permission-profile input. The action does accept it: the last run
+      # (actions run 37720472839, action SHA bdf19a4) passed
+      # --permission-profile :workspace to `codex exec` and ran with the
+      # workspace-write sandbox. Dropping the input to satisfy the linter
+      # would change that sandbox.
+      - 'input "permission-profile" is not defined in action "openai/codex-action@v1"'

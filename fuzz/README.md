@@ -24,6 +24,11 @@ cargo +nightly-2026-09-20 fuzz run boc_parser
 cargo +nightly-2026-09-20 fuzz run boc_parser -- -max_total_time=60  # bounded
 ```
 
+`cargo-fuzz` defaults `--target` to the triple it was compiled for. A
+prebuilt musl binary (for example from `cargo binstall`, which is what CI
+gets) therefore builds for musl, where AddressSanitizer cannot link; pass
+`--target x86_64-unknown-linux-gnu` as CI does.
+
 ## CI
 
 `.github/workflows/fuzz.yml` runs every target for 60 seconds, one matrix job
