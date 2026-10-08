@@ -13,5 +13,6 @@ onx-state-model = { path = "../onx-state-model" }
 
 [dev-dependencies]
 hex = "0.4"
+serde_json = "1.0"
 onx-consensus = { path = "../onx-consensus" }
 onx-system-contracts = { path = "../../../contracts/system" }

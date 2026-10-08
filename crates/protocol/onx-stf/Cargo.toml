@@ -16,3 +16,7 @@ onx-execution = { path = "../onx-execution" }
 [[bin]]
 name = "onx-stf-probe"
 path = "src/bin/onx-stf-probe.rs"
+
+[dev-dependencies]
+hex = "0.4"
+serde_json = "1.0"

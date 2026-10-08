@@ -1,6 +1,6 @@
 {
-  "semantics": "DIVMOD (0x14): q = floor(a/b), r = a - q*b; sign(r) == sign(b) or r == 0. b = 0 and MIN/-1 raise IntegerOverflow. Per docs/specification/tvm-instruction-set.md \u00a74.3 and ADR-0030.",
-  "integer_bits": 128,
+  "semantics": "DIVMOD (0x14): q = floor(a/b), r = a - q*b; sign(r) == sign(b) or r == 0. b = 0 and MIN/-1 raise IntegerOverflow. 257-bit Integer model (ADR-0035), MIN = -2^256. Per docs/specification/tvm-instruction-set.md \u00a74.3 and ADR-0030.",
+  "integer_bits": 257,
   "cases": [
     {
       "a": "7",
@@ -33,7 +33,7 @@
       "r": "0"
     },
     {
-      "a": "-170141183460469231731687303715884105728",
+      "a": "-115792089237316195423570985008687907853269984665640564039457584007913129639936",
       "b": "-1",
       "error": "IntegerOverflow"
     },

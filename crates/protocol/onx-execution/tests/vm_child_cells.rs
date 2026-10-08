@@ -6,7 +6,9 @@
 //!    opcodes (`MSGSENDER`, `MSGVALUE`, `MSGBODY`).
 
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
-use onx_execution::{ExceptionKind, ExecutionContext, ExecutionResult, Interpreter, StackValue};
+use onx_execution::{
+    ExceptionKind, ExecutionContext, ExecutionResult, Int257, Interpreter, StackValue,
+};
 use onx_primitives::{Uint128, Uint256, Uint64};
 use onx_state_model::Cell;
 use std::collections::BTreeMap;
@@ -30,6 +32,7 @@ fn dummy_context(gas_limit: u64) -> ExecutionContext {
         start_lt: 100,
         end_lt: 200,
         gas_limit,
+        chain_id: [0x43; 32], // test chain id (ADR-0038)
     }
 }
 
@@ -183,8 +186,16 @@ fn ldref_passes_pruned_child_through_and_only_ctos_raises() {
         Some(StackValue::Cell(c)) => assert_eq!(c, pruned),
         other => panic!("expected the pruned child on top, got {other:?}"),
     }
-    assert_eq!(interp.stack.pop(), Some(StackValue::from_i128(1)));
-    assert_eq!(interp.stack.pop(), Some(StackValue::Integer(pruned.hash())));
+    assert_eq!(
+        interp.stack.pop(),
+        Some(StackValue::Integer(Int257::from_u64(1)))
+    );
+    assert_eq!(
+        interp.stack.pop(),
+        Some(StackValue::Integer(Int257::from_unsigned256(
+            &pruned.hash()
+        )))
+    );
 
     // Dereferencing the same pruned cell's content is what raises.
     let code = Cell::new(vec![0x45, 0x72], vec![]).unwrap(); // CTOS, RET
@@ -231,9 +242,7 @@ fn message_opcodes_expose_sender_value_and_body() {
     }
     match interp.stack.pop() {
         Some(StackValue::Integer(b)) => {
-            let mut expected = [0u8; 32];
-            expected[16..32].copy_from_slice(&12345u128.to_be_bytes());
-            assert_eq!(b, expected);
+            assert_eq!(b, Int257::from_u128(12345));
         }
         other => panic!("expected MSGVALUE integer, got {other:?}"),
     }

@@ -43,12 +43,33 @@ impl DomainTag {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Derives the chain-bound tag for this base tag: the tag bytes are
+    /// `SHA256(pad32(base) || chain_id)`.
+    ///
+    /// A signature verified under the derived tag commits to the chain
+    /// whose genesis hash produced `chain_id`: the same key signing the
+    /// same message on another chain yields a different tag, so the
+    /// signature cannot verify there. The base tag itself is never used
+    /// raw for verification — using it raw would unbind the chain.
+    ///
+    /// Collision note: the derived tag is a SHA-256 digest, not a
+    /// zero-padded ASCII string, so it cannot collide with a registered
+    /// ASCII tag except with negligible probability.
+    pub fn bind_chain(&self, chain_id: &[u8; 32]) -> DomainTag {
+        let mut hasher = Sha256::new();
+        hasher.update(self.as_bytes());
+        hasher.update(chain_id);
+        DomainTag(hasher.finalize().into())
+    }
 }
 
 /// `ONX:BLOCK:HEADER:V1` domain tag (§4.5).
 pub const BLOCK_HEADER_V1: DomainTag = DomainTag::from_ascii("ONX_BLK_HDR_V1");
-/// `ONX:TX:BODY:V1` domain tag (§4.5).
-pub const TX_BODY_V1: DomainTag = DomainTag::from_ascii("ONX_TX_BODY_V1");
+/// `ONX:CHKSIGNU:V1` base domain tag (§4.5, ADR-0038). Never used raw:
+/// `CHKSIGNU` verification always uses `CHKSIGNU_V1.bind_chain(chain_id)`,
+/// so a contract signature commits to the chain it was produced for.
+pub const CHKSIGNU_V1: DomainTag = DomainTag::from_ascii("ONX_CHKSIGNU_V1");
 /// `ONX:VALIDATOR:SIGN:V1` domain tag (§4.5).
 pub const VALIDATOR_SIGN_V1: DomainTag = DomainTag::from_ascii("ONX_VALIDATOR_SIGN_V1");
 

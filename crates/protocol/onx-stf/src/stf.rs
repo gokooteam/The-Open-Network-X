@@ -30,7 +30,7 @@ use crate::error::StfError;
 use crate::message::{derive_address, ExternalMessage, InternalMessage, MsgKind};
 use crate::state::State;
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
-use onx_execution::{ExecutionContext, ExecutionResult, Interpreter, StackValue};
+use onx_execution::{ExceptionKind, ExecutionContext, ExecutionResult, Interpreter, StackValue};
 use onx_primitives::{domain_hash, DomainTag, PublicKey};
 use onx_state_model::{
     AccountState, BagOfCells, Cell, ContractCellDags, ShardStateTree, StorageStat,
@@ -44,6 +44,46 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 /// the wallet handler otherwise); a zero gas limit inside the VM bounces
 /// the delivery.
 pub const GAS_PER_NANO: u64 = 1_000;
+
+/// Maximum gas any single message execution may consume (ADR-0034).
+/// The VM gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)`.
+/// Consensus rule: all nodes derive the identical limit from the same fee.
+pub const MAX_GAS_PER_MESSAGE: u64 = 10_000_000;
+
+/// Maximum total gas across all message deliveries in one block (ADR-0034).
+/// `apply_messages` fails closed with `StfError::BlockGasExceeded` when the
+/// running total would exceed this. Consensus rule: a block is valid iff the
+/// sum of per-delivery `gas_used` is `<= MAX_GAS_PER_BLOCK`.
+pub const MAX_GAS_PER_BLOCK: u64 = 100_000_000;
+
+/// Compute the VM gas limit for a message's contract execution (ADR-0034).
+/// The fee buys gas at `GAS_PER_NANO`, saturating at `u64::MAX`, then the
+/// per-message cap `MAX_GAS_PER_MESSAGE` clamps it. Pure function of the
+/// fee — all nodes derive the identical limit.
+fn message_gas_limit(fee_nanos: u128) -> u64 {
+    (fee_nanos
+        .saturating_mul(GAS_PER_NANO as u128)
+        .min(u64::MAX as u128) as u64)
+        .min(MAX_GAS_PER_MESSAGE)
+}
+
+/// Accumulate one delivery's gas into the block total (ADR-0034).
+/// Returns the new total, or `BlockGasExceeded` if it would pass
+/// `MAX_GAS_PER_BLOCK`. Pure function — the consensus rule in one place.
+fn accumulate_block_gas(current_total: u64, additional: u64) -> Result<u64, StfError> {
+    // `saturating_add`: the true total is bounded by
+    // max_deliveries * MAX_GAS_PER_MESSAGE << u64::MAX, so saturation only
+    // triggers on a corrupted receipt — and a saturated total is still
+    // correctly > cap. The reported `used` stays exact in all reachable cases.
+    let new_total = current_total.saturating_add(additional);
+    if new_total > MAX_GAS_PER_BLOCK {
+        return Err(StfError::BlockGasExceeded {
+            used: new_total,
+            cap: MAX_GAS_PER_BLOCK,
+        });
+    }
+    Ok(new_total)
+}
 
 /// Domain tag for the flat hash of a contract call's inbound payload
 /// bytes, carried as the VM message's `body_cell_hash`. The interpreter
@@ -71,7 +111,17 @@ pub struct DeliveryReceipt {
     /// True when the message could not be processed and was bounced
     /// (value returned to `src` minus fees, as a new internal message).
     pub bounced: bool,
-    /// TVM gas consumed; 0 for plain value deliveries and for bounces.
+    /// True when the delivery failed *fatally* (ADR-0037): the message's
+    /// gas budget was exhausted (`ExceptionKind::OutOfGas`), so the value
+    /// is NOT returned — it is credited to the destination like a plain
+    /// transfer, with no contract data update and no bounce queued.
+    /// Invariant: at most one of `bounced` / `fatal` is true; both false
+    /// means the delivery was processed.
+    pub fatal: bool,
+    /// TVM gas consumed; 0 for plain value deliveries. Bounce and fatal
+    /// receipts report the gas the VM burned before failing (ADR-0037) —
+    /// the ADR-0034 block cap must see executed work even when the
+    /// delivery's state effects reverted.
     pub gas_used: u64,
 }
 
@@ -282,6 +332,11 @@ fn apply_messages(
     let mut processed: BTreeSet<[u8; 32]> = BTreeSet::new();
     let max_deliveries = externals.len().saturating_mul(MAX_DELIVERIES_PER_EXTERNAL);
     let mut done = 0usize;
+    // ADR-0034: per-block gas cap. Running total of per-delivery `gas_used`;
+    // the block is invalid (fail-closed) if the total would exceed
+    // MAX_GAS_PER_BLOCK. Checked incrementally so we fail fast, but the rule
+    // is on the total: sum(gas_used) <= MAX_GAS_PER_BLOCK.
+    let mut block_gas_used: u64 = 0;
     while let Some((msg, idx)) = queue.pop_front() {
         // Bounded by the `TooManyDeliveries` check below: `done` never gets
         // near `usize::MAX`; saturation unreachable.
@@ -291,7 +346,17 @@ fn apply_messages(
                 max: max_deliveries,
             });
         }
-        let receipt = deliver(tree, msg, lt, workchain, &mut queue, idx, &mut processed)?;
+        let receipt = deliver(
+            tree,
+            msg,
+            lt,
+            workchain,
+            chain_id,
+            &mut queue,
+            idx,
+            &mut processed,
+        )?;
+        block_gas_used = accumulate_block_gas(block_gas_used, receipt.gas_used)?;
         applied[idx].deliveries.push(receipt);
     }
     Ok(applied)
@@ -509,7 +574,9 @@ fn wallet_receive(
 /// Then the destination decides:
 /// - `Active` + empty payload → plain value credit.
 /// - `Active` + payload + code → TVM execution (gas from the message fee);
-///   success credits value and updates contract data, failure bounces.
+///   success credits value and updates contract data, a non-fatal failure
+///   bounces, gas exhaustion is fatal (ADR-0037: value credited to the
+///   destination, no bounce).
 /// - `Active` + payload + no code → bounce.
 /// - `Uninitialized` + empty payload → create a keyless `Active` account.
 /// - `Uninitialized` + payload → bounce (calls never create accounts).
@@ -525,11 +592,13 @@ fn wallet_receive(
 ///
 /// The delivery's own effects are revert-by-construction: the VM runs pure
 /// before any write, and a bounced delivery writes nothing at all.
+#[allow(clippy::too_many_arguments)]
 fn deliver(
     tree: &mut ShardStateTree,
     msg: InternalMessage,
     lt: u64,
     workchain: i32,
+    chain_id: &[u8; 32],
     queue: &mut VecDeque<(InternalMessage, usize)>,
     ext_idx: usize,
     processed: &mut BTreeSet<[u8; 32]>,
@@ -544,6 +613,7 @@ fn deliver(
         dest: msg.dest,
         value_nanos: msg.value_nanos,
         bounced: false,
+        fatal: false,
         gas_used: 0,
     };
 
@@ -552,11 +622,12 @@ fn deliver(
         .cloned()
         .unwrap_or(AccountState::Uninitialized);
 
-    // Decide process vs bounce. The VM runs pure here (no tree mutation);
-    // its output is applied only on the process path below.
+    // Decide process vs bounce vs fatal. The VM runs pure here (no tree
+    // mutation); its output is applied only on the process/fatal paths below.
     let mut gas_used = 0u64;
     let mut new_data: Option<Cell> = None;
     let mut must_bounce = false;
+    let mut is_fatal = false;
     match &dest_state {
         AccountState::Frozen { .. } | AccountState::Destroyed => must_bounce = true,
         AccountState::Uninitialized if !msg.payload.is_empty() => must_bounce = true,
@@ -576,15 +647,37 @@ fn deliver(
                 workchain,
                 msg.dest,
                 tree.contract_cells_mut(),
+                chain_id,
             ) {
-                Some(out) => {
+                ExecOutcome::Success(out) => {
                     gas_used = out.gas_used;
                     new_data = Some(out.new_data);
                 }
-                None => must_bounce = true,
+                ExecOutcome::Bounce { gas } => {
+                    gas_used = gas;
+                    must_bounce = true;
+                }
+                ExecOutcome::Fatal { gas } => {
+                    gas_used = gas;
+                    is_fatal = true;
+                }
             }
         }
         _ => {}
+    }
+
+    if is_fatal {
+        // ADR-0037: the message exhausted its gas budget. The value is NOT
+        // returned — it is credited to the destination like a plain
+        // transfer (no data update, no bounce queued). A bounce message
+        // carries an empty payload and can never reach this arm, so there
+        // is no bounce-of-bounce case here.
+        debug_assert!(!must_bounce, "fatal and bounce are mutually exclusive");
+        check_lt(&dest_state, lt, msg.dest)?;
+        credit_account(tree, msg.dest, &dest_state, msg.value_nanos, lt)?;
+        receipt.fatal = true;
+        receipt.gas_used = gas_used;
+        return Ok(receipt);
     }
 
     if must_bounce {
@@ -603,6 +696,7 @@ fn deliver(
         };
         queue.push_back((bounced, ext_idx));
         receipt.bounced = true;
+        receipt.gas_used = gas_used;
         return Ok(receipt);
     }
 
@@ -674,6 +768,7 @@ fn credit_account(
             StorageStat {
                 cell_count: 0,
                 byte_count: 0,
+                bit_count: 0,
             },
             [0u8; 32],
             0,
@@ -700,19 +795,59 @@ fn credit_account(
 
 /// Output of a successful contract execution: the contract's new
 /// persistent data cell and the gas consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ContractExecOutput {
     new_data: Cell,
     gas_used: u64,
 }
 
+/// What a contract execution attempt means for the delivery (ADR-0037).
+///
+/// - `Success`: apply the value credit and the data update.
+/// - `Bounce`: queue a bounce message returning the value to the sender.
+/// - `Fatal`: credit the value to the destination (no data update, no
+///   bounce) — the message exhausted its gas budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecOutcome {
+    Success(ContractExecOutput),
+    Bounce { gas: u64 },
+    Fatal { gas: u64 },
+}
+
+/// The ADR-0037 fatal-vs-bounce taxonomy, as a pure predicate over the
+/// closed `ExceptionKind` set. Only `OutOfGas` is fatal: the network spent
+/// the full paid budget, so returning the value would price griefing at
+/// the fee alone. Every other kind — whether raised by the VM or
+/// deliberately by the contract via `THROW` (0x77 maps onto the original
+/// four kinds; `CallStackOverflow` is VM-raised only, ADR-0039) — bounces:
+/// an early, cheap failure or a deliberate rejection, and the sender is
+/// refunded.
+///
+/// `reference/vectors/fatal_bounce.json` pins this table; the agreement
+/// test asserts it covers the closed set exhaustively.
+///
+/// The match is explicit (no wildcard): adding a new `ExceptionKind`
+/// fails compilation here until its outcome is decided.
+pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
+    match kind {
+        ExceptionKind::OutOfGas => true,
+        ExceptionKind::IntegerOverflow
+        | ExceptionKind::AbsentNode
+        | ExceptionKind::MalformedCell
+        | ExceptionKind::TypeMismatch
+        | ExceptionKind::CallStackOverflow => false,
+    }
+}
+
 /// Execute a contract call against the recipient's code and data.
 ///
 /// Pure: reads only the already-fetched code/data and the tree's persisted
-/// contract cell DAGs, never touches the tree's accounts. Returns `None`
-/// when the delivery must bounce: a TVM exception (including out-of-gas)
-/// or an out-message egress attempt (deliberately unwired this milestone —
-/// the message would otherwise be silently dropped, so the value bounces
-/// instead).
+/// contract cell DAGs, never touches the tree's accounts. Returns the
+/// ADR-0037 delivery outcome: `Success` on clean execution with no
+/// out-messages; `Bounce` on a non-fatal TVM exception or an out-message
+/// egress attempt (deliberately unwired this milestone — the message would
+/// otherwise be silently dropped, so the value bounces instead); `Fatal`
+/// when the execution exhausted its gas budget (`OutOfGas`).
 ///
 /// Calling convention (documented, deterministic):
 /// - The contract's persistent data cell is pushed on the operand stack at
@@ -728,7 +863,8 @@ struct ContractExecOutput {
 ///   interpreter's data is the contract's new state.
 /// - `ExecutionContext.gen_utime` is derived from the block lt — the VM
 ///   never sees wall-clock time.
-/// - Gas limit is `fee_nanos * GAS_PER_NANO` (saturating at `u64::MAX`).
+/// - Gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)`
+///   (ADR-0034; saturating at `u64::MAX` before the cap).
 #[allow(clippy::too_many_arguments)]
 fn try_execute_contract(
     code: &Cell,
@@ -738,15 +874,16 @@ fn try_execute_contract(
     workchain: i32,
     account_id: AccountId,
     contract_cells: &mut BTreeMap<AccountId, ContractCellDags>,
-) -> Option<ContractExecOutput> {
+    chain_id: &[u8; 32],
+) -> ExecOutcome {
     let data_cell = data
         .cloned()
         .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"));
 
-    let gas_limit = msg
-        .fee_nanos
-        .saturating_mul(GAS_PER_NANO as u128)
-        .min(u64::MAX as u128) as u64;
+    // ADR-0034: per-message gas cap. The fee still buys gas at
+    // GAS_PER_NANO, but no single message may exceed MAX_GAS_PER_MESSAGE.
+    // (Fee mechanics unchanged: the full fee_nanos is debited regardless.)
+    let gas_limit = message_gas_limit(msg.fee_nanos);
     // gen_utime is NOT wall-clock: it is the block's logical time,
     // saturated into u32. Feeding real time here would break determinism.
     let context = ExecutionContext {
@@ -754,6 +891,10 @@ fn try_execute_contract(
         start_lt: lt,
         end_lt: lt,
         gas_limit,
+        // ADR-0038: the VM's chain identity comes from state, never from
+        // the message or local config — CHKSIGNU's chain-bound tag is only
+        // as trustworthy as this value.
+        chain_id: *chain_id,
     };
     let message = inbound_message(msg, lt, workchain);
 
@@ -783,8 +924,17 @@ fn try_execute_contract(
                 // hashes) as Bags-of-Cells, collected by reachability from
                 // the roots through the drained store.
                 let drained = std::mem::take(&mut interp.cell_store);
-                let code_boc = dag_boc(&drained, code.hash())?;
-                let data_boc = dag_boc(&drained, new_data.hash())?;
+                // A missing DAG root is an internal invariant violation
+                // (the root was just seeded or materialized). Fail safe:
+                // bounce the delivery rather than applying a half-built
+                // state — same as the old `None` path.
+                let (code_boc, data_boc) = match (
+                    dag_boc(&drained, code.hash()),
+                    dag_boc(&drained, new_data.hash()),
+                ) {
+                    (Some(c), Some(d)) => (c, d),
+                    _ => return ExecOutcome::Bounce { gas: gas_used },
+                };
                 contract_cells.insert(
                     account_id,
                     ContractCellDags {
@@ -792,12 +942,18 @@ fn try_execute_contract(
                         data: data_boc,
                     },
                 );
-                Some(ContractExecOutput { new_data, gas_used })
+                ExecOutcome::Success(ContractExecOutput { new_data, gas_used })
             } else {
-                None
+                ExecOutcome::Bounce { gas: gas_used }
             }
         }
-        ExecutionResult::Exception { .. } => None,
+        ExecutionResult::Exception { kind, gas_used } => {
+            if is_fatal_exception(&kind) {
+                ExecOutcome::Fatal { gas: gas_used }
+            } else {
+                ExecOutcome::Bounce { gas: gas_used }
+            }
+        }
     }
 }
 
@@ -887,20 +1043,26 @@ fn update_contract_data(
     }
 }
 
-/// Storage accounting for embedded contract cells: counts the cells and
-/// their canonical byte sizes. Deterministic; recomputed whenever code or
-/// data changes.
+/// Storage accounting for embedded contract cells: counts the cells, their
+/// canonical byte sizes, and their precise bit lengths (ADR-0037; bit
+/// granularity matters after ADR-0036). Deterministic; recomputed whenever
+/// code or data changes. This is the single writer of `StorageStat` on the
+/// state-transition path — `AccountState::from_bytes` derives the same
+/// `bit_count` from the decoded cells, so the two always agree.
 fn storage_stat_for(code: Option<&Cell>, data: Option<&Cell>) -> StorageStat {
     let mut cell_count = 0u32;
     let mut byte_count = 0u64;
+    let mut bit_count = 0u64;
     for cell in [code, data].into_iter().flatten() {
         // At most two cells, each a few hundred bytes: saturation unreachable.
         cell_count = cell_count.saturating_add(1);
         byte_count = byte_count.saturating_add(cell.to_bytes().len() as u64);
+        bit_count = bit_count.saturating_add(cell.bit_len() as u64);
     }
     StorageStat {
         cell_count,
         byte_count,
+        bit_count,
     }
 }
 
@@ -938,6 +1100,7 @@ mod tests {
                     storage_stat: StorageStat {
                         cell_count: 0,
                         byte_count: 0,
+                        bit_count: 0,
                     },
                     pubkey,
                     nonce: 0,
@@ -987,6 +1150,7 @@ mod tests {
             internal.clone(),
             1,
             0,
+            &state.chain_id,
             &mut queue,
             0,
             &mut processed,
@@ -1000,7 +1164,17 @@ mod tests {
         );
         // Redelivery of the same internal message is rejected — no double
         // delivery, no double spend.
-        let err = deliver(&mut tree, internal, 1, 0, &mut queue, 0, &mut processed).unwrap_err();
+        let err = deliver(
+            &mut tree,
+            internal,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap_err();
         assert!(
             matches!(err, StfError::DoubleDelivery { .. }),
             "expected DoubleDelivery, got {err:?}"
@@ -1047,7 +1221,17 @@ mod tests {
         let mut queue = VecDeque::new();
         let mut processed = BTreeSet::new();
         // Delivery to the frozen account bounces.
-        let receipt = deliver(&mut tree, internal, 1, 0, &mut queue, 0, &mut processed).unwrap();
+        let receipt = deliver(
+            &mut tree,
+            internal,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap();
         assert!(receipt.bounced);
         assert_eq!(queue.len(), 1, "bounce queued");
         // The bounce delivers value back to the sender.
@@ -1055,7 +1239,17 @@ mod tests {
         assert!(bounced.is_bounce);
         assert_eq!(bounced.dest, sender);
         assert_eq!(bounced.value_nanos, 1_000);
-        let receipt2 = deliver(&mut tree, bounced, 1, 0, &mut queue, 0, &mut processed).unwrap();
+        let receipt2 = deliver(
+            &mut tree,
+            bounced,
+            1,
+            0,
+            &state.chain_id,
+            &mut queue,
+            0,
+            &mut processed,
+        )
+        .unwrap();
         assert!(!receipt2.bounced);
         // Sender: 10_000_000 - 1_000 (value) - 100 (fee) + 1_000 (bounce) = 9_999_900.
         // Fee split: 100 -> 50 burned, 50 to collector.
@@ -1080,5 +1274,151 @@ mod tests {
             ),
             "expected UnsupportedProtocolVersion, got: {err:?}"
         );
+    }
+
+    // ADR-0034 gas caps.
+
+    #[test]
+    fn gas_cap_constants_are_as_specified() {
+        assert_eq!(MAX_GAS_PER_MESSAGE, 10_000_000);
+        assert_eq!(MAX_GAS_PER_BLOCK, 100_000_000);
+        // Block cap is an exact multiple of the message cap (10 max-gas
+        // messages fit in a block).
+        assert_eq!(MAX_GAS_PER_BLOCK, MAX_GAS_PER_MESSAGE * 10);
+    }
+
+    #[test]
+    fn message_gas_limit_clamps_at_per_message_cap() {
+        // Below the cap: fee * GAS_PER_NANO passes through.
+        assert_eq!(message_gas_limit(0), 0);
+        assert_eq!(message_gas_limit(1), GAS_PER_NANO);
+        assert_eq!(message_gas_limit(5_000), 5_000 * GAS_PER_NANO);
+        // At the cap boundary: 10_000 nanos * 1_000 = 10_000_000 = cap.
+        assert_eq!(message_gas_limit(10_000), MAX_GAS_PER_MESSAGE);
+        // Above the cap: clamped.
+        assert_eq!(message_gas_limit(10_001), MAX_GAS_PER_MESSAGE);
+        assert_eq!(message_gas_limit(100_000), MAX_GAS_PER_MESSAGE);
+        assert_eq!(message_gas_limit(1_000_000_000), MAX_GAS_PER_MESSAGE);
+        // Saturation: u128::MAX fee saturates the multiply, then clamps.
+        assert_eq!(message_gas_limit(u128::MAX), MAX_GAS_PER_MESSAGE);
+    }
+
+    #[test]
+    fn accumulate_block_gas_accepts_up_to_cap() {
+        // Empty block: zero gas is fine.
+        assert_eq!(accumulate_block_gas(0, 0).unwrap(), 0);
+        // Normal accumulation.
+        assert_eq!(accumulate_block_gas(0, 1_000).unwrap(), 1_000);
+        assert_eq!(accumulate_block_gas(1_000, 2_000).unwrap(), 3_000);
+        // Exactly at the cap: valid.
+        assert_eq!(
+            accumulate_block_gas(MAX_GAS_PER_BLOCK - 1, 1).unwrap(),
+            MAX_GAS_PER_BLOCK
+        );
+        assert_eq!(
+            accumulate_block_gas(MAX_GAS_PER_BLOCK, 0).unwrap(),
+            MAX_GAS_PER_BLOCK
+        );
+    }
+
+    #[test]
+    fn accumulate_block_gas_rejects_over_cap() {
+        // One unit over the cap: invalid.
+        let err = accumulate_block_gas(MAX_GAS_PER_BLOCK, 1).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StfError::BlockGasExceeded { used, cap }
+                if used == MAX_GAS_PER_BLOCK + 1 && cap == MAX_GAS_PER_BLOCK
+            ),
+            "expected BlockGasExceeded, got: {err:?}"
+        );
+        // Large overshoot.
+        let err = accumulate_block_gas(0, MAX_GAS_PER_BLOCK + 1).unwrap_err();
+        assert!(
+            matches!(err, StfError::BlockGasExceeded { .. }),
+            "expected BlockGasExceeded, got: {err:?}"
+        );
+        // Saturation path: u64::MAX total is still > cap, still rejected.
+        let err = accumulate_block_gas(u64::MAX, u64::MAX).unwrap_err();
+        assert!(
+            matches!(err, StfError::BlockGasExceeded { .. }),
+            "expected BlockGasExceeded on saturation, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn block_gas_error_displays() {
+        let err = StfError::BlockGasExceeded {
+            used: 101,
+            cap: 100,
+        };
+        let s = format!("{err}");
+        assert!(s.contains("101"), "display should name used: {s}");
+        assert!(s.contains("100"), "display should name cap: {s}");
+    }
+
+    #[test]
+    fn storage_stat_for_agrees_with_python() {
+        // ADR-0037: storage_stat_for must agree with the independent Python
+        // reference (reference/gen_storage_vectors.py,
+        // reference/vectors/storage_stat.json), generated from the spec
+        // text. Fixtures are rebuilt via Cell::new_with_bit_len from the
+        // recorded (data_hex, bit_len, refs_hex) inputs.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../reference/vectors/storage_stat.json"
+        );
+        let text = std::fs::read_to_string(path).expect("storage_stat.json must exist");
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("storage_stat.json must parse");
+        assert_eq!(v["adr"].as_str(), Some("ADR-0037"));
+        for case in v["cases"].as_array().expect("cases array") {
+            let name = case["name"].as_str().expect("name");
+            let mut cells: Vec<Cell> = Vec::new();
+            for fc in case["cells"].as_array().expect("cells array") {
+                let data =
+                    hex::decode(fc["data_hex"].as_str().expect("data_hex")).expect("valid hex");
+                let bit_len = fc["bit_len"].as_u64().expect("bit_len") as usize;
+                let refs: Vec<[u8; 32]> = fc["refs_hex"]
+                    .as_array()
+                    .expect("refs_hex")
+                    .iter()
+                    .map(|r| {
+                        let b = hex::decode(r.as_str().expect("hex")).expect("valid hex");
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&b);
+                        arr
+                    })
+                    .collect();
+                cells.push(
+                    Cell::new_with_bit_len(data, bit_len, refs)
+                        .unwrap_or_else(|e| panic!("fixture {name} rebuild failed: {e:?}")),
+                );
+            }
+            let (code, data) = match cells.as_slice() {
+                [] => (None, None),
+                [c] => (Some(c), None),
+                [c, d] => (Some(c), Some(d)),
+                _ => panic!("fixture {name} has more than 2 cells"),
+            };
+            let stat = storage_stat_for(code, data);
+            let exp = &case["stat"];
+            assert_eq!(
+                stat.cell_count,
+                exp["cell_count"].as_u64().expect("cell_count") as u32,
+                "{name}: cell_count"
+            );
+            assert_eq!(
+                stat.byte_count,
+                exp["byte_count"].as_u64().expect("byte_count"),
+                "{name}: byte_count"
+            );
+            assert_eq!(
+                stat.bit_count,
+                exp["bit_count"].as_u64().expect("bit_count"),
+                "{name}: bit_count"
+            );
+        }
     }
 }

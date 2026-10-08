@@ -100,9 +100,10 @@ fn rejects_unsorted_cells() {
 
 #[test]
 fn rejects_unused_descriptor_bits() {
-    // d1 carries ref_count in bits 0-2 and the special flag in bit 3.
-    // Bits 4-7 are reserved; the encoder never sets them.
-    for reserved in [0x10u8, 0x20, 0x40, 0x80] {
+    // d1 carries ref_count in bits 0-2, the special flag in bit 3, and the
+    // bit-granular flag in bit 4 (ADR-0036). Bits 5-7 are reserved; the
+    // encoder never sets them.
+    for reserved in [0x20u8, 0x40, 0x80] {
         let cell = Cell::new(vec![0xAA], vec![]).unwrap();
         let mut cell_bytes = cell.to_bytes();
         cell_bytes[0] |= reserved; // d1 is the high byte of the descriptor
@@ -117,6 +118,24 @@ fn rejects_unused_descriptor_bits() {
             reserved
         );
     }
+}
+
+#[test]
+fn accepts_bit_granular_flag_in_boc() {
+    // ADR-0036: d1 bit 4 is the valid bit-granular flag, not a reserved bit.
+    // A properly-tagged flagged cell round-trips through the strict BoC
+    // decoder with its hash intact.
+    let cell = Cell::new_with_bit_len(vec![0xA0], 3, vec![]).unwrap();
+    assert!(cell.is_bit_granular());
+    let hash = cell.hash();
+    let bytes = cell.to_bytes();
+    assert_eq!(bytes[0] & 0x10, 0x10, "flag bit set in d1");
+    let good = encode_raw(&hash, &[(hash, bytes)]);
+    let (boc, _) = BagOfCells::from_bytes(&good).expect("flagged cell is canonical");
+    let back = boc.get_cell(&hash).expect("cell present");
+    assert_eq!(back, &cell);
+    assert!(back.is_bit_granular());
+    assert_eq!(back.bit_len(), 3);
 }
 
 #[test]

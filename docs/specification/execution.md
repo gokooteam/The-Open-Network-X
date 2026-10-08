@@ -46,7 +46,7 @@ execute(code: Cell, data: Cell, message: Message, context: ExecutionContext)
 ```
 
 - `code` and `data` are cell trees per `state-model.md` §3.3–§4.2 (the Bag-of-Cells model), not a host-language object graph.
-- `ExecutionContext` is limited to protocol-committed values already fixed by the block being produced or validated — at minimum the block's `gen_utime` and logical-time window (`start_lt`/`end_lt`, per `data-structures.md` §4.4) — and explicitly excludes wall-clock reads, local configuration, network state, or any other source of nondeterminism (`INSTRUCTIONS.md` §10).
+- `ExecutionContext` is limited to protocol-committed values already fixed by the block being produced or validated — at minimum the block's `gen_utime` and logical-time window (`start_lt`/`end_lt`, per `data-structures.md` §4.4), the chain's `chain_id` (the genesis hash; required for chain-bound signature verification — ADR-0038), and explicitly excludes wall-clock reads, local configuration, network state, or any other source of nondeterminism (`INSTRUCTIONS.md` §10).
 - `out_messages` are constructed per `transactions.md`'s `Message` structure; this document does not redefine message admission, only that execution is what *produces* the messages transactions.md then governs delivery of.
 - Execution is atomic: on `Exception`, `data` is unchanged from its pre-execution value (no partial state mutation is observable), matching typical protocol expectations for transaction rollback; only `gas_used` (and therefore fee deduction, per `transactions.md`) is retained from a failed execution.
 
@@ -66,13 +66,19 @@ Workchains other than the basic workchain may adopt a different VM entirely (`WH
 
 - Every operation category in §3.3 has an associated deterministic gas cost; the cost function itself (concrete per-operation prices) is deferred to the same future "TVM Instruction Set" artifact as the opcode encoding (§3.1), since pricing is meaningless without a concrete instruction set to price. This document requires only that such a function exist, be identical across independent nodes, and be evaluated exactly once per operation actually executed (no separate "estimation pass" that could diverge from actual execution).
 - A fixed, per-execution gas limit is provided by the caller (populated from message/account fee data per `transactions.md`); exceeding it raises `ExceptionKind::OutOfGas` at the exact operation that would exceed it, not before or after.
+- **Protocol gas caps (ADR-0034, Wave 4):** two consensus constants bound execution at the message and block level:
+  - `MAX_GAS_PER_MESSAGE = 10_000_000`: the per-execution gas limit is `min(fee_nanos * GAS_PER_NANO, MAX_GAS_PER_MESSAGE)` (`GAS_PER_NANO = 1_000`; the multiply saturates at `u64::MAX` before the clamp). The fee itself is still debited in full — only the execution budget is clamped. All nodes derive the identical limit from the same fee.
+  - `MAX_GAS_PER_BLOCK = 100_000_000`: the sum of per-delivery `gas_used` over all messages in a block must not exceed this; a block whose total would exceed it is invalid (fail-closed). The producer's `propose_block` enforces the same rule on its dry-run, so it cannot construct an over-cap block.
+  - Rationale: bounds single-message and total block execution time; the per-message cap is the prerequisite for `code_refs` (which would otherwise add unbounded memory via call-stack growth).
 - Exception kinds (closed set; a conforming implementation must not raise any exception outside this list without an ONX specification amendment):
   - `OutOfGas` — the gas limit was reached.
   - `IntegerOverflow` — an unsigned/signed arithmetic or conversion result did not fit its declared width (§3.3, rule 2–3).
-  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell, or that does not resolve to any cell the executing node holds (`tvm-instruction-set.md` §3.5.3).
+  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell, or that does not resolve to any cell the executing node holds (`tvm-instruction-set.md` §3.5.3); also raised when a code cell's child reference cannot be resolved into `code_refs` (ADR-0039).
   - `MalformedCell` — a cell violates `state-model.md` §5's structural rules (e.g. data/reference-count limits) when accessed as a typed value.
   - `TypeMismatch` — code accessed a cell's contents as an algebraic-type shape its tag/descriptor does not support.
-- All five exception kinds have the same effect on state per §3.2: atomic rollback of `data`, retention of `gas_used`.
+  - `CallStackOverflow` — a `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` was taken while the call stack already held `MAX_CALL_STACK_DEPTH = 256` frames (ADR-0039, Wave 4).
+- All six exception kinds have the same effect on *state* per §3.2: atomic rollback of `data`, retention of `gas_used`. Their effect on the *delivery* differs — see the fatal-vs-bounce taxonomy below (ADR-0037, extended by ADR-0039).
+- **Fatal-vs-bounce taxonomy (ADR-0037, Wave 4):** a contract-execution failure is **fatal** iff the message's gas budget was exhausted (`OutOfGas`); it **bounces** otherwise (`IntegerOverflow`, `AbsentNode`, `MalformedCell`, `TypeMismatch`, `CallStackOverflow` — the last is VM-raised only; `THROW`'s operand domain is unchanged at 0–3, so a contract cannot deliberately raise it). Fatal mechanics: the delivery's value is credited to the destination like a plain transfer (no data update, no bounce queued); a fatal delivery is still a valid delivery and does not invalidate the block. Rationale: returning the value after the network spent the full paid budget prices griefing at the fee alone. Bounce and fatal receipts both report the gas the VM actually burned, so the per-block gas cap accounts for executed work even when state effects revert.
 
 ### 3.5 Decision: reserve a Merkle-proof VM primitive now (accept)
 
@@ -105,6 +111,7 @@ An execution implementation MUST raise the corresponding exception (§3.4), neve
 3. **Pruned-branch access:** an operation dereferences a cell reference resolving to a special cell reserved for pruned-branch use (§3.5) as though it were a fully present cell (`AbsentNode`).
 4. **Structural cell violation:** a cell's data length exceeds 128 bytes or reference count exceeds 4 (per `state-model.md` §5) when accessed during execution (`MalformedCell`).
 5. **Shape violation:** code accesses a cell's contents under an algebraic-type interpretation inconsistent with its actual tag/descriptor (`TypeMismatch`).
+6. **Call-stack overflow:** a taken `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` with the call stack already holding `MAX_CALL_STACK_DEPTH = 256` frames (`CallStackOverflow`; ADR-0039).
 
 In every case, per §3.2, `data` must remain exactly as it was before execution began, and only `gas_used` up to the point of the exception is retained.
 

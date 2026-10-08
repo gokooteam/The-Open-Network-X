@@ -125,6 +125,10 @@ pub enum StfError {
     /// receive the validator fee share. A protocol configuration fault —
     /// the block fails closed.
     FeeCollectorNotReceivable(AccountId),
+    /// Cumulative block gas would exceed `MAX_GAS_PER_BLOCK` (ADR-0034).
+    /// The block is invalid; the producer must select fewer or smaller
+    /// messages. `used` is the running total at the point of exceedance.
+    BlockGasExceeded { used: u64, cap: u64 },
 }
 
 impl fmt::Display for StfError {
@@ -240,6 +244,9 @@ impl fmt::Display for StfError {
             }
             Self::FeeCollectorNotReceivable(a) => {
                 write!(f, "fee collector {a:?} is Frozen or Destroyed")
+            }
+            Self::BlockGasExceeded { used, cap } => {
+                write!(f, "block gas cap exceeded: used {used} > cap {cap}")
             }
         }
     }

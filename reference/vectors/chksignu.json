@@ -1,0 +1,62 @@
+{
+  "adr": "ADR-0038",
+  "chksignu_base": "ONX_CHKSIGNU_V1",
+  "tag_vectors": [
+    {
+      "chain_id_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "derived_tag_hex": "56bb5897c3d35727ebc714b4d3dd6dc8d32a6f716a3f63469282abedb68ef831"
+    },
+    {
+      "chain_id_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "derived_tag_hex": "75f5c88910995935816566b5b4e1488ea93612310b5033bf5edea94f153ec126"
+    },
+    {
+      "chain_id_hex": "58758ecb51f0f2e7fc1353896392e43e2554aa9bef02a335fc350cd804484683",
+      "derived_tag_hex": "b4481f669fafc6fbb26ef1d6aa098323d79941bc00182908013628234d88384e"
+    }
+  ],
+  "signatures": [
+    {
+      "chain_id_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash32_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "pubkey_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "sig_hex": "7086b3b1c1a12a6472503d0444ab31f3305f40cbe9b6c9f10ba0c77561ac9ef5826954c07e0c57e055f57fbef6d46841e12e819a946c85ae7cf8037f8ed30e06"
+    },
+    {
+      "chain_id_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash32_hex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "pubkey_hex": "a09aa5f47a6759802ff955f8dc2d2a14a5c99d23be97f864127ff9383455a4f0",
+      "sig_hex": "13ee7a60e0f9bfc06f888fa7f523a82ad7b52caae920a48158bb25233212897846cd9ef96bc552cbc751de0c825ce65733cc3beec54a3a8f6bee78782228c302"
+    },
+    {
+      "chain_id_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "hash32_hex": "0303030303030303030303030303030303030303030303030303030303030303",
+      "pubkey_hex": "17cb79fb2b4120f2b1ec65e4198d6e08b28e813feb01e4a400839b85e18080ce",
+      "sig_hex": "6bfaa6a7099506d09ef80c08be10f7d697ffa1916dc13e14a2a7feb6d352cfe092f307e309757823589c776a82b2f608cdf287b90b38b58f1da3caafdfba4d03"
+    },
+    {
+      "chain_id_hex": "58758ecb51f0f2e7fc1353896392e43e2554aa9bef02a335fc350cd804484683",
+      "hash32_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "pubkey_hex": "d759793bbc13a2819a827c76adb6fba8a49aee007f49f2d0992d99b825ad2c48",
+      "sig_hex": "cc9c095fc24fa0f79f17d209b43ba1456defe68ac23e4afe2f8e634c10b7296b1e127bdada77a7a086a806b2c387c819b149a416ec2a05f1ca83c8ba1d99920b"
+    }
+  ],
+  "cross_chain_negatives": [
+    {
+      "chain_id_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "hash32_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "pubkey_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "sig_hex": "7086b3b1c1a12a6472503d0444ab31f3305f40cbe9b6c9f10ba0c77561ac9ef5826954c07e0c57e055f57fbef6d46841e12e819a946c85ae7cf8037f8ed30e06",
+      "note": "signed for CHAIN_A; must NOT verify under CHAIN_B"
+    }
+  ],
+  "cross_protocol_negatives": [
+    {
+      "chain_id_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "hash32_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "pubkey_hex": "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737",
+      "sig_hex": "4097c4cb8baf87a87f5478c82d513984c66af736696aa47298384dc8c6e41453e685afc1362c5c2fb6f0e8ff34b38ed405b6dadc992320cffbb1078dbdf58809",
+      "note": "signed under retired TX_BODY_V1; must NOT verify as CHKSIGNU"
+    }
+  ]
+}

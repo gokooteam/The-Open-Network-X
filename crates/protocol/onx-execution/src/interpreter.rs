@@ -1,50 +1,29 @@
 use crate::continuation::{Continuation, ControlRegisters};
+use crate::int257::Int257;
 use crate::types::{Builder, ExceptionKind, ExecutionContext, ExecutionResult, Slice, StackValue};
 use onx_data_structures::Message;
 use onx_primitives::{
     domain_hash,
-    hash::{DomainTag, TX_BODY_V1},
+    hash::{DomainTag, CHKSIGNU_V1},
     PublicKey, Signature,
 };
 use onx_state_model::Cell;
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 /// `pub(crate)` so the wave-3 fuzz scaffold (`fuzz.rs`) can assert the cap
 /// from a single source of truth instead of a magic number.
 pub(crate) const MAX_STACK_DEPTH: usize = 1023;
 
-/// True floor division for `DIVMOD` (0x14) / `DIV` (0x17), per the spec
-/// (`docs/specification/tvm-instruction-set.md` §4.3) and ADR-0030:
-/// `q = floor(a / b)`, `r = a - q*b`, so `sign(r) == sign(b)` or `r == 0`.
-/// This is TON's round-toward-negative-infinity convention, and it is fully
-/// defined for negative divisors — ADR-0028's "underspecified" premise was
-/// wrong (Euclidean was never the spec; `checked_div_euclid` was a bug).
-///
-/// Returns `None` when the quotient is unrepresentable (`MIN / -1`); the
-/// caller maps that — and `b == 0`, which must be rejected before calling —
-/// to `IntegerOverflow`. Every arithmetic step is `checked_*` because the
-/// crate denies `clippy::arithmetic_side_effects`.
-fn floored_divmod(a: i128, b: i128) -> Option<(i128, i128)> {
-    debug_assert!(b != 0);
-    // `checked_div` truncates toward zero and returns `None` only for
-    // MIN / -1, whose true floor quotient (2^127) is unrepresentable.
-    let q_trunc = a.checked_div(b)?;
-    // `checked_rem` returns `None` only when b == 0 (excluded above) or for
-    // the MIN / -1 pair, which the line above already rejected.
-    let r_trunc = a.checked_rem(b)?;
-    if r_trunc != 0 && (r_trunc < 0) != (b < 0) {
-        // Truncation rounded toward zero, i.e. *up* past the floor: step
-        // the quotient down one and hand the remainder one divisor.
-        // Overflow audit of the two `checked_*` steps (both provably dead,
-        // kept `checked` for the lint):
-        // - `q_trunc - 1`: `q_trunc` can only be `i128::MIN` for the exact
-        //   pair MIN/1, whose remainder is 0, so this branch is unreachable.
-        // - `r_trunc + b`: in this branch the signs differ, so
-        //   |r_trunc + b| = |b| - |r_trunc| < |b| <= 2^127 — it shrinks.
-        Some((q_trunc.checked_sub(1)?, r_trunc.checked_add(b)?))
-    } else {
-        Some((q_trunc, r_trunc))
-    }
-}
+/// Maximum call-stack depth for `CALLREF` and its conditional variants
+/// (0x71/0x75/0x76). Wave 4 step 7 (ADR-0039): gas bounds execution *time*,
+/// not *memory*. At 4 gas per CALL, the ADR-0034 per-message cap of 10M gas
+/// admits ~2.5M frames (~340MB of heap clones) from a single paid message —
+/// an uncatchable host OOM, not a deterministic VM exception. The depth
+/// limit caps worst-case call-stack memory at 256 frames (~35KB) and is a
+/// consensus rule: a CALL that would exceed it raises
+/// `ExceptionKind::CallStackOverflow` fail-closed. `pub(crate)` for the same
+/// single-source-of-truth reason as `MAX_STACK_DEPTH`.
+pub(crate) const MAX_CALL_STACK_DEPTH: usize = 256;
 
 pub struct Interpreter {
     pub stack: Vec<StackValue>,
@@ -122,19 +101,47 @@ impl Interpreter {
         self.control_registers.set_c1(continuation);
     }
 
-    fn jump_to(&mut self, continuation: Continuation) {
-        self.current_code = continuation.code;
-        self.pc_bits = continuation.pc_bits;
+    fn jump_to(&mut self, continuation: Continuation) -> Result<(), ExceptionKind> {
+        self.set_code(continuation.code, continuation.pc_bits)
+    }
+
+    /// Switches execution to `code` at `pc_bits` and refreshes `code_refs`
+    /// from the new code cell's children (ADR-0039). Every code switch in
+    /// the interpreter routes through here so `code_refs` always mirrors
+    /// the *current* code cell — never a stale ancestor's children.
+    fn set_code(&mut self, code: Cell, pc_bits: usize) -> Result<(), ExceptionKind> {
+        self.current_code = code;
+        self.pc_bits = pc_bits;
+        self.refresh_code_refs()
+    }
+
+    /// Resolves the current code cell's child references through
+    /// `cell_store`, in index order, into `code_refs` (ADR-0039 — this is
+    /// what makes `JMPREF`/`CALLREF` and their conditional variants live).
+    /// A child hash absent from the store fails closed with `AbsentNode`:
+    /// the same rule as `LDREF`/`CTOS` — a missing child is never answered
+    /// with invented data. The STF seeds the full persisted code DAG
+    /// before `run()`, so in production a miss is a host bug, failed fast.
+    fn refresh_code_refs(&mut self) -> Result<(), ExceptionKind> {
+        let mut refs = Vec::with_capacity(self.current_code.cell_refs().len());
+        for hash in self.current_code.cell_refs() {
+            match self.cell_store.get(hash) {
+                Some(cell) => refs.push(cell.clone()),
+                None => return Err(ExceptionKind::AbsentNode),
+            }
+        }
+        self.code_refs = refs;
+        Ok(())
     }
 
     /// Transfers execution to c0 or c1.  This is used by embedding hosts that
     /// expose TVM's normal and alternative return paths.
-    pub fn return_to_control_register(&mut self, alternative: bool) -> bool {
+    pub fn return_to_control_register(&mut self, alternative: bool) -> Result<bool, ExceptionKind> {
         if let Some(continuation) = self.control_registers.take_return(alternative) {
-            self.jump_to(continuation);
-            true
+            self.jump_to(continuation)?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -153,9 +160,9 @@ impl Interpreter {
         self.stack.pop().ok_or(ExceptionKind::MalformedCell)
     }
 
-    pub fn pop_integer(&mut self) -> Result<[u8; 32], ExceptionKind> {
+    pub fn pop_integer(&mut self) -> Result<Int257, ExceptionKind> {
         match self.pop()? {
-            StackValue::Integer(bytes) => Ok(bytes),
+            StackValue::Integer(v) => Ok(v),
             _ => Err(ExceptionKind::TypeMismatch),
         }
     }
@@ -246,8 +253,10 @@ impl Interpreter {
         let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
         if self.pc_bits >= total_bits {
             if let Some((prev_code, prev_pc)) = self.call_stack.pop() {
-                self.current_code = prev_code;
-                self.pc_bits = prev_pc;
+                // Implicit return: the callee fell off its end. Restore the
+                // caller through the same choke point so `code_refs`
+                // mirrors the restored code cell (ADR-0039).
+                self.set_code(prev_code, prev_pc)?;
                 return Ok(true);
             } else {
                 return Ok(false); // Execution finished successfully
@@ -330,14 +339,22 @@ impl Interpreter {
                     .remove(len.saturating_sub(1).saturating_sub(depth));
                 self.push(item)?;
             }
-            // 0x08: PUSHINT signed, value[32]
+            // 0x08: PUSHINT signed, value[32]. The signed flag selects the
+            // 32-byte operand's interpretation: nonzero = 256-bit
+            // two's complement (sign-extended to 257 bits), zero = unsigned
+            // 256-bit. Both fit the Integer domain (ADR-0035).
             0x08 => {
                 self.consume_gas(1)?;
-                let _signed = self.read_uint8()?;
+                let signed = self.read_uint8()?;
                 let bytes = self.read_bytes_exact(32)?;
                 let mut arr = [0u8; 32];
                 arr.copy_from_slice(&bytes);
-                self.push(StackValue::Integer(arr))?;
+                let v = if signed == 0 {
+                    Int257::from_unsigned256(&arr)
+                } else {
+                    Int257::from_signed256(&arr)
+                };
+                self.push(StackValue::Integer(v))?;
             }
             // 0x09: PUSHBYTES len[uint16], bytes
             0x09 => {
@@ -384,7 +401,11 @@ impl Interpreter {
                 let start = self.stack.len().saturating_sub(count);
                 self.stack[start..].rotate_left(left);
             }
-            // Arithmetic 0x10-0x15
+            // Arithmetic 0x10-0x15. Each opcode computes the true mathematical
+            // result exactly (Int257, ADR-0035) and then applies the declared
+            // width/flavor per spec §3.3: unsigned/signed flavors raise
+            // IntegerOverflow when the true result does not fit, the modulo
+            // flavor reduces mod 2^width.
             0x10..=0x15 => {
                 self.consume_gas(if opcode == 0x13 || opcode == 0x14 {
                     8
@@ -392,68 +413,60 @@ impl Interpreter {
                     4
                 })?;
                 let width = self.read_uint16()?;
-                let _flavor = self.read_uint8()?;
-                if width == 0 || width > 256 {
+                let flavor = self.read_uint8()?;
+                if width == 0 || width > 256 || flavor > 2 {
                     return Err(ExceptionKind::MalformedCell);
                 }
                 match opcode {
                     0x10 => {
                         // ADD
-                        let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let res = a.checked_add(b).ok_or(ExceptionKind::IntegerOverflow)?;
-                        self.push(StackValue::from_i128(res))?;
+                        let b = self.pop_integer()?;
+                        let a = self.pop_integer()?;
+                        self.push(StackValue::Integer(a.add_exact(b).apply(width, flavor)?))?;
                     }
                     0x11 => {
                         // SUB
-                        let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let res = a.checked_sub(b).ok_or(ExceptionKind::IntegerOverflow)?;
-                        self.push(StackValue::from_i128(res))?;
+                        let b = self.pop_integer()?;
+                        let a = self.pop_integer()?;
+                        self.push(StackValue::Integer(a.sub_exact(b).apply(width, flavor)?))?;
                     }
                     0x12 => {
                         // NEG
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        self.push(StackValue::from_i128(
-                            a.checked_neg().ok_or(ExceptionKind::IntegerOverflow)?,
-                        ))?;
+                        let a = self.pop_integer()?;
+                        self.push(StackValue::Integer(a.neg_exact().apply(width, flavor)?))?;
                     }
                     0x13 => {
                         // MUL
-                        let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        self.push(StackValue::from_i128(
-                            a.checked_mul(b).ok_or(ExceptionKind::IntegerOverflow)?,
-                        ))?;
+                        let b = self.pop_integer()?;
+                        let a = self.pop_integer()?;
+                        self.push(StackValue::Integer(a.mul_exact(b).apply(width, flavor)?))?;
                     }
                     0x14 => {
                         // DIVMOD — true floor division per spec §4.3 and
-                        // ADR-0030: q = floor(a/b), r = a - q*b with
+                        // ADR-0030/ADR-0035: q = floor(a/b), r = a - q*b with
                         // sign(r) == sign(b) or r == 0. (ADR-0028 pinned the
                         // Euclidean remainder by mistake; `checked_div_euclid`
-                        // disagrees with the spec on negative divisors, e.g.
+                        // disagreed with the spec on negative divisors, e.g.
                         // 7 DIVMOD -2 was (-3, 1), must be (-4, -1).)
-                        let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        if b == 0 {
-                            return Err(ExceptionKind::IntegerOverflow);
-                        }
-                        let (q, r) = floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
-                        self.push(StackValue::from_i128(q))?;
-                        self.push(StackValue::from_i128(r))?;
+                        // Division by zero precedes flavor selection and
+                        // raises for every flavor (spec §3.3).
+                        let b = self.pop_integer()?;
+                        let a = self.pop_integer()?;
+                        let (q, r) = Int257::floored_divmod_exact(a, b)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        self.push(StackValue::Integer(q.apply(width, flavor)?))?;
+                        self.push(StackValue::Integer(r.apply(width, flavor)?))?;
                     }
                     0x15 => {
-                        // CMP
-                        let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                        let r = if a < b {
-                            -1
-                        } else if a > b {
-                            1
-                        } else {
-                            0
+                        // CMP — total order on 257-bit integers; never raises.
+                        let b = self.pop_integer()?;
+                        let a = self.pop_integer()?;
+                        let r = match a.cmp(&b) {
+                            Ordering::Less => -1,
+                            Ordering::Equal => 0,
+                            Ordering::Greater => 1,
                         };
-                        self.push(StackValue::from_i128(r))?;
+                        self.push(StackValue::Integer(Int257::from_i64(r)))?;
                     }
                     _ => unreachable!(),
                 }
@@ -462,234 +475,73 @@ impl Interpreter {
                 // ISZERO
                 self.consume_gas(4)?;
                 let a = self.pop_integer()?;
-                let is_zero = a == [0u8; 32];
-                self.push(StackValue::from_i128(if is_zero { 1 } else { 0 }))?;
+                let v = if a.is_zero() { 1 } else { 0 };
+                self.push(StackValue::Integer(Int257::from_u64(v)))?;
             }
-            // Extended signed-integer arithmetic.  These use the same width/flavor
-            // operands and overflow rules as the baseline arithmetic family.
+            // Integer division and shifts 0x17-0x19. Same width/flavor rules
+            // as the baseline arithmetic family (ADR-0035): exact result,
+            // then width/flavor application. Range checks (division by zero,
+            // shift amount) precede flavor selection and raise
+            // IntegerOverflow for every flavor (spec §3.3).
             0x17..=0x19 => {
                 self.consume_gas(if opcode == 0x17 { 8 } else { 4 })?;
                 let width = self.read_uint16()?;
                 let flavor = self.read_uint8()?;
-                if width == 0 || width > 128 || flavor > 2 {
+                if width == 0 || width > 256 || flavor > 2 {
                     return Err(ExceptionKind::MalformedCell);
                 }
-                let b = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                let a = StackValue::Integer(self.pop_integer()?).to_i128()?;
-                // Raw result before width/flavor application. `I128` is an exact
-                // i128; `U128` is an already-wrapped value in [0, 2^128) for
-                // results the i128 carrier cannot hold (wrap-flavor
-                // negatives at width 128, MIN / -1). F1/F2 hotfix.
-                enum Raw {
-                    I128(i128),
-                    U128(u128),
-                }
-                let result = match opcode {
-                    // DIV returns only the quotient of the same true-floor
-                    // division DIVMOD uses, so the two opcodes agree on q
-                    // (ADR-0030). The old truncating `checked_div` did not.
+                let b = self.pop_integer()?;
+                let a = self.pop_integer()?;
+                let value = match opcode {
+                    // DIV returns exactly DIVMOD's quotient (ADR-0030), with
+                    // the declared width/flavor applied to it.
                     0x17 => {
-                        if b == 0 {
-                            return Err(ExceptionKind::IntegerOverflow);
-                        }
-                        if a == i128::MIN && b == -1 {
-                            // True quotient 2^127, unrepresentable as i128
-                            // (F2): route through the u128 carrier.
-                            match flavor {
-                                // Unsigned: 2^127 in [0, 2^width) only at
-                                // width 128.
-                                0 => {
-                                    if width == 128 {
-                                        Raw::U128(1u128 << 127)
-                                    } else {
-                                        return Err(ExceptionKind::IntegerOverflow);
-                                    }
-                                }
-                                // Signed: 2^127 >= 2^(width-1) for every
-                                // width <= 128.
-                                1 => return Err(ExceptionKind::IntegerOverflow),
-                                // Wrap: 2^127 mod 2^width (0 below 128).
-                                _ => Raw::U128(if width == 128 { 1u128 << 127 } else { 0 }),
-                            }
-                        } else {
-                            let (q, _) =
-                                floored_divmod(a, b).ok_or(ExceptionKind::IntegerOverflow)?;
-                            Raw::I128(q)
-                        }
+                        let (q, _) = Int257::floored_divmod_exact(a, b)
+                            .ok_or(ExceptionKind::IntegerOverflow)?;
+                        q.apply(width, flavor)?
                     }
                     0x18 => {
-                        if b < 0 || b >= width as i128 {
+                        // LSHIFT: shift amount in [0, width), else raise.
+                        let shift = b.to_usize_checked().ok_or(ExceptionKind::IntegerOverflow)?;
+                        if shift >= width as usize {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        let r = a
-                            .checked_shl(b as u32)
-                            .ok_or(ExceptionKind::IntegerOverflow)?;
-                        // F1: `checked_shl` only rejects shift amounts >=
-                        // 128; it silently discards shifted-out bits. A
-                        // lossless shift round-trips: (r >> b) == a.
-                        let lost_bits = b > 0 && (r >> b) != a;
-                        if lost_bits {
-                            match flavor {
-                                // Unsigned: t = a·2^b. Negative a → t < 0 →
-                                // raise. Non-negative a fits iff a < 2^(w-b);
-                                // the true product then goes through u128.
-                                0 => {
-                                    if a < 0 {
-                                        return Err(ExceptionKind::IntegerOverflow);
-                                    }
-                                    // b < width was checked above, so the
-                                    // subtraction is exact; checked for the
-                                    // arithmetic lint. shift in 1..=128.
-                                    let shift = (width as i128)
-                                        .checked_sub(b)
-                                        .ok_or(ExceptionKind::IntegerOverflow)?;
-                                    // a < 2^shift. shift in 1..=128; for
-                                    // shift >= 127 every non-negative i128 a
-                                    // fits (a ≤ 2^127 - 1 < 2^127 ≤ 2^shift).
-                                    let fits = if shift >= 127 {
-                                        true
-                                    } else {
-                                        let bound = 1i128
-                                            .checked_shl(shift as u32)
-                                            .ok_or(ExceptionKind::IntegerOverflow)?;
-                                        a < bound
-                                    };
-                                    if !fits {
-                                        return Err(ExceptionKind::IntegerOverflow);
-                                    }
-                                    // t = a·2^b < 2^w ≤ 2^128: exact.
-                                    let t = (a as u128)
-                                        .checked_shl(b as u32)
-                                        .ok_or(ExceptionKind::IntegerOverflow)?;
-                                    Raw::U128(t)
-                                }
-                                // Wrap flavor keeps (a * 2^b) mod 2^width,
-                                // computed in two's-complement u128 so the
-                                // full product is exact before the modulo.
-                                2 => {
-                                    let shifted = (a as u128).wrapping_mul(1u128 << b as u32);
-                                    Raw::U128(if width == 128 {
-                                        shifted
-                                    } else {
-                                        // `width < 128` here, so the shift is
-                                        // exact; checked to satisfy the
-                                        // arithmetic lint.
-                                        let modulus = 1u128
-                                            .checked_shl(width as u32)
-                                            .ok_or(ExceptionKind::IntegerOverflow)?;
-                                        shifted
-                                            .checked_rem(modulus)
-                                            .ok_or(ExceptionKind::IntegerOverflow)?
-                                    })
-                                }
-                                _ => return Err(ExceptionKind::IntegerOverflow),
-                            }
-                        } else {
-                            Raw::I128(r)
-                        }
+                        a.shl_exact(shift as u32).apply(width, flavor)?
                     }
                     0x19 => {
-                        if b < 0 || b >= width as i128 {
+                        // RSHIFT: arithmetic shift right (floor division by
+                        // 2^shift), exact and always in-domain; the declared
+                        // width/flavor still apply to the result.
+                        let shift = b.to_usize_checked().ok_or(ExceptionKind::IntegerOverflow)?;
+                        if shift >= width as usize {
                             return Err(ExceptionKind::IntegerOverflow);
                         }
-                        Raw::I128(a >> b)
+                        a.shr_exact(shift as u32).check_width(width, flavor)?
                     }
                     _ => unreachable!(),
                 };
-                // Width is 1..=128 (checked above). The shift-based limit
-                // computation breaks at the top end — 2^127 and 2^128 are
-                // unrepresentable as i128 — so each flavor handles its
-                // boundary widths directly. All arithmetic below is
-                // checked (never saturating): an unrepresentable result
-                // is IntegerOverflow, not a clamped value. F2: the wrap
-                // flavor never raises *on the result* — values it cannot
-                // hold as i128 go through the u128 carrier (spec §3.3).
-                // Operand range checks (shift amount, division by zero)
-                // precede flavor selection and raise for every flavor.
-                let value = match (result, flavor) {
-                    // Already wrapped into [0, 2^128): push as-is.
-                    (Raw::U128(u), _) => StackValue::from_u128(u),
-                    // Unsigned, error on out-of-range: [0, 2^width).
-                    (Raw::I128(q), 0) => {
-                        if q < 0 {
-                            return Err(ExceptionKind::IntegerOverflow);
-                        }
-                        // For width >= 127, 2^width > i128::MAX, so every
-                        // non-negative i128 fits and no bound check applies.
-                        if width < 127 {
-                            let bound = 1i128
-                                .checked_shl(width as u32)
-                                .ok_or(ExceptionKind::IntegerOverflow)?;
-                            if q >= bound {
-                                return Err(ExceptionKind::IntegerOverflow);
-                            }
-                        }
-                        StackValue::from_i128(q)
-                    }
-                    // Signed: [-2^(width-1), 2^(width-1)).
-                    (Raw::I128(q), 1) => {
-                        let checked = if width == 128 {
-                            // Exactly the i128 range: everything fits.
-                            q
-                        } else {
-                            let limit = 1i128
-                                .checked_shl((width as u32).saturating_sub(1))
-                                .ok_or(ExceptionKind::IntegerOverflow)?;
-                            // `limit` is a positive power of two, so the
-                            // negation is exact.
-                            if q < limit.wrapping_neg() || q >= limit {
-                                return Err(ExceptionKind::IntegerOverflow);
-                            }
-                            q
-                        };
-                        StackValue::from_i128(checked)
-                    }
-                    // Wrap-unsigned: result mod 2^width into [0, 2^width).
-                    // Never raises.
-                    (Raw::I128(q), 2) => {
-                        if width == 128 {
-                            // q mod 2^128 via two's-complement
-                            // reinterpretation: exact for every i128 q.
-                            StackValue::from_u128(q as u128)
-                        } else if width == 127 {
-                            // 2^127 is unrepresentable, but the wrap of a
-                            // negative result always lands in [0, 2^127):
-                            // result + 2^127 with 2^127 = i128::MAX + 1.
-                            // Exact for result < 0 (intermediates stay in
-                            // [-1, 2^127 - 1]); checked to satisfy the
-                            // arithmetic lint and fail closed regardless.
-                            StackValue::from_i128(if q < 0 {
-                                q.checked_add(i128::MAX)
-                                    .and_then(|r| r.checked_add(1))
-                                    .ok_or(ExceptionKind::IntegerOverflow)?
-                            } else {
-                                q
-                            })
-                        } else {
-                            let modulus = 1i128
-                                .checked_shl(width as u32)
-                                .ok_or(ExceptionKind::IntegerOverflow)?;
-                            StackValue::from_i128(q.rem_euclid(modulus))
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                self.push(value)?;
+                self.push(StackValue::Integer(value))?;
             }
             0x20 => {
-                // CONV width, signed
+                // CONV width, signed — re-checks the value at the declared
+                // width/signedness (spec §4.2, ADR-0035). Raises
+                // IntegerOverflow when the value does not fit.
                 self.consume_gas(4)?;
-                let _width = self.read_uint16()?;
-                let _signed = self.read_uint8()?;
+                let width = self.read_uint16()?;
+                let signed = self.read_uint8()?;
+                if width == 0 || width > 256 {
+                    return Err(ExceptionKind::MalformedCell);
+                }
                 let a = self.pop_integer()?;
-                self.push(StackValue::Integer(a))?;
+                let flavor = if signed == 0 { 0 } else { 1 };
+                self.push(StackValue::Integer(a.check_width(width, flavor)?))?;
             }
             // Byte/bit string operations 0x30-0x33
             0x30 => {
                 // BYTELEN
                 self.consume_gas(1)?;
                 let bytes = self.pop_bytes()?;
-                self.push(StackValue::from_i128(bytes.len() as i128))?;
+                self.push(StackValue::Integer(Int257::from_u64(bytes.len() as u64)))?;
             }
             0x31 => {
                 // CONCAT
@@ -704,12 +556,18 @@ impl Interpreter {
             0x32 => {
                 // SUBBYTES
                 self.consume_gas(4)?;
-                let len = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
-                let offset = StackValue::Integer(self.pop_integer()?).to_i128()? as usize;
+                let len = self
+                    .pop_integer()?
+                    .to_usize_checked()
+                    .ok_or(ExceptionKind::MalformedCell)?;
+                let offset = self
+                    .pop_integer()?
+                    .to_usize_checked()
+                    .ok_or(ExceptionKind::MalformedCell)?;
                 let bytes = self.pop_bytes()?;
-                // `offset`/`len` arrive as i128 and wrap to huge `usize`
-                // values when negative; `checked_add` keeps an adversarial
-                // pair from panicking the producer via usize overflow.
+                // `to_usize_checked` already rejects negatives and values
+                // above `usize::MAX`; `checked_add` keeps an adversarial
+                // (offset, len) pair from wrapping past the length check.
                 let end = offset
                     .checked_add(len)
                     .ok_or(ExceptionKind::MalformedCell)?;
@@ -724,7 +582,11 @@ impl Interpreter {
                 let a = self.pop_bytes()?;
                 let min_len = a.len().min(b.len());
                 self.consume_gas(1u64.saturating_add(min_len.div_ceil(32) as u64))?;
-                self.push(StackValue::from_i128(if a == b { 1 } else { 0 }))?;
+                self.push(StackValue::Integer(Int257::from_u64(if a == b {
+                    1
+                } else {
+                    0
+                })))?;
             }
             // Cell access 0x40-0x4C
             0x40 => {
@@ -733,12 +595,16 @@ impl Interpreter {
                 self.push(StackValue::Builder(Builder::default()))?;
             }
             0x41 => {
-                // ENDC
+                // ENDC — ADR-0036: the cell commits the builder's exact bit
+                // length. A partial final byte sets the compatible flag and
+                // gets the completion tag; byte-aligned builders stay
+                // byte-granular with unchanged hashes.
                 self.consume_gas(10)?;
                 let builder = self.pop_builder()?;
                 let cell_refs = builder.references.iter().map(|c| c.hash()).collect();
-                let cell = Cell::new(builder.data_bytes, cell_refs)
-                    .map_err(|_| ExceptionKind::MalformedCell)?;
+                let cell =
+                    Cell::new_with_bit_len(builder.data_bytes, builder.current_bit_len, cell_refs)
+                        .map_err(|_| ExceptionKind::MalformedCell)?;
                 // Register the materialized cell so the host can persist
                 // the full DAG after execution and so later LDREFs resolve
                 // to the actual stored child.
@@ -746,13 +612,25 @@ impl Interpreter {
                 self.push(StackValue::Cell(cell))?;
             }
             0x42 => {
-                // STBITS width, signed
+                // STBITS width, signed. Range-checks the value at the
+                // declared width/signedness (spec §4.4, ADR-0035), then
+                // appends the low `width` bits of its two's-complement
+                // encoding. Width 0 keeps the historical no-op acceptance.
                 self.consume_gas(10)?;
-                let width = self.read_uint16()? as usize;
-                let _signed = self.read_uint8()?;
-                let val_bytes = self.pop_integer()?;
+                let width = self.read_uint16()?;
+                let signed = self.read_uint8()?;
+                if width > 256 {
+                    return Err(ExceptionKind::MalformedCell);
+                }
+                let val = self.pop_integer()?;
+                let val = if width == 0 {
+                    val
+                } else {
+                    let flavor = if signed == 0 { 0 } else { 1 };
+                    val.check_width(width, flavor)?
+                };
                 let mut builder = self.pop_builder()?;
-                builder.append_bits(&val_bytes, width)?;
+                builder.append_bits(&val.to_bytes33(), width as usize)?;
                 self.push(StackValue::Builder(builder))?;
             }
             0x43 => {
@@ -767,14 +645,16 @@ impl Interpreter {
                 self.push(StackValue::Builder(builder))?;
             }
             0x44 => {
-                // STBYTES
+                // STBYTES — ADR-0036: bytes are appended at bit granularity
+                // (each byte's 8 bits, MSB-first, at the current bit position)
+                // and `current_bit_len` advances by `8 * len`, so the bit
+                // length stays exact even after a partial-bit store. The old
+                // code extended `data_bytes` without touching the bit length,
+                // which is the bookkeeping half of the bit-length finding.
                 let bytes = self.pop_bytes()?;
                 self.consume_gas(10u64.saturating_add(bytes.len().div_ceil(32) as u64))?;
                 let mut builder = self.pop_builder()?;
-                if builder.data_bytes.len().saturating_add(bytes.len()) > 128 {
-                    return Err(ExceptionKind::MalformedCell);
-                }
-                builder.data_bytes.extend(bytes);
+                builder.append_bytes(&bytes)?;
                 self.push(StackValue::Builder(builder))?;
             }
             0x45 => {
@@ -788,22 +668,48 @@ impl Interpreter {
                 self.push(StackValue::Slice(slice))?;
             }
             0x46 => {
-                // LDU width
+                // LDU width — unsigned: zero-extended into the Integer domain.
                 self.consume_gas(10)?;
                 let width = self.read_uint16()? as usize;
                 let mut slice = self.pop_slice()?;
                 let val_bytes = slice.read_bits(width)?;
                 self.push(StackValue::Slice(slice))?;
-                self.push(StackValue::Integer(val_bytes))?;
+                // Canonical by construction (top bits zero); the error arm
+                // documents the invariant rather than a reachable path.
+                let v = Int257::from_bytes33(&val_bytes).ok_or(ExceptionKind::MalformedCell)?;
+                self.push(StackValue::Integer(v))?;
             }
             0x47 => {
-                // LDI width
+                // LDI width — signed: sign-extended from `width` bits into
+                // the 257-bit domain (spec §4.4, ADR-0035; previously
+                // byte-identical to LDU, a spec divergence).
                 self.consume_gas(10)?;
                 let width = self.read_uint16()? as usize;
                 let mut slice = self.pop_slice()?;
-                let val_bytes = slice.read_bits(width)?;
+                let mut val_bytes = slice.read_bits(width)?;
                 self.push(StackValue::Slice(slice))?;
-                self.push(StackValue::Integer(val_bytes))?;
+                if width > 0 {
+                    // The sign bit is the first bit read = buffer bit
+                    // (264 - width). When set, fill buffer bits
+                    // [8, 264 - width) with ones and set buffer bit 7
+                    // (value bit 256, the 257-bit sign); bits [0, 8) stay
+                    // zero to keep the encoding canonical.
+                    let sign_bit_idx = 264usize.saturating_sub(width);
+                    let sign_byte = sign_bit_idx.wrapping_div(8);
+                    let sign_in_byte = 7usize.saturating_sub(sign_bit_idx.wrapping_rem(8));
+                    if val_bytes[sign_byte] & (1 << sign_in_byte) != 0 {
+                        let mut b = 8usize;
+                        while b < sign_bit_idx {
+                            let byte = b.wrapping_div(8);
+                            let in_byte = 7usize.saturating_sub(b.wrapping_rem(8));
+                            val_bytes[byte] |= 1 << in_byte;
+                            b = b.wrapping_add(1);
+                        }
+                        val_bytes[0] |= 1;
+                    }
+                }
+                let v = Int257::from_bytes33(&val_bytes).ok_or(ExceptionKind::MalformedCell)?;
+                self.push(StackValue::Integer(v))?;
             }
             0x48 => {
                 // LDREF
@@ -828,26 +734,32 @@ impl Interpreter {
                 // ISEXOTIC
                 self.consume_gas(10)?;
                 let cell = self.pop_cell()?;
-                self.push(StackValue::from_i128(if cell.is_special() { 1 } else { 0 }))?;
+                let v = if cell.is_special() { 1 } else { 0 };
+                self.push(StackValue::Integer(Int257::from_u64(v)))?;
             }
             0x4A => {
                 // SEMPTY
                 self.consume_gas(1)?;
                 let slice = self.pop_slice()?;
                 let empty = slice.remaining_bits() == 0 && slice.remaining_refs() == 0;
-                self.push(StackValue::from_i128(if empty { 1 } else { 0 }))?;
+                let v = if empty { 1 } else { 0 };
+                self.push(StackValue::Integer(Int257::from_u64(v)))?;
             }
             0x4B => {
                 // SBITS
                 self.consume_gas(1)?;
                 let slice = self.pop_slice()?;
-                self.push(StackValue::from_i128(slice.remaining_bits() as i128))?;
+                self.push(StackValue::Integer(Int257::from_u64(
+                    slice.remaining_bits() as u64,
+                )))?;
             }
             0x4C => {
                 // SREFS
                 self.consume_gas(1)?;
                 let slice = self.pop_slice()?;
-                self.push(StackValue::from_i128(slice.remaining_refs() as i128))?;
+                self.push(StackValue::Integer(Int257::from_u64(
+                    slice.remaining_refs() as u64,
+                )))?;
             }
             0x4D => {
                 // SETDATA: pop a cell and install it as the contract's
@@ -861,46 +773,68 @@ impl Interpreter {
             }
             // Cryptographic 0x60-0x62
             0x60 => {
-                // HASHBYTES
+                // HASHBYTES — the digest is an unsigned 256-bit Integer
+                // (spec §4.5, ADR-0035): always in-domain, never negative.
                 self.consume_gas(200)?;
                 let bytes = self.pop_bytes()?;
                 let tag = DomainTag::from_ascii("ONX_EXEC_HASH_V1");
                 let hash = domain_hash(&tag, &bytes);
-                self.push(StackValue::Integer(hash))?;
+                self.push(StackValue::Integer(Int257::from_unsigned256(&hash)))?;
             }
             0x61 => {
-                // HASHCELL
+                // HASHCELL — same unsigned-256-bit treatment as HASHBYTES.
                 self.consume_gas(200)?;
                 let cell = self.pop_cell()?;
                 let hash = cell.hash();
-                self.push(StackValue::Integer(hash))?;
+                self.push(StackValue::Integer(Int257::from_unsigned256(&hash)))?;
             }
             0x62 => {
-                // CHKSIGNU
+                // CHKSIGNU — the hash operand must name a 32-byte preimage,
+                // i.e. lie in [0, 2^256); a negative Integer is TypeMismatch.
+                //
+                // ADR-0038: the signature is verified under the CHAIN-BOUND
+                // tag `CHKSIGNU_V1.bind_chain(chain_id)` — the tag bytes are
+                // SHA256(pad32("ONX_CHKSIGNU_V1") || chain_id), so a
+                // signature produced for one chain cannot verify on another
+                // chain even with identical keys. The base tag is never used
+                // raw. `chain_id` arrives via `ExecutionContext` (the STF
+                // populates it from `State.chain_id`); it is fixed for the
+                // block, so verification stays deterministic.
                 self.consume_gas(4000)?;
-                let hash32 = self.pop_integer()?;
+                let hash_int = self.pop_integer()?;
+                let hash32 = hash_int
+                    .to_unsigned256()
+                    .ok_or(ExceptionKind::TypeMismatch)?;
                 let sig_bytes = self.pop_bytes()?;
                 let pubkey_bytes = self.pop_bytes()?;
                 if pubkey_bytes.len() != 32 || sig_bytes.len() != 64 {
                     return Err(ExceptionKind::TypeMismatch);
                 }
+                let tag = CHKSIGNU_V1.bind_chain(&self.context.chain_id);
                 let pubkey = PublicKey::decode_exact(&pubkey_bytes);
                 let sig = Signature::decode_exact(&sig_bytes);
                 let valid = if let (Ok(pk), Ok(s)) = (pubkey, sig) {
-                    pk.verify(&TX_BODY_V1, &hash32, &s).is_ok()
+                    pk.verify(&tag, &hash32, &s).is_ok()
                 } else {
                     false
                 };
-                self.push(StackValue::from_i128(if valid { 1 } else { 0 }))?;
+                self.push(StackValue::Integer(Int257::from_u64(if valid {
+                    1
+                } else {
+                    0
+                })))?;
             }
             // Control flow 0x70-0x71, 0x73-0x76
             0x70 | 0x71 | 0x73 | 0x74 | 0x75 | 0x76 => {
                 self.consume_gas(4)?;
                 let ref_idx = self.read_uint8()? as usize;
+                // Any nonzero 257-bit Integer is true (ADR-0035: the
+                // ADR-0031 fail-closed bulkhead on operands >= 2^127 is
+                // gone; the model defines truthiness, not the carrier).
                 let condition = match opcode {
                     0x70 | 0x71 => true,
-                    0x73 | 0x75 => StackValue::Integer(self.pop_integer()?).to_i128()? != 0,
-                    0x74 | 0x76 => StackValue::Integer(self.pop_integer()?).to_i128()? == 0,
+                    0x73 | 0x75 => !self.pop_integer()?.is_zero(),
+                    0x74 | 0x76 => self.pop_integer()?.is_zero(),
                     _ => unreachable!(),
                 };
                 if condition {
@@ -909,20 +843,29 @@ impl Interpreter {
                     }
                     let target_code = self.code_refs[ref_idx].clone();
                     if opcode == 0x71 || opcode == 0x75 || opcode == 0x76 {
-                        // CALL variants
+                        // CALL variants: fail closed on call-stack overflow
+                        // (ADR-0039) BEFORE cloning the return address onto
+                        // the heap, so a would-be overflow does no
+                        // unbounded allocation. The opcode's 4 gas was
+                        // already consumed above — the same ordering as
+                        // the ref_idx range check.
+                        if self.call_stack.len() >= MAX_CALL_STACK_DEPTH {
+                            return Err(ExceptionKind::CallStackOverflow);
+                        }
                         self.call_stack
                             .push((self.current_code.clone(), self.pc_bits));
                         self.control_registers
                             .set_c0(Continuation::new(self.current_code.clone(), self.pc_bits));
                     }
-                    self.current_code = target_code;
-                    self.pc_bits = 0;
+                    // Route through set_code so code_refs mirrors the jump
+                    // target's children (ADR-0039).
+                    self.set_code(target_code, 0)?;
                 }
             }
             0x72 => {
                 // RET
                 self.consume_gas(4)?;
-                if self.return_to_control_register(false) {
+                if self.return_to_control_register(false)? {
                     self.call_stack.pop();
                     self.control_registers.c0 = self
                         .call_stack
@@ -951,7 +894,7 @@ impl Interpreter {
                 self.consume_gas(4)?;
                 let true_offset = self.read_uint8()? as i8;
                 let false_offset = self.read_uint8()? as i8;
-                let condition = StackValue::Integer(self.pop_integer()?).to_i128()? != 0;
+                let condition = !self.pop_integer()?.is_zero();
                 let offset = if condition { true_offset } else { false_offset };
                 self.pc_bits = self
                     .pc_bits
@@ -962,8 +905,8 @@ impl Interpreter {
             // 0x79: IFRET. Return from the current continuation if the condition is nonzero.
             0x79 => {
                 self.consume_gas(4)?;
-                if StackValue::Integer(self.pop_integer()?).to_i128()? != 0 {
-                    if self.return_to_control_register(false) {
+                if !self.pop_integer()?.is_zero() {
+                    if self.return_to_control_register(false)? {
                         self.call_stack.pop();
                         self.control_registers.c0 = self
                             .call_stack
@@ -992,7 +935,7 @@ impl Interpreter {
             0x7B => {
                 self.consume_gas(4)?;
                 let offset = self.read_uint8()? as i8;
-                if StackValue::Integer(self.pop_integer()?).to_i128()? == 0 {
+                if self.pop_integer()?.is_zero() {
                     self.pc_bits = self
                         .pc_bits
                         .checked_add_signed((offset as isize).saturating_mul(8))
@@ -1012,12 +955,10 @@ impl Interpreter {
             }
             0x81 => {
                 // MSGVALUE: () -> (Integer). Inbound value in nanos,
-                // as a 256-bit big-endian integer.
+                // as an unsigned 257-bit integer (always in-domain).
                 self.consume_gas(4)?;
                 let nanos: u128 = self.message.amount_nanos.into();
-                let mut bytes = [0u8; 32];
-                bytes[16..32].copy_from_slice(&nanos.to_be_bytes());
-                self.push(StackValue::Integer(bytes))?;
+                self.push(StackValue::Integer(Int257::from_u128(nanos)))?;
             }
             0x82 => {
                 // MSGBODY: () -> (Bytes). Raw inbound message body bytes.
@@ -1034,6 +975,15 @@ impl Interpreter {
     }
 
     pub fn run(&mut self) -> ExecutionResult {
+        // ADR-0039: populate code_refs from the root code cell's children
+        // before the first instruction — fail fast on an unseeded code DAG
+        // (AbsentNode) instead of mid-execution at the first JMPREF.
+        if let Err(kind) = self.refresh_code_refs() {
+            return ExecutionResult::Exception {
+                kind,
+                gas_used: self.gas_used,
+            };
+        }
         loop {
             match self.step() {
                 Ok(true) => continue,
@@ -1054,10 +1004,28 @@ impl Interpreter {
                             ExceptionKind::AbsentNode => 2,
                             ExceptionKind::MalformedCell => 3,
                             ExceptionKind::TypeMismatch => 4,
+                            // Discriminators are append-only: a new kind
+                            // takes the next number, existing numbers never
+                            // move (ADR-0039).
+                            ExceptionKind::CallStackOverflow => 5,
                         };
-                        if self.push(StackValue::from_i128(code)).is_ok() {
-                            self.jump_to(handler);
-                            continue;
+                        if self
+                            .push(StackValue::Integer(Int257::from_u64(code as u64)))
+                            .is_ok()
+                        {
+                            // The handler jump refreshes code_refs like any
+                            // other code switch (ADR-0039). If the handler's
+                            // own children are unresolvable, that failure is
+                            // the operative one — the handler cannot run.
+                            match self.jump_to(handler) {
+                                Ok(()) => continue,
+                                Err(refresh_kind) => {
+                                    return ExecutionResult::Exception {
+                                        kind: refresh_kind,
+                                        gas_used: self.gas_used,
+                                    };
+                                }
+                            }
                         }
                     }
                     return ExecutionResult::Exception {

@@ -26,6 +26,7 @@ fn test_account_state_serialization_round_trip() {
         storage_stat: StorageStat {
             cell_count: 5,
             byte_count: 500,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -57,6 +58,7 @@ fn test_account_lifecycle_transitions() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -74,6 +76,7 @@ fn test_account_lifecycle_transitions() {
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 150,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -89,6 +92,7 @@ fn test_account_lifecycle_transitions() {
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 150,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -115,6 +119,7 @@ fn test_account_lifecycle_transitions() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 80,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -142,6 +147,7 @@ fn test_balance_underflow_and_transition_with_delta() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -156,6 +162,7 @@ fn test_balance_underflow_and_transition_with_delta() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -173,6 +180,7 @@ fn test_balance_underflow_and_transition_with_delta() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 100,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -275,6 +283,7 @@ fn test_shard_state_tree_and_merkle_proofs() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 10,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -288,6 +297,7 @@ fn test_shard_state_tree_and_merkle_proofs() {
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 20,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -330,6 +340,7 @@ fn test_codeless_account_encoding_is_byte_identical_to_v2() {
         storage_stat: StorageStat {
             cell_count: 5,
             byte_count: 500,
+            bit_count: 0,
         },
         pubkey: [0x77; 32],
         nonce: 7,
@@ -355,6 +366,44 @@ fn test_codeless_account_encoding_is_byte_identical_to_v2() {
 }
 
 #[test]
+fn test_bit_count_derived_on_decode() {
+    // ADR-0037: bit_count is not on the wire (the 141-byte header is pinned
+    // by the V2 goldens); from_bytes derives it from the decoded cells.
+    // A flagged 3-bit cell and a byte-granular 8-bit cell share the same
+    // byte_count but decode to different bit_counts.
+    let flagged = Cell::new_with_bit_len(vec![0xb0], 3, vec![]).unwrap();
+    assert!(flagged.is_bit_granular());
+    let plain = Cell::new(vec![0xa0], vec![]).unwrap();
+    for (data, expect_bits) in [(flagged, 3u64), (plain, 8u64)] {
+        let active = AccountState::Active {
+            balance_nanos: 1,
+            last_trans_lt: 1,
+            code: None,
+            data: Some(data.clone()),
+            storage_stat: StorageStat {
+                cell_count: 1,
+                byte_count: data.to_bytes().len() as u64,
+                bit_count: expect_bits,
+            },
+            pubkey: [0u8; 32],
+            nonce: 0,
+        };
+        let bytes = active.to_bytes();
+        // The wire format is unchanged: byte_count is 3 for both cells
+        // (2 descriptor + 1 data byte); bits live only in the struct.
+        let (de, _) = AccountState::from_bytes(&bytes).unwrap();
+        assert_eq!(de, active, "round-trip must preserve the derived bit_count");
+        match de {
+            AccountState::Active { storage_stat, .. } => {
+                assert_eq!(storage_stat.byte_count, 3);
+                assert_eq!(storage_stat.bit_count, expect_bits);
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+}
+
+#[test]
 fn test_embedded_cell_hash_mismatch_rejected() {
     // A tampered code payload (hash doesn't match the header) fails closed.
     let code = Cell::new(vec![0x45], vec![]).unwrap();
@@ -366,6 +415,7 @@ fn test_embedded_cell_hash_mismatch_rejected() {
         storage_stat: StorageStat {
             cell_count: 1,
             byte_count: 3,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,

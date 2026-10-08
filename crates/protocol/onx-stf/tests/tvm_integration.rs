@@ -4,10 +4,12 @@
 //! A minimal counter contract (increment-only) is exercised end-to-end:
 //! genesis installs the contract, signed `ContractCall` external messages
 //! run it on delivery, and the persistent data cell advances
-//! deterministically. The bounce model applies to execution too:
-//! a VM failure (bad code, exception) or a call to a codeless account
+//! deterministically. The failure taxonomy applies to execution too
+//! (ADR-0037): a VM failure that is NOT gas exhaustion (bad code, THROW)
 //! BOUNCES the value back to the sender (fees already taken) instead of
 //! invalidating the block — the sender is refunded, the chain moves on.
+//! Gas exhaustion is FATAL: the value stays with the destination, no
+//! bounce is queued — returning it would price griefing at the fee alone.
 
 use onx_data_structures::AccountId;
 use onx_execution::{ExecutionContext, ExecutionResult, Interpreter, StackValue};
@@ -96,6 +98,7 @@ fn contract_genesis() -> (State, AccountId, AccountId, AccountId, SecretKey) {
             storage_stat: StorageStat {
                 cell_count: 0,
                 byte_count: 0,
+                bit_count: 0,
             },
             pubkey: secret.public_key().encode(),
             nonce: 0,
@@ -112,6 +115,7 @@ fn contract_genesis() -> (State, AccountId, AccountId, AccountId, SecretKey) {
             storage_stat: StorageStat {
                 cell_count: 2,
                 byte_count: (code.to_bytes().len() + data.to_bytes().len()) as u64,
+                bit_count: (code.bit_len() + data.bit_len()) as u64,
             },
             // Contracts are keyless: nobody spends FROM the contract in
             // this milestone; it only receives and executes.
@@ -196,6 +200,7 @@ fn tvm_counter_bytecode_increments() {
         start_lt: 1,
         end_lt: 1,
         gas_limit: 1_000_000,
+        chain_id: [0x43; 32], // test chain id (ADR-0038)
     };
     let mut interp = Interpreter::new(code, data.clone(), dummy_message(), ctx);
     interp.stack.push(StackValue::Cell(data));
@@ -395,6 +400,7 @@ fn tvm_vm_exception_bounces() {
                 storage_stat: StorageStat {
                     cell_count: 2,
                     byte_count: 0,
+                    bit_count: 0,
                 },
                 pubkey: [0u8; 32],
                 nonce: 0,
@@ -418,11 +424,82 @@ fn tvm_vm_exception_bounces() {
         r.deliveries[0].bounced,
         "the exception delivery must bounce"
     );
-    assert_eq!(r.deliveries[0].gas_used, 0);
+    // ADR-0037: bounce receipts report the gas actually burned (THROW costs
+    // 4) so the block gas cap sees executed work.
+    assert_eq!(r.deliveries[0].gas_used, 4);
+    assert!(!r.deliveries[0].fatal);
     // Sender: debited 1_000 + 100_000 at the wallet, refunded 1_000.
     assert_eq!(balance_of(&next, &sender), 10_000_000 - 100_000);
     // The thrower's account is untouched (no value credit, no data change).
     assert_eq!(balance_of(&next, &thrower), 0);
+}
+
+#[test]
+fn tvm_out_of_gas_is_fatal() {
+    // ADR-0037: gas exhaustion is fatal, not bounced. The value stays with
+    // the destination (credited like a plain transfer, no data update, no
+    // bounce queued) — returning it would price MAX_GAS_PER_MESSAGE of
+    // reverted work at the fee alone.
+    let (mut state, sender, _contract, collector, secret) = contract_genesis();
+    let looper = AccountId::from_bytes([0xD1; 32]);
+    // Code: PUSHINT 0 (0x08 0x00 + 32 zero bytes), then UNTIL -36
+    // (0x7B 0xDC): pops the 0, jumps back to byte 0, forever.
+    // 5 gas/iteration (PUSHINT 1 + UNTIL 4).
+    let mut loop_code = vec![0x08, 0x00];
+    loop_code.extend_from_slice(&[0u8; 32]);
+    loop_code.extend_from_slice(&[0x7B, 0xDC]);
+    let looper_code = Cell::new(loop_code, vec![]).unwrap();
+    let looper_data = Cell::new(vec![], vec![]).unwrap();
+    state
+        .tree
+        .insert(
+            looper,
+            AccountState::Active {
+                balance_nanos: 0,
+                last_trans_lt: 0,
+                code: Some(looper_code.clone()),
+                data: Some(looper_data.clone()),
+                storage_stat: StorageStat {
+                    cell_count: 2,
+                    byte_count: (looper_code.to_bytes().len() + looper_data.to_bytes().len())
+                        as u64,
+                    bit_count: (looper_code.bit_len() + looper_data.bit_len()) as u64,
+                },
+                pubkey: [0u8; 32],
+                nonce: 0,
+            },
+        )
+        .unwrap();
+    // fee 1_000 nanos -> gas_limit = 1_000 * GAS_PER_NANO (1_000) = 1_000_000.
+    let msg = call_msg(
+        state.chain_id,
+        sender,
+        0,
+        looper,
+        1_000,
+        1_000,
+        b"spin".to_vec(),
+        &secret,
+    );
+    let (next, receipts) = apply_one(&state, msg, collector, 1)
+        .expect("block with an out-of-gas contract is still valid");
+    let r = &receipts.0[0];
+    assert_eq!(r.deliveries.len(), 1, "fatal: no bounce message queued");
+    let d = &r.deliveries[0];
+    assert!(d.fatal, "out-of-gas delivery must be fatal");
+    assert!(!d.bounced, "fatal is not a bounce");
+    assert_eq!(d.gas_used, 1_000_000, "fatal reports the consumed budget");
+    // Sender: debited 1_000 + 1_000, NOT refunded.
+    assert_eq!(balance_of(&next, &sender), 10_000_000 - 2_000);
+    // The looper kept the value (plain-transfer equivalence) but its data
+    // cell is untouched — no state effects from the failed execution.
+    assert_eq!(balance_of(&next, &looper), 1_000);
+    match next.tree.get(&looper).expect("looper exists") {
+        AccountState::Active { data: Some(d), .. } => {
+            assert_eq!(d.data_bytes(), looper_data.data_bytes())
+        }
+        other => panic!("looper account malformed: {other:?}"),
+    }
 }
 
 #[test]

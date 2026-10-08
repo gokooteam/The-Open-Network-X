@@ -72,14 +72,16 @@ VECTOR_FILES = ["genesis.json", "blocks.json", "expectations.json", "divmod.json
 # independent implementation of the formula; the invariant is then asserted
 # independently below. (TVM execution stays a deliberate non-goal of this
 # reference; these are spec-derived arithmetic cases, not an interpreter.)
-I128_MIN = -(1 << 127)
+# Integer model: 257-bit domain [-2^256, 2^256 - 1] (ADR-0035); MIN/-1 =
+# 2^256 is unrepresentable, hence IntegerOverflow.
+I256_MIN = -(1 << 256)
 DIVMOD_CASES = [
     (7, 2),
     (-7, 2),
     (7, -2),
     (-7, -2),
     (0, -1),
-    (I128_MIN, -1),  # quotient 2^127 unrepresentable -> IntegerOverflow
+    (I256_MIN, -1),  # quotient 2^256 unrepresentable -> IntegerOverflow
     (7, 0),          # -> IntegerOverflow
 ]
 
@@ -87,7 +89,7 @@ DIVMOD_CASES = [
 def divmod_doc():
     cases = []
     for a, b in DIVMOD_CASES:
-        if b == 0 or (a == I128_MIN and b == -1):
+        if b == 0 or (a == I256_MIN and b == -1):
             cases.append({"a": str(a), "b": str(b), "error": "IntegerOverflow"})
             continue
         q, r = divmod(a, b)
@@ -101,10 +103,10 @@ def divmod_doc():
         "semantics": (
             "DIVMOD (0x14): q = floor(a/b), r = a - q*b; "
             "sign(r) == sign(b) or r == 0. b = 0 and MIN/-1 raise "
-            "IntegerOverflow. Per docs/specification/tvm-instruction-set.md "
-            "§4.3 and ADR-0030."
+            "IntegerOverflow. 257-bit Integer model (ADR-0035), MIN = -2^256. "
+            "Per docs/specification/tvm-instruction-set.md §4.3 and ADR-0030."
         ),
-        "integer_bits": 128,
+        "integer_bits": 257,
         "cases": cases,
     }
 

@@ -1399,6 +1399,7 @@ mod tests {
             storage_stat: StorageStat {
                 cell_count: 0,
                 byte_count: 0,
+                bit_count: 0,
             },
             pubkey: [0u8; 32],
             nonce: 0,

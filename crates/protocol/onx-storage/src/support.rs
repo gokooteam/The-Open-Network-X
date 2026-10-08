@@ -69,6 +69,7 @@ pub fn test_genesis() -> GenesisDocument {
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
+                    bit_count: 0,
                 },
                 pubkey,
                 nonce: 0,

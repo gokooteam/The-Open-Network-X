@@ -1,0 +1,123 @@
+{
+  "adr": "ADR-0039",
+  "ref_resolution": {
+    "rule": "ref_index N addresses the Nth child reference of the current code cell, resolved through cell_store in index order",
+    "missing_child": "AbsentNode",
+    "refresh_points": [
+      "run() entry (fail fast on unseeded code DAG)",
+      "after JMPREF/CALLREF (and conditional variants) switch target",
+      "after RET restores a (code, pc) pair",
+      "after c0/c1/c2 continuation jumps"
+    ],
+    "design": "refresh-on-jump, not fixed-to-root: every code cell's own children are addressable"
+  },
+  "max_call_stack_depth": 256,
+  "call_rule": [
+    {
+      "depth_before": 0,
+      "outcome": "ok"
+    },
+    {
+      "depth_before": 1,
+      "outcome": "ok"
+    },
+    {
+      "depth_before": 127,
+      "outcome": "ok"
+    },
+    {
+      "depth_before": 255,
+      "outcome": "ok"
+    },
+    {
+      "depth_before": 256,
+      "outcome": "CallStackOverflow"
+    },
+    {
+      "depth_before": 257,
+      "outcome": "CallStackOverflow"
+    },
+    {
+      "depth_before": 1000,
+      "outcome": "CallStackOverflow"
+    }
+  ],
+  "call_opcodes": [
+    {
+      "opcode": "0x71",
+      "name": "CALLREF"
+    },
+    {
+      "opcode": "0x75",
+      "name": "IFCALLREF"
+    },
+    {
+      "opcode": "0x76",
+      "name": "IFNOTCALLREF"
+    }
+  ],
+  "jmp_opcodes_not_subject": [
+    {
+      "opcode": "0x70",
+      "name": "JMPREF"
+    },
+    {
+      "opcode": "0x73",
+      "name": "IFJMPREF"
+    },
+    {
+      "opcode": "0x74",
+      "name": "IFNOTJMPREF"
+    }
+  ],
+  "throw_operands": [
+    {
+      "operand": 0,
+      "kind": "IntegerOverflow"
+    },
+    {
+      "operand": 1,
+      "kind": "AbsentNode"
+    },
+    {
+      "operand": 2,
+      "kind": "MalformedCell"
+    },
+    {
+      "operand": 3,
+      "kind": "TypeMismatch"
+    }
+  ],
+  "c2_discriminators": [
+    {
+      "kind": "OutOfGas",
+      "code": 0
+    },
+    {
+      "kind": "IntegerOverflow",
+      "code": 1
+    },
+    {
+      "kind": "AbsentNode",
+      "code": 2
+    },
+    {
+      "kind": "MalformedCell",
+      "code": 3
+    },
+    {
+      "kind": "TypeMismatch",
+      "code": 4
+    },
+    {
+      "kind": "CallStackOverflow",
+      "code": 5
+    }
+  ],
+  "check_ordering": [
+    "consume 4 gas (opcode cost)",
+    "validate ref_idx (MalformedCell if out of range)",
+    "depth check: call_stack.len() >= MAX_CALL_STACK_DEPTH -> CallStackOverflow",
+    "push return address"
+  ]
+}

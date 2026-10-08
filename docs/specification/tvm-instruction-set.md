@@ -59,7 +59,7 @@ Every arithmetic and conversion opcode (§4.2) carries a `width : uint16` (`1 �
 - **Unsigned/signed flavors** (`0`/`1`) raise `IntegerOverflow` (`execution.md` §3.4) when the true mathematical result does not fit in `width` bits under that signedness — per `execution.md` §3.3 rule 2, this is the default, not opt-in.
 - **Modulo flavor** (`2`) never raises `IntegerOverflow`: the result is reduced modulo `2^width` and stored as its unsigned bit pattern (per `execution.md` §3.3 rule 1's "no automatic overflow checks in the modulo flavor only"). A contract wanting wrapped *signed* semantics reinterprets the same bit pattern via a signed-flavor `CONV` (§4.2), since two's-complement wraparound is bit-identical regardless of the signedness label attached afterward.
 - **Division/modulo by zero** (`DIVMOD`, §4.2) raises `IntegerOverflow`: no result exists that could fit any declared width, and `execution.md`'s closed exception set has no dedicated "arithmetic fault" kind, so this document maps it to the closest existing one rather than extending the set.
-- **Range checks precede flavor.** Operand-validity checks are evaluated before flavor selection and raise `IntegerOverflow` for *every* flavor: a shift amount below `0` or at/above `width` (`LSHIFT`/`RSHIFT`), and division by zero (`DIV`/`DIVMOD` — §5 test 2 pins this for all flavors). "Modulo never raises" describes the *result* reduction only. (Opcodes `0x10`–`0x14` ignore the flavor operand entirely; enforcing width/flavor there is a Wave 4 integer-model non-goal, ADR-0028.)
+- **Range checks precede flavor.** Operand-validity checks are evaluated before flavor selection and raise `IntegerOverflow` for *every* flavor: a shift amount below `0` or at/above `width` (`LSHIFT`/`RSHIFT`), and division by zero (`DIV`/`DIVMOD` — §5 test 2 pins this for all flavors). "Modulo never raises" describes the *result* reduction only. Every arithmetic opcode (`0x10`–`0x14` and `0x17`–`0x19`) enforces its `width`/`flavor` operands exactly as defined here — the Wave-3 deviation where some opcodes ignored flavor or bypassed the width limit is closed (ADR-0035).
 
 ### 3.4 Bit-strings and byte-strings
 
@@ -71,9 +71,11 @@ Every arithmetic and conversion opcode (§4.2) carries a `width : uint16` (`1 �
 
 A contract's `code` (`execution.md` §3.2) is a `Cell` whose up to `MAX_CELL_DATA_BYTES = 128` data bytes (`state-model.md` §4.2) are interpreted as a flat instruction stream starting at bit offset 0, and whose up to `MAX_CELL_REFS = 4` child-cell references are addressable as **code continuations** by `JMPREF`/`CALLREF`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` (§4.5) — a program larger than one `Cell`'s data capacity is split across a tree of code `Cell`s exactly the way any other over-128-byte value already must be, per `state-model.md`'s existing limits. This is a deliberate reuse of an existing constraint rather than a new one introduced for code specifically.
 
+**`code_refs` resolution (ADR-0039, Wave 4):** at execution start and after every code switch (`JMPREF`/`CALLREF`/conditional jumps, `RET` restores, c0/c1/c2 continuation jumps), the VM resolves the *current* code cell's child references — in index order — into its `code_refs` table, through the same content-addressed cell store `LDREF`/`CTOS` use. A child reference whose content is absent fails closed with `AbsentNode` (never invented data). The table always mirrors the current code cell, never a stale ancestor: from any code cell in the tree, its own up-to-4 children are the addressable continuations.
+
 #### 3.5.2 Call stack, not general continuations
 
-`CALLREF` (§4.5) pushes a return address `(code_cell, bit_offset)` onto an internal call stack (not an operand-stack value — it is not inspectable or duplicable by contract code); `RET` pops it. No explicit call-stack depth limit is imposed: because `CALLREF` costs gas per invocation (§4.5's table), the existing gas limit already bounds recursion depth, consistent with `execution.md` §3.4 requiring resource exhaustion to be enforced uniformly through gas rather than through a second, independent limit.
+`CALLREF` (§4.5) pushes a return address `(code_cell, bit_offset)` onto an internal call stack (not an operand-stack value — it is not inspectable or duplicable by contract code); `RET` pops it. An explicit call-stack depth limit **is** imposed (ADR-0039, Wave 4): `MAX_CALL_STACK_DEPTH = 256`. A `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` taken while the call stack already holds 256 frames raises `CallStackOverflow` fail-closed, *before* cloning the return frame. Rationale: gas bounds execution *time*, not *memory* — at 4 gas per call the per-message gas cap admits ~2.5M frames (~340MB of heap clones) from a single paid message, an uncatchable host OOM. The depth limit caps worst-case call-stack memory at ~35KB. `JMPREF` and its conditional variants never touch the call stack and are not subject to the limit.
 
 #### 3.5.3 Pruned branches and `AbsentNode`
 
@@ -124,7 +126,7 @@ Every instruction is `opcode : uint8` followed by zero or more immediate operand
 | `0x05` | `ROT` | — | `(a, b, c) -> (b, c, a)` | 1 |
 | `0x06` | `PICK` | `depth: uint8` | copies `stack[depth]` (0 = top) to top | 1 |
 | `0x07` | `ROLL` | `depth: uint8` | moves `stack[depth]` to top | 1 |
-| `0x08` | `PUSHINT` | `signed: uint8`, `value: [u8; 32]` | `() -> (Integer)` | 1 |
+| `0x08` | `PUSHINT` | `signed: uint8`, `value: [u8; 32]` | `() -> (Integer)`; `signed = 0` decodes `value` as an unsigned 256-bit integer (`[0, 2^256)`), `signed = 1` as a signed 256-bit two's-complement integer (`[-2^255, 2^255)`) | 1 |
 | `0x09` | `PUSHBYTES` | `len: uint16`, then `len` raw bytes | `() -> (Bytes)` | `1 + ceil(len / 32)` |
 | `0x0A` | `NIP` | — | `(a, b) -> (b)` | 1 |
 | `0x0B` | `TUCK` | — | `(a, b) -> (b, a, b)` | 1 |
@@ -161,13 +163,13 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | Opcode | Mnemonic | Operands | Stack effect | Gas | Exceptions |
 | --- | --- | --- | --- | --- | --- |
 | `0x40` | `NEWC` | — | `() -> (Builder)`, empty | 10 | — |
-| `0x41` | `ENDC` | — | `(Builder) -> (Cell)` | 10 | — |
-| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)` | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 128 bytes |
+| `0x41` | `ENDC` | — | `(Builder) -> (Cell)`; sets the bit-granular flag iff the builder's bit length is not a multiple of 8 (ADR-0036) | 10 | `MalformedCell` if the builder state is inconsistent (unreachable via `ST*`, fail-closed) |
+| `0x42` | `STBITS` | `width: uint16`, `signed: uint8` | `(Builder, Integer) -> (Builder)`; `width = 0` stores nothing and is accepted as a no-op | 10 | `IntegerOverflow` if the value doesn't fit `width`; `MalformedCell` if appending would exceed 1024 bits |
 | `0x43` | `STREF` | — | `(Builder, Cell) -> (Builder)` | 10 | `MalformedCell` if the builder already has 4 references |
-| `0x44` | `STBYTES` | — | `(Builder, Bytes) -> (Builder)` | `10 + ceil(len / 32)` | `MalformedCell` if appending would exceed 128 bytes |
+| `0x44` | `STBYTES` | — | `(Builder, Bytes) -> (Builder)`; bytes are appended MSB-first at the current bit position (bit granularity), and the bit length advances by `8 × len` — exact at any alignment (ADR-0036) | `10 + ceil(len / 32)` | `MalformedCell` if appending would exceed 1024 bits |
 | `0x45` | `CTOS` | — | `(Cell) -> (Slice)`, at `(0, 0)` | 10 | `AbsentNode` if `Cell` is a pruned special cell (§3.5.3) |
 | `0x46` | `LDU` | `width: uint16` | `(Slice) -> (Slice, Integer)`, unsigned | 10 | `MalformedCell` if fewer than `width` bits remain |
-| `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed | 10 | `MalformedCell` if fewer than `width` bits remain |
+| `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed: the `width`-bit two's-complement field is sign-extended into the full Integer domain | 10 | `MalformedCell` if fewer than `width` bits remain |
 | `0x48` | `LDREF` | — | `(Slice) -> (Slice, Cell)` | 10 | `MalformedCell` if no references remain; `AbsentNode` if the child is unresolved (no `Cell` held for its hash); never on a pruned child (§3.5.3) |
 | `0x49` | `ISEXOTIC` | — | `(Cell) -> (bool)` | 10 | — |
 | `0x4A` | `SEMPTY` | — | `(Slice) -> (bool)`, true iff both bits and refs are exhausted | 1 | — |
@@ -176,24 +178,30 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 
 `0x4D`–`0x5F` are reserved.
 
+**Slice bit length (ADR-0036).** A `Slice`'s readable bits are its cell's
+exact bit length (`state-model.md` §4.2.1), not `8 × data_bytes.len()`.
+`SBITS` reports the bit length minus the current offset; `LDU`/`LDI` bounds
+are checked against it, so reading the completion tag as data fails closed
+(`MalformedCell`). Byte-granular cells are unaffected.
+
 ### 4.5 Control flow (`0x70`–`0x7F`)
 
 | Opcode | Mnemonic | Operands | Effect | Gas | Exceptions |
 | --- | --- | --- | --- | --- | --- |
 | `0x70` | `JMPREF` | `ref_index: uint8` | jump to child cell `ref_index`'s start | 4 | `MalformedCell` if out of range (§3.5.4) |
-| `0x71` | `CALLREF` | `ref_index: uint8` | push return address, then jump as `JMPREF` | 4 | `MalformedCell` if out of range |
+| `0x71` | `CALLREF` | `ref_index: uint8` | push return address, then jump as `JMPREF` | 4 | `MalformedCell` if out of range; `CallStackOverflow` at 256 frames (ADR-0039) |
 | `0x72` | `RET` | — | pop the call stack and resume there; terminate successfully if empty | 4 | — |
 | `0x73` | `IFJMPREF` | `ref_index: uint8` | pop `Integer`; `JMPREF` if nonzero | 4 | `MalformedCell` if out of range and taken |
 | `0x74` | `IFNOTJMPREF` | `ref_index: uint8` | pop `Integer`; `JMPREF` if zero | 4 | `MalformedCell` if out of range and taken |
-| `0x75` | `IFCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if nonzero | 4 | `MalformedCell` if out of range and taken |
-| `0x76` | `IFNOTCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if zero | 4 | `MalformedCell` if out of range and taken |
+| `0x75` | `IFCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if nonzero | 4 | `MalformedCell` if out of range and taken; `CallStackOverflow` at 256 frames (ADR-0039) |
+| `0x76` | `IFNOTCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if zero | 4 | `MalformedCell` if out of range and taken; `CallStackOverflow` at 256 frames (ADR-0039) |
 | `0x77` | `THROW` | `kind: uint8` (`0`=`IntegerOverflow`, `1`=`AbsentNode`, `2`=`MalformedCell`, `3`=`TypeMismatch`) | unconditionally raise `kind` | 4 | the named kind, always |
 | `0x78` | `IFELSE` | `true_offset: int8`, `false_offset: int8` | pop condition and branch by byte offset | 4 | `MalformedCell` for an out-of-range target |
 | `0x79` | `IFRET` | — | pop condition and return if nonzero | 4 | — |
 | `0x7A` | `REPEAT` | `count: uint8`, `offset: int8` | re-enter preceding block when count is nonzero | 4 | `MalformedCell` for an out-of-range target |
 | `0x7B` | `UNTIL` | `offset: int8` | pop condition and re-enter preceding block while zero | 4 | `MalformedCell` for an out-of-range target |
 
-`0x7C`–`0x7F` are reserved. `THROW` cannot target `OutOfGas`: that kind is raised only by the VM's own gas metering (`execution.md` §3.4), never by contract-directed control flow.
+`0x7C`–`0x7F` are reserved. `THROW` cannot target `OutOfGas` or `CallStackOverflow`: those kinds are raised only by the VM's own gas metering and call-stack depth check (`execution.md` §3.4), never by contract-directed control flow.
 
 ### 4.6 Cryptographic primitives (`0x60`–`0x6F`)
 
@@ -201,7 +209,7 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | --- | --- | --- | --- | --- | --- |
 | `0x60` | `HASHBYTES` | — | `(Bytes) -> (Integer)`, unsigned 256-bit SHA-256 (`protocol-primitives.md`) | 200 | — |
 | `0x61` | `HASHCELL` | — | `(Cell) -> (Integer)`, unsigned 256-bit domain-separated Cell hash (`state-model.md`'s `ONX_CELL_HASH_V1`) | 200 | never `AbsentNode` (§3.5.3) |
-| `0x62` | `CHKSIGNU` | — | `(pubkey: Bytes, signature: Bytes, hash: Integer) -> (bool)`, Ed25519 verify (`protocol-primitives.md`) | 4000 | `TypeMismatch` if `pubkey` is not exactly 32 bytes or `signature` is not exactly 64 bytes |
+| `0x62` | `CHKSIGNU` | — | `(pubkey: Bytes, signature: Bytes, hash: Integer) -> (bool)`, Ed25519 verify under the chain-bound tag `chksignu_tag(chain_id)` (ADR-0038; `protocol-primitives.md`) | 4000 | `TypeMismatch` if `pubkey` is not exactly 32 bytes or `signature` is not exactly 64 bytes |
 
 `0x63`–`0x6F` are reserved.
 
@@ -216,7 +224,7 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 3. **Reference operand out of range:** a `ref_index` operand (§4.5) names a child-cell reference the current code `Cell` does not have (`MalformedCell`, §3.5.4).
 4. **Arithmetic overflow:** an unsigned/signed `ADD`/`SUB`/`NEG`/`MUL`/`DIVMOD`/`CONV`/`STBITS` result does not fit its declared width, or `DIVMOD`'s divisor is zero (`IntegerOverflow`, §3.3, §4.3).
 5. **Pruned-branch content access or unresolved child:** `CTOS` is applied to a pruned special `Cell`, or `LDREF` reaches a child reference for which no `Cell` is held (`AbsentNode`, §3.5.3).
-6. **Cell/slice structural violation:** `LDU`/`LDI` requests more bits than a `Slice` has remaining, `LDREF` requests a reference a `Slice` does not have remaining, `SUBBYTES` requests a range outside its `Bytes` operand, or `STBITS`/`STREF`/`STBYTES` would grow a `Builder` past `state-model.md`'s 128-byte/4-reference limits (`MalformedCell`).
+6. **Cell/slice structural violation:** `LDU`/`LDI` requests more bits than a `Slice` has remaining, `LDREF` requests a reference a `Slice` does not have remaining, `SUBBYTES` requests a range outside its `Bytes` operand, or `STBITS`/`STBYTES` would grow a `Builder` past 1024 bits, or `STREF` past 4 references (`MalformedCell`).
 7. **Cryptographic shape violation:** `CHKSIGNU`'s `pubkey` or `signature` operand is not exactly 32 or 64 bytes respectively (`TypeMismatch`).
 8. **Gas exhaustion:** debiting the next instruction's gas cost (§4) would exceed the supplied limit (`OutOfGas`, at that exact instruction, per `execution.md` §3.4).
 9. **Explicit throw:** `THROW` always raises its named kind (§4.5); this is normal control flow, not a fault, but is listed for completeness since it is the only opcode whose entire effect is raising an exception.
@@ -231,6 +239,6 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 4. **Bit-string/byte-string tests:** `CONCAT`/`SUBBYTES`/`BYTEEQ`/`BYTELEN` round-trip correctly; `SUBBYTES` with an out-of-range `offset`/`len` raises `MalformedCell`.
 5. **Cell/slice tests:** a `Builder` built via `NEWC`/`STBITS`/`STREF`/`STBYTES`/`ENDC` round-trips through `CTOS`/`LDU`/`LDI`/`LDREF` to the original values; exceeding 128 bytes or 4 references during `ST*` raises `MalformedCell`; reading past a `Slice`'s remaining bits/refs raises `MalformedCell`.
 6. **Pruned-branch tests:** `CTOS` on a pruned special `Cell` raises `AbsentNode`; `LDREF` and `HASHCELL` on/of the same pruned `Cell` do not raise anything and return the reference/hash respectively; `LDREF` on a child reference with no held `Cell` raises `AbsentNode` (§3.5.3).
-7. **Control-flow tests:** `JMPREF`/`CALLREF`/`RET`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` correctly transfer control per §4.5; an out-of-range `ref_index` raises `MalformedCell` only when the branch is actually taken; `RET` with an empty call stack terminates execution successfully; `THROW` raises exactly the requested kind for each of its four valid operand values.
+7. **Control-flow tests:** `JMPREF`/`CALLREF`/`RET`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` correctly transfer control per §4.5; an out-of-range `ref_index` raises `MalformedCell` only when the branch is actually taken; `RET` with an empty call stack terminates execution successfully; `THROW` raises exactly the requested kind for each of its four valid operand values; a `CALLREF` taken at 256 frames raises `CallStackOverflow` (ADR-0039) while `JMPREF` at a full call stack still succeeds; `code_refs` resolves from the current code cell's children (`AbsentNode` on an unseeded child) and is refreshed across `RET`.
 8. **Gas accounting tests:** total `gas_used` after a run equals the sum of each executed instruction's §4 cost; exhausting the limit mid-run raises `OutOfGas` at the exact instruction that would exceed it (cross-references `execution.md` §6's determinism and gas tests).
 9. **`MAX_TENTATIVE_GAS` plausibility test:** a representative External Inbound admission check (`LDREF`/`LDU` cell reads plus one `CHKSIGNU`) consumes strictly less than `transactions.md`'s `MAX_TENTATIVE_GAS = 10,000` (§3.6).

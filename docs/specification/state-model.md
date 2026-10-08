@@ -76,6 +76,14 @@ Active account state record binary layout (`AccountState`), 141 bytes total:
                             all-zero = keyless: can receive, never spend)
 9. nonce         : uint64  (8 bytes, big-endian per-account sequence number)
 ```
+
+`StorageStat` additionally carries `bit_count` (uint64, sum of exact
+cell bit lengths per §4.2.1) — but it is **not serialized**: the 141-byte
+header layout above is pinned by the V2 golden vectors
+(`reference/account.py`), so `AccountState::from_bytes` derives
+`bit_count` from the decoded code/data cells instead (ADR-0037). The
+persisted `(cell_count, byte_count)` plus the embedded cells fully
+determine it.
 The `pubkey`/`nonce` pair is the message-authorization mechanism
 (`ONX_MSG_EXT_V1`, see `docs/adr/0002-message-encoding-and-domain-tags.md`):
 an external message is valid only if its signature verifies against the
@@ -92,7 +100,8 @@ spend).
 ### 4.2 Cell Binary Serialization
 A single Cell binary structure:
 ```
-1. descriptor_bytes : uint16 (byte 0: d1 = ref_count | (is_special ? 0x08 : 0);
+1. descriptor_bytes : uint16 (byte 0: d1 = ref_count | (is_special ? 0x08 : 0)
+                                           | (is_bit_granular ? 0x10 : 0);
                               byte 1: d2 = data_byte_length)
 2. data_bytes       : [uint8; d2] (0 to 128 raw payload bytes)
 3. cell_refs        : [uint256; ref_count] (32-byte SHA-256 child cell hashes, 0 to 4 refs)
@@ -101,6 +110,41 @@ The special flag occupies bit 3 of `d1` (`d1 = ref_count | (special << 3)`);
 bits 0–2 carry the reference count (0–4). `d2` is the exact data length in
 bytes. All trie cells in §4.5 are non-special, so their `d1` equals the
 reference count exactly.
+
+#### 4.2.1 Bit-length commitment (ADR-0036)
+
+The cell hash (§4.3) commits the descriptor bytes, so a cell whose data is
+not a whole number of bytes must commit its exact bit length — otherwise a
+3-bit `101` and an 8-bit `10100000` hash identically. The mechanism is the
+bit-granular ("compatible") flag, `d1` bit 4 (`0x10`), chosen over TON's
+descriptor/completion scheme: a descriptor-only change would buy no TON
+compatibility (TON's hash also commits child depths, level info, and exotic
+types) while forcing ONX's 1024-bit cells into TON's 1023-bit cap. Six
+normative rules:
+
+1. **Flag bit.** `d1` bit 4 set marks a bit-granular cell; bits 5–7 remain
+   reserved and MUST be zero. Decoders reject any encoding with bits 5–7
+   set.
+2. **Byte-granular semantics.** Flag clear ⇒ the cell's bit length is
+   exactly `8 × d2`. Such cells hash exactly as before this rule existed.
+3. **Completion tag.** Flag set ⇒ the last data byte carries a completion
+   tag: a single 1 bit at position `bit_len` (0-indexed from the MSB),
+   zeros below it. The bit length is derived, never stored:
+   `bit_len = 8 × (n − 1) + (7 − trailing_zeros(last_byte))` where `n` is
+   the data byte count.
+4. **`0x00` invalid.** A flagged cell whose last data byte is `0x00` is
+   non-canonical (no completion 1 present) and MUST be rejected.
+5. **`0x80` invalid.** A flagged cell whose last data byte is `0x80` is
+   non-canonical: a lone tag means zero data bits in the final byte, so the
+   bit length would be a multiple of 8, contradicting the flag. MUST be
+   rejected. (Equivalently: the flag is set exactly when the bit length is
+   not a multiple of 8.)
+6. **Capacity and producers.** Byte-granular cells hold up to 1024 bits
+   (128 bytes); flagged cells hold at most 1023 data bits. `ENDC`
+   (tvm-instruction-set.md §4.4) sets the flag if and only if the builder's
+   bit length is not a multiple of 8. Every decoder — the Rust
+   implementation, the Python reference, and any second implementation —
+   enforces rules 1, 4, and 5 identically and fail-closed.
 
 ### 4.3 Domain-Separated Cell Hashing
 Cell representation hash $H(\text{Cell})$ is computed as:

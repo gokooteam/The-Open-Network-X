@@ -82,6 +82,7 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
         storage_stat: StorageStat {
             cell_count: 3,
             byte_count: 99,
+            bit_count: 0,
         },
         pubkey: [7u8; 32],
         nonce: 5,
