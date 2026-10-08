@@ -223,7 +223,7 @@ under *Known bugs* below.
       call. Fix: seed the code DAG at genesis, or resolve a child only when
       `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
       contract that `CALLREF`s through the STF.
-      **Done (seeded at genesis, ADR-0040):** lazy resolution alone could
+      **Done (seeded at genesis, ADR-0041):** lazy resolution alone could
       not work, because the child content existed nowhere. The genesis
       document now carries the complete code/data DAGs of every contract
       whose roots have children (version 2 only then, so existing chain IDs

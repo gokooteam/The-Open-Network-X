@@ -30,7 +30,7 @@
 //!     dags_bytes:      ContractCellDags canonical encoding
 //! ```
 //!
-//! ## Contract cell DAGs (version 2, ADR-0040)
+//! ## Contract cell DAGs (version 2, ADR-0041)
 //!
 //! An account record embeds only the *root* code/data cells. A root with
 //! child references needs the children's content too: since ADR-0039,
@@ -130,7 +130,7 @@ impl GenesisDocument {
     }
 
     /// [`GenesisDocument::new`] plus the contract cell DAGs for contracts
-    /// whose code or data root has child references (ADR-0040).
+    /// whose code or data root has child references (ADR-0041).
     ///
     /// Fail-closed: a contract whose roots have references but no DAG, a
     /// DAG for an account that needs none (or is not a contract), a DAG
@@ -383,7 +383,7 @@ impl GenesisDocument {
 
     /// Builds the initial [`ShardStateTree`] from the genesis allocations.
     ///
-    /// Every genesis contract also gets its contract cell DAGs (ADR-0040):
+    /// Every genesis contract also gets its contract cell DAGs (ADR-0041):
     /// the document's complete DAGs where its roots have children,
     /// otherwise single-root bags (the root is the whole DAG). The STF
     /// seeds the interpreter's cell store from these, so a genesis
@@ -424,7 +424,7 @@ fn genesis_data_root(data: Option<&Cell>) -> Cell {
         .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"))
 }
 
-/// Check the contract cell DAG section against the accounts (ADR-0040).
+/// Check the contract cell DAG section against the accounts (ADR-0041).
 fn validate_contract_cells(
     accounts: &BTreeMap<AccountId, AccountState>,
     contract_cells: &BTreeMap<AccountId, ContractCellDags>,
@@ -496,9 +496,15 @@ fn validate_contract_cells(
 }
 
 /// A genesis DAG must be rooted at `root`, complete (every reference
-/// reachable from the root resolves), and hold no unreachable cell (the
-/// wire form carries only the reachable set, so an unreachable cell would
-/// not survive a `to_bytes`/`from_bytes` round trip).
+/// reachable from the root resolves), hold every cell under its own hash,
+/// and hold no unreachable cell (the wire form carries only the reachable
+/// set, so an unreachable cell would not survive a `to_bytes`/`from_bytes`
+/// round trip).
+///
+/// `BagOfCells::new` does not check that a map key is its cell's hash, so
+/// this does: a cell stored under another hash would let a reference
+/// resolve to content the committed root does not commit to, and the
+/// document would fail `from_bytes` (which does check) after a restart.
 fn check_complete_dag(boc: &BagOfCells, root: &[u8; 32]) -> Result<(), String> {
     if boc.root_hash() != root {
         return Err("not rooted at the account's committed root".to_string());
@@ -512,6 +518,9 @@ fn check_complete_dag(boc: &BagOfCells, root: &[u8; 32]) -> Result<(), String> {
         let cell = boc
             .get_cell(&hash)
             .ok_or_else(|| "dangling reference to a cell the DAG does not carry".to_string())?;
+        if cell.hash() != hash {
+            return Err("carries a cell under a hash that is not its own".to_string());
+        }
         stack.extend(cell.cell_refs().iter().copied());
     }
     if seen.len() != boc.cells().len() {
@@ -961,5 +970,61 @@ mod tests {
             derive_validator_pubkey("validator-01")
         );
         assert!(parse_or_derive_account_id("onx:alice").is_ok());
+    }
+
+    #[test]
+    fn rejects_contract_dag_with_cell_under_wrong_hash() {
+        // A code root with one child. The DAG stores an unrelated leaf
+        // under the child's hash: every reference resolves, so only a
+        // hash-vs-key check can catch it. The same DAG with the real child
+        // is accepted, so the rejection is about the misindexed cell.
+        let child = Cell::new(vec![0x01], vec![]).unwrap();
+        let impostor = Cell::new(vec![0x02], vec![]).unwrap();
+        let code = Cell::new(vec![0x00], vec![child.hash()]).unwrap();
+        let contract = derive_account_id("onx:contract");
+
+        let doc_with = |child_cell: Cell| {
+            let mut cells = BTreeMap::new();
+            cells.insert(code.hash(), code.clone());
+            cells.insert(child.hash(), child_cell);
+            let dags = ContractCellDags {
+                code: BagOfCells::new(code.hash(), cells).unwrap(),
+                data: BagOfCells::from_root(genesis_data_root(None)).unwrap(),
+            };
+            let mut accounts = sample_doc().accounts;
+            accounts.insert(
+                contract,
+                AccountState::Active {
+                    balance_nanos: 1,
+                    last_trans_lt: 0,
+                    code: Some(code.clone()),
+                    data: None,
+                    storage_stat: StorageStat {
+                        cell_count: 0,
+                        byte_count: 0,
+                        bit_count: 0,
+                    },
+                    pubkey: [0u8; 32],
+                    nonce: 0,
+                },
+            );
+            let base = sample_doc();
+            GenesisDocument::with_contract_cells(
+                base.workchain,
+                base.shard,
+                base.validators,
+                accounts,
+                BTreeMap::from([(contract, dags)]),
+            )
+        };
+
+        let doc = doc_with(child.clone()).expect("correctly indexed DAG is accepted");
+        assert!(GenesisDocument::from_bytes(&doc.to_bytes()).is_ok());
+
+        let err = doc_with(impostor).expect_err("misindexed cell must be refused");
+        assert!(
+            err.to_string().contains("under a hash that is not its own"),
+            "{err}"
+        );
     }
 }

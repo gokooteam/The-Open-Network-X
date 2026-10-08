@@ -105,16 +105,15 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   `.github/actionlint.yaml` accepts `codex-review.yml`'s
   `permission-profile` input, which `openai/codex-action@v1` supports but
   actionlint 1.7.12's bundled metadata does not list.
-
-### Fixed
-
 - Genesis contracts whose code or data cell has children can now be
-  called (ADR-0040). The genesis document carries their complete cell
+  called (ADR-0041). The genesis document carries their complete cell
   DAGs (format version 2, used only when such a contract exists, so
   existing chain IDs are unchanged), `onx-genesis` accepts them as
   `child_cells_hex`, and both `State::from_genesis` and
   `ChainStore::init_genesis` seed `contract_cells` from them. Before,
-  such a contract bounced with `AbsentNode` on every call.
+  such a contract bounced with `AbsentNode` on every call. Genesis
+  construction also rejects a DAG that stores a cell under a hash that is
+  not its own.
 
 ## [0.2.0] - 2026-10-08
 

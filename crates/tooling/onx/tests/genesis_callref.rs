@@ -1,4 +1,4 @@
-//! A genesis-deployed contract that `CALLREF`s, end to end (ADR-0040).
+//! A genesis-deployed contract that `CALLREF`s, end to end (ADR-0041).
 //!
 //! Since ADR-0039, `run()` resolves every child of the root code cell
 //! before the first instruction and fails with `AbsentNode` if one is
@@ -114,7 +114,10 @@ fn id(byte: u8) -> AccountId {
     AccountId::from_bytes([byte; 32])
 }
 
-fn call_block(state: &State, nonce: u64, lt: u64) -> Block {
+/// A block with one signed call from the sender, at the sender's next nonce
+/// as recorded in `state`.
+fn call_block(state: &State, lt: u64) -> Block {
+    let nonce = state.tree.get(&id(SENDER)).expect("sender exists").nonce();
     let msg = ExternalMessage::new_signed(
         state.chain_id,
         MsgKind::ContractCall,
@@ -142,10 +145,10 @@ fn counter_of(state: &State) -> u64 {
 fn assert_executed(receipts: &Receipts, what: &str) {
     let deliveries = &receipts.0[0].deliveries;
     assert_eq!(deliveries.len(), 1, "{what}: a bounce would add a refund");
+    let (bounced, fatal) = (deliveries[0].bounced, deliveries[0].fatal);
     assert!(
-        !deliveries[0].bounced && !deliveries[0].fatal,
-        "{what}: a genesis contract's CALLREF must execute: {:?}",
-        deliveries[0]
+        !bounced && !fatal,
+        "{what}: a genesis contract's CALLREF must execute (bounced: {bounced}, fatal: {fatal})"
     );
     assert!(deliveries[0].gas_used > 0);
 }
@@ -170,12 +173,12 @@ fn genesis_contract_callref_executes_through_the_stf() {
     let state = State::from_genesis(&genesis_doc());
     assert_eq!(counter_of(&state), 0);
 
-    let block = call_block(&state, 0, 1);
+    let block = call_block(&state, 1);
     let (state, receipts) = apply_block(&state, &block).expect("call 1 applies");
     assert_executed(&receipts, "call 1");
     assert_eq!(counter_of(&state), 1, "the callee did the increment");
 
-    let block = call_block(&state, 1, 2);
+    let block = call_block(&state, 2);
     let (state, receipts) = apply_block(&state, &block).expect("call 2 applies");
     assert_executed(&receipts, "call 2");
     assert_eq!(counter_of(&state), 2);
@@ -201,7 +204,7 @@ fn genesis_contract_callref_executes_through_storage() {
         "the persisted code DAG carries the callee"
     );
 
-    let block = call_block(&state, 0, 1);
+    let block = call_block(&state, 1);
     let (next, receipts) = apply_block(&state, &block).expect("call applies");
     assert_executed(&receipts, "stored call");
     assert_eq!(counter_of(&next), 1);

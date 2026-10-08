@@ -526,7 +526,7 @@ impl ChainStore {
     /// reader ever needed the cells table (dropped in schema v2).
     /// Contract cell DAGs for genesis-installed contracts ARE persisted
     /// (the genesis document's complete DAGs, or single-root bags where
-    /// the roots have no children — ADR-0040), so the ADR-0029 startup
+    /// the roots have no children — ADR-0041), so the ADR-0029 startup
     /// invariant holds on a fresh database.
     pub fn init_genesis(&self, doc: &GenesisDocument) -> Result<(), StorageError> {
         let genesis_hash = doc.genesis_hash();
@@ -567,7 +567,7 @@ impl ChainStore {
             }
 
             // Contract cell DAGs for genesis-installed contracts, exactly
-            // as `GenesisDocument::state_tree` built them (ADR-0040): the
+            // as `GenesisDocument::state_tree` built them (ADR-0041): the
             // document's complete DAGs for contracts whose roots have
             // children, single-root bags otherwise. Without these entries
             // the startup invariant would refuse to open a database whose

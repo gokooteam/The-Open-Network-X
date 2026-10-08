@@ -100,7 +100,7 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     accounts.insert(AccountId::from_bytes([1; 32]), active.clone());
     accounts.insert(AccountId::from_bytes([2; 32]), AccountState::Uninitialized);
     // `active`'s code root has children, so genesis must carry its DAGs
-    // (ADR-0040): this seed is a version-2 document.
+    // (ADR-0041): this seed is a version-2 document.
     let mut contract_cells = BTreeMap::new();
     contract_cells.insert(AccountId::from_bytes([1; 32]), dags.clone());
     let gen = GenesisDocument::with_contract_cells(

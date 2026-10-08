@@ -1,6 +1,6 @@
-# ADR-0040 — Genesis carries contract cell DAGs (Wave 4)
+# ADR-0041 — Genesis carries contract cell DAGs (Wave 4)
 
-**Status:** Proposed (2026-10-08)
+**Status:** Proposed (2026-10-08). Numbered 0041 because 0040 goes to the versioning standard, which #35 renumbers from its duplicate 0034.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Amends:** ADR-0029 (genesis-time `contract_cells` seeding); the genesis document layout in `crates/protocol/onx-state-model/src/genesis.rs`
 

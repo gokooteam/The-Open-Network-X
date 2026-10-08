@@ -34,7 +34,7 @@ pub struct Balance {
     #[serde(default)]
     pub data_hex: Option<String>,
     /// Child cells of the code and data roots, each as hex of canonical
-    /// cell bytes, in any order (ADR-0040). The account record embeds only
+    /// cell bytes, in any order (ADR-0041). The account record embeds only
     /// the root cells; a root with child references needs every cell it
     /// reaches here, or the contract could never execute. Genesis rejects
     /// a reachable child missing from this list and a listed cell neither
@@ -308,7 +308,7 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
 }
 
 /// Build a genesis contract's code/data DAGs from its roots and
-/// `child_cells_hex` (ADR-0040). Returns `None` when neither root has child
+/// `child_cells_hex` (ADR-0041). Returns `None` when neither root has child
 /// references: the root is then the whole DAG and the document carries no
 /// entry. Fail-closed on a reachable child absent from the list and on a
 /// listed cell neither root reaches.
