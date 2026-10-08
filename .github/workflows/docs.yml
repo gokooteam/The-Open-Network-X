@@ -1,0 +1,49 @@
+name: Docs and site
+
+# Documentation and the two websites must tell the truth about this
+# repository. Fails a PR when:
+#  - a relative Markdown link (or a github.com/.../blob/main link) is broken,
+#  - a WHITEPAPER.md section citation names a heading that doesn't exist,
+#  - on-x.live's generated facts (site/index.html) no longer match the repo
+#    (fix: python3 scripts/site.py build), a link on either site points at a
+#    path that doesn't exist, a retired term reappears, the probe console
+#    names a missing test, or the explorer's protocol constants disagree with
+#    the Rust code.
+# The web hosts deploy site/index.html and explorer/index.html only from
+# commits where this job passed (scripts/site-pull-deploy.sh checks it).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    # The deploy script looks for a check run with exactly this name.
+    name: site-and-docs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          # Full history so recorded commits in site/state.json resolve.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Documentation links
+        run: python3 scripts/check-doc-links.py
+
+      - name: White paper citations
+        run: python3 scripts/check-spec-citations.py
+
+      - name: Websites match the repository
+        run: python3 scripts/site.py check

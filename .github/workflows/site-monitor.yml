@@ -1,0 +1,79 @@
+name: Site monitor
+
+# Compares what on-x.live and on-x-scan.com actually serve with
+# site/index.html and explorer/index.html on main, several fetches per URL
+# (a domain with more than one A record can serve different content or a
+# different certificate from each server). On drift or a TLS failure it opens
+# one issue labelled `site-drift`, or rewrites the body of the open one with
+# the latest report; when everything matches again it closes it.
+#
+# Deployment itself happens on the web hosts (scripts/site-pull-deploy.sh,
+# run from cron), so a few minutes of drift right after a merge is normal.
+# The schedule leaves room for that.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-monitor
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Deployed sites match main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Compare live sites with main
+        id: live
+        continue-on-error: true
+        run: python3 scripts/site.py live --attempts 6 --json "$RUNNER_TEMP/live.json" | tee "$RUNNER_TEMP/live.txt"
+
+      - name: Open, update or close the drift issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          OUTCOME: ${{ steps.live.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create site-drift --repo "$REPO" --color d93f0b \
+            --description "A website serves something other than main" 2>/dev/null || true
+          existing=$(gh issue list --repo "$REPO" --label site-drift --state open --json number --jq '.[0].number // empty')
+          if [ "$OUTCOME" = "success" ]; then
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$REPO" \
+                --comment "Both sites serve exactly what is on main again ($RUN_URL)."
+            fi
+            exit 0
+          fi
+          {
+            echo "The scheduled site monitor found a website serving something other than \`main\`, or failing TLS."
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/live.txt"
+            echo '```'
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo "How to fix: see site/README.md (Deployment, and Known issues)."
+          } > "$RUNNER_TEMP/body.md"
+          if [ -n "$existing" ]; then
+            # Keep one issue current instead of adding a comment every run.
+            gh issue edit "$existing" --repo "$REPO" --body-file "$RUNNER_TEMP/body.md"
+          else
+            gh issue create --repo "$REPO" --label site-drift \
+              --title "Website drift: deployed site differs from main" --body-file "$RUNNER_TEMP/body.md"
+          fi
+          exit 1
