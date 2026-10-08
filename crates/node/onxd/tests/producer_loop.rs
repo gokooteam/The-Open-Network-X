@@ -713,7 +713,9 @@ fn loop_double_key_reveal_drops_only_second_reveal() {
     h.drop_msg(&reveal2);
     h.drop_msg(&honest);
 
-    let (handle, shutdown) = h.run_until(10_000, 1, Duration::from_secs(20));
+    // Head is at seqno 1 from the direct commit, and startup recovery
+    // regenerates block-00000001.blk before the first tick: wait for block 2.
+    let (handle, shutdown) = h.run_until(10_000, 2, Duration::from_secs(20));
     shutdown.store(true, Ordering::Relaxed);
     let stats = handle
         .join()

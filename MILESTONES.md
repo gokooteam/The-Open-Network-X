@@ -315,7 +315,7 @@ under *Known bugs* below.
       `OpenSSF Scorecard` has stayed green on every push since #30. Because
       #32 was red, the 10-merge count restarts at #33 (1 of 10). To keep a
       repeat out of `main`, the `CI` Rust job now type-checks the fuzz crate
-      on stable (`cargo check --manifest-path fuzz/Cargo.toml`). With the
+      on stable (`cargo check --locked --manifest-path fuzz/Cargo.toml --bins`). With the
       pre-fix target, this check fails with the same missing `chain_id`
       error.
 - [x] Add a finite fuzz regression run per target to CI, so all three
