@@ -97,19 +97,43 @@ thread_local! {
     ///
     /// `propose_block_caught` sets it for the dry-run containment boundary:
     /// panics there are deliberate probes for hostile-message isolation
-    /// (ADR-0029), not crashes. Sentry's panic hook flushes synchronously
-    /// (up to `shutdown_timeout` per panic), so reporting each probe would
-    /// stall block production ~2s per panic — about 20s per hostile message
-    /// at a 1,000-message mempool — and flood Sentry until rate-limited.
-    /// One summary event is sent for the isolated message instead
-    /// (`drop_panicking_message`).
+    /// (ADR-0029), not crashes. The panic-hook wrapper installed in `main`
+    /// skips sentry's hook entirely while the flag is set — a `before_send`
+    /// filter is not enough, because the hook's synchronous flush still
+    /// stalls the thread. One summary event is sent for the isolated
+    /// message instead (`drop_panicking_message`, rate-limited).
     static SUPPRESS_SENTRY_PANIC: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Whether Sentry panic reporting is currently suppressed on this thread.
-/// Read by the `before_send` hook installed in `main.rs`.
+/// Read by the panic-hook wrapper installed in `main.rs`.
 pub fn suppress_sentry_panic() -> bool {
     SUPPRESS_SENTRY_PANIC.with(|f| f.get())
+}
+
+/// At most one Sentry summary event per 60s window; returns `Some(dropped)`
+/// with the number of events dropped since the last sent one when the caller
+/// may send now, `None` when this event must be dropped. A hostile-message
+/// flood must not burn Sentry quota or fill sentry's queue (a full queue
+/// silently drops events, so a real crash arriving mid-flood could be lost).
+fn take_summary_slot() -> Option<u32> {
+    use std::sync::{LazyLock, Mutex};
+    use std::time::Instant;
+    static STATE: LazyLock<Mutex<(Option<Instant>, u32)>> = LazyLock::new(|| Mutex::new((None, 0)));
+    let mut state = STATE.lock().expect("summary rate-limit state poisoned");
+    let now = Instant::now();
+    match state.0 {
+        Some(t) if now.duration_since(t) < Duration::from_secs(60) => {
+            state.1 += 1;
+            None
+        }
+        _ => {
+            let dropped = state.1;
+            state.0 = Some(now);
+            state.1 = 0;
+            Some(dropped)
+        }
+    }
 }
 
 /// Canonical (pubkey-sorted) genesis validator refs, for `validator_index`
@@ -272,16 +296,19 @@ fn propose_block_caught(
     parent_block_time: u64,
 ) -> Result<Result<Block, StfError>, Box<dyn Any + Send>> {
     // Suppress Sentry panic reports for the containment boundary (see
-    // SUPPRESS_SENTRY_PANIC). The guard resets the flag even when the
-    // dry-run panics, because it drops after `catch_unwind` returns.
-    struct SuppressGuard;
+    // SUPPRESS_SENTRY_PANIC). The guard restores the previous value (not
+    // just `false`) so a future nested containment call can't clear the
+    // flag early.
+    struct SuppressGuard {
+        prev: bool,
+    }
     impl Drop for SuppressGuard {
         fn drop(&mut self) {
-            SUPPRESS_SENTRY_PANIC.with(|f| f.set(false));
+            SUPPRESS_SENTRY_PANIC.with(|f| f.set(self.prev));
         }
     }
-    SUPPRESS_SENTRY_PANIC.with(|f| f.set(true));
-    let _guard = SuppressGuard;
+    let prev = SUPPRESS_SENTRY_PANIC.with(|f| f.replace(true));
+    let _guard = SuppressGuard { prev };
     catch_unwind(AssertUnwindSafe(|| {
         // TEST-ONLY: simulates an interpreter/STF panic DURING the
         // dry-run, i.e. inside the containment boundary.
@@ -664,12 +691,35 @@ fn drop_panicking_message(
     mempool: &mut Mempool,
     stats: &mut ProducerStats,
 ) -> Result<(), TickError> {
-    let k = find_first_panicking_prefix(state, candidates, lt, fee_collector).ok_or_else(|| {
-        TickError::Retryable(
-            "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
-                .to_string(),
-        )
-    })?;
+    let k = match find_first_panicking_prefix(state, candidates, lt, fee_collector) {
+        Some(k) => k,
+        None => {
+            // The dry-run panicked with no panicking message prefix: the
+            // panic is NOT message-caused, so this is a genuine STF/state
+            // bug, not a hostile message. It happens under the suppress flag
+            // and retries every tick — without this report it would be
+            // completely invisible in Sentry. Rate-limited like the
+            // per-message summaries.
+            if let Some(dropped) = take_summary_slot() {
+                let dropped_note = if dropped > 0 {
+                    format!(" ({dropped} similar reports dropped by rate limit)")
+                } else {
+                    String::new()
+                };
+                sentry::capture_message(
+                    &format!(
+                        "producer: dry-run panicked with no panicking message prefix \
+                         (not message-caused; mempool left intact){dropped_note}"
+                    ),
+                    sentry::Level::Error,
+                );
+            }
+            return Err(TickError::Retryable(
+                "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
+                    .to_string(),
+            ));
+        }
+    };
     let culprit = candidates.remove(k);
     eprintln!(
         "producer: PANIC CONTAINED — dropping message {} from sender {} nonce {}: \
@@ -679,18 +729,27 @@ fn drop_panicking_message(
         hex::encode(culprit.from.to_bytes()),
         culprit.nonce,
     );
-    // One Sentry event for the isolated message. The individual probe panics
-    // were suppressed (see SUPPRESS_SENTRY_PANIC); without this, a hostile
-    // message would be invisible in Sentry. No-op when Sentry is not initialized.
-    sentry::capture_message(
-        &format!(
-            "producer: contained dry-run panic; dropped message {} from {} nonce {} (local fault, not a bounce)",
-            hex::encode(culprit.hash()),
-            hex::encode(culprit.from.to_bytes()),
-            culprit.nonce,
-        ),
-        sentry::Level::Warning,
-    );
+    // One Sentry event for the isolated message, rate-limited (see
+    // take_summary_slot). The individual probe panics were suppressed (see
+    // SUPPRESS_SENTRY_PANIC); without this, a hostile message would be
+    // invisible in Sentry. No-op when Sentry is not initialized.
+    if let Some(dropped) = take_summary_slot() {
+        let dropped_note = if dropped > 0 {
+            format!(" ({dropped} similar reports dropped by rate limit)")
+        } else {
+            String::new()
+        };
+        sentry::capture_message(
+            &format!(
+                "producer: contained dry-run panic; dropped message {} from {} nonce {} \
+                 (local fault, not a bounce){dropped_note}",
+                hex::encode(culprit.hash()),
+                hex::encode(culprit.from.to_bytes()),
+                culprit.nonce,
+            ),
+            sentry::Level::Warning,
+        );
+    }
     mempool.reject_candidate(
         &culprit.hash(),
         "dry-run execution panicked (local fault, not a bounce)",

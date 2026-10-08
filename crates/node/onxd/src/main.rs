@@ -55,18 +55,6 @@ async fn main() {
             // longer than this anyway; without it, a slow endpoint stalls
             // the panicking thread up to the default 2s per panic.
             opts.shutdown_timeout = Duration::from_millis(500);
-            // The producer deliberately catches panics while isolating
-            // hostile messages (ADR-0029, `propose_block_caught`). Reporting
-            // each probe would stall block production on the hook's
-            // synchronous flush and flood Sentry until rate-limited; one
-            // summary event is sent for the isolated message instead.
-            opts.before_send = Some(Arc::new(|event: sentry::protocol::Event<'static>| {
-                if onxd::producer::suppress_sentry_panic() {
-                    None
-                } else {
-                    Some(event)
-                }
-            }));
             // Timeout-configured transport (see struct docs above).
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
@@ -74,7 +62,24 @@ async fn main() {
                 .build()
                 .expect("reqwest client with timeouts builds");
             opts.transport = Some(Arc::new(TimeoutTransportFactory { client }));
-            sentry::init((dsn, opts))
+            let guard = sentry::init((dsn, opts));
+            // Skip sentry's panic hook entirely while the producer is inside
+            // a deliberate containment probe (ADR-0029). A `before_send`
+            // filter is NOT enough: the hook still runs its synchronous
+            // `flush`, whose blocking send onto sentry's queue has no
+            // timeout — with a full queue that's ~10s of stalled block
+            // production per probe panic (~11 probes per hostile message).
+            // Wrapping the hook avoids the flush completely (measured
+            // 0.003–0.09ms per suppressed panic vs ~505ms–10s before).
+            // The producer's own backtrace hook (installed later at producer
+            // startup) wraps this one and still logs loudly to stderr.
+            let sentry_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                if !onxd::producer::suppress_sentry_panic() {
+                    sentry_hook(info);
+                }
+            }));
+            guard
         });
 
     let args: Vec<String> = env::args().collect();
