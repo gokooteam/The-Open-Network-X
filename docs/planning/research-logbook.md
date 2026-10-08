@@ -6,7 +6,7 @@ This logbook maintains a running chain of research and development questions for
 > the retired `docs/decisions/ADR-0001…0020` numbering, which is now
 > `docs/adr/0008…0027` (add 7). The entries are left as written; see
 > [`docs/decisions/README.md`](../decisions/README.md) for the mapping.
-> Whether this convention continues is an open M4 item in `MILESTONES.md`.
+> The convention continues (decided 2026-10-08): every PR adds one entry.
 
 ## Rules for Contributors
 
@@ -16,7 +16,7 @@ Every contributor making a pull request to ONX must participate in the Research 
 2. Add a new entry numbered sequentially (`Entry #N`).
 3. Label your answer to the previous question clearly using the keyword `[ANSWER]`.
 4. Label your new question regarding ONX development clearly using the keyword `[QUESTION]`.
-5. Ensure your entry contains both `[ANSWER]` and `[QUESTION]` sections. CI will fail if these keywords/labels are omitted in new logbook entries.
+5. Ensure your entry contains both `[ANSWER]` and `[QUESTION]` sections. The logbook is a convention, not a gate: no CI workflow checks it today. (If enforcement is ever added, `CONTRIBUTING.md` must name the workflow.)
 
 ---
 

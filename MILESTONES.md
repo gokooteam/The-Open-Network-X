@@ -313,9 +313,13 @@ under *Known bugs* below.
       but it isn't. Wire it in or correct the README. **Done (corrected):**
       the README now says it is a Python model that no workflow runs, and
       that M5 replaces it. Evidence: `tests/simulation/README.md`.
-- [ ] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
+- [x] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
       #12 (2026-09-10), and none of PRs #1–#23 added one. Revive the
-      convention or retire it.
+      convention or retire it. **Done (revived 2026-10-08):** entries #13–#14
+      show the chain working — each answers the previous entry's question;
+      the logbook's "CI will fail" claim was corrected to match
+      CONTRIBUTING.md (convention, not a gate). Evidence:
+      `docs/planning/research-logbook.md`.
 - [x] Docs and websites are checked, not trusted. **Done:** the `Docs and
       site` workflow (`.github/workflows/docs.yml`, job `site-and-docs`)
       fails a PR on a broken Markdown link (`scripts/check-doc-links.py`), a
