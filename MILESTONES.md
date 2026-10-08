@@ -236,19 +236,29 @@ ticked.
 - [ ] Require CI to pass before merging (branch protection). CI runs only on
       PRs and pushes to `main`, and a run takes about 7–8 minutes. These PRs
       were merged within about a minute of being opened, so their CI could
-      not have finished: #2, #5, #7, #9, #17, #18, #20, #23.
+      not have finished: #2, #5, #7, #9, #17, #18, #20, #23. #28 and #29
+      were merged after their own `Fuzz` run had already failed.
 - [ ] Get `main` green and keep it green. Before `d907e2c`, 6 of the 7 most
       recent completed CI runs on `main` failed (runs #40–#55). Target: the
       last 10 merges to `main` are green on every required workflow
-      _(proposed)_.
+      _(proposed)_. **Progress:** at `29b5d1a` three workflows were red on
+      `main`, all from CI configuration: `Fuzz` (never built a target),
+      `OpenSSF Scorecard` (every push since #21) and `Workflow Security`
+      (actionlint). #30 addresses all three; the Scorecard fix can only be
+      confirmed by the first push to `main` after it merges. Tick this box
+      only after 10 green merges.
 - [x] Add a finite fuzz regression run per target to CI, so all three
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
       (one matrix job per target, pinned nightly) on every PR and push to
-      `main`, and uploads crash inputs as artifacts. A local 30 s run per
-      target found no crash. The scheduled long-running job and a
-      checked-in corpus are left for the maintenance gate's 24-hour
-      criterion.
+      `main`, and uploads crash inputs as artifacts. Correction: until #30
+      the workflow never built a target in CI. cargo-fuzz was a musl build
+      and defaulted to the musl target, where AddressSanitizer cannot link,
+      so every run from #28 on failed in the build step. Evidence that it
+      now works: Fuzz run 37754903494 on #30, where all three targets built
+      and ran their full 60 s with no crash. The scheduled long-running
+      job and a checked-in corpus are left for the maintenance gate's
+      24-hour criterion.
 
 *Release hygiene*
 - [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.

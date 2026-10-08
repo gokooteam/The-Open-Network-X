@@ -60,6 +60,27 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 - `onx-cli wallet balance` and `onx-cli deploy-contract`. Both printed
   placeholder output that looked like a result; there is no RPC to answer a
   balance query and no deploy message type yet.
+- `.github/workflows/label.yml`: it ran `actions/labeler@v4` on the same
+  trigger and config as `labeler.yml`, which already runs `labeler@v6`. v4
+  predates the `changed-files` format `.github/labeler.yml` uses, and
+  actionlint rejects v4 because its Node runtime is no longer supported.
+
+### Fixed
+
+- `Fuzz` CI never built a target: cargo-fuzz defaults `--target` to the
+  triple it was compiled for, `install-action` installs a musl build, and
+  AddressSanitizer cannot link against static musl libc. The workflow now
+  passes `--target x86_64-unknown-linux-gnu` to `cargo fuzz build` and
+  `cargo fuzz run`.
+- `OpenSSF Scorecard` failed on every push to `main` (PR runs don't
+  publish): `publish_results` signs through Sigstore, which needs
+  `id-token: write`. Without it the signer waited for an interactive login
+  until it timed out.
+- `Workflow Security` (actionlint) failed on `main`: `version-bump.yml`
+  now marks its literal Markdown backticks for ShellCheck (SC2016), and
+  `.github/actionlint.yaml` accepts `codex-review.yml`'s
+  `permission-profile` input, which `openai/codex-action@v1` supports but
+  actionlint 1.7.12's bundled metadata does not list.
 
 ## [0.2.0] - 2026-10-08
 

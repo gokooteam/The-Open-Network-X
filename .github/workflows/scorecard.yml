@@ -25,6 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
+      # publish_results signs the results through Sigstore, which needs an
+      # OIDC token. Without it the signer falls back to an interactive
+      # device-code login and every push to main timed out after ~15 min.
+      # (PR runs never publish, which is why they stayed green.)
+      id-token: write
       actions: read
       contents: read
     steps:

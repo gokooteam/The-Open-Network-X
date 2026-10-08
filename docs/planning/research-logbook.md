@@ -134,3 +134,13 @@ The per-block account-map copy (MILESTONES.md M4) came from `ShardStateTree` kee
 
 #### [QUESTION]
 The contract cell DAG map is still copied with every `ShardStateTree` clone and fully compared in `ChainStore::commit_block`. Should those DAGs become reference-counted and compared by pointer before contract-heavy load arrives, and should a regression budget for that path be specified in terms of contract count, DAG size, or both?
+
+### Entry #14
+
+#### [ANSWER]
+Share the DAGs, but don't use pointer comparison as the test for "changed". `ShardStateTree::contract_cells` is a `BTreeMap<AccountId, ContractCellDags>`, so every clone deep-copies every contract's code and data `BagOfCells`, and `ChainStore::commit_block` evaluates `old != dags` over the full content of every contract's DAGs on every block. With reference-counted values (or a persistent map, like the account trie) a clone copies pointers, and `Rc::ptr_eq` can skip an entry that was carried over untouched. Pointer equality only works in one direction, though. Equal pointers prove a DAG is unchanged. Unequal pointers don't prove it changed, because re-execution can rebuild an identical DAG in a new allocation. That costs at most a redundant write, so it's fine as a fast path for persistence. Nothing consensus-relevant may depend on it. A better source of truth is the STF itself: it knows which contracts executed in the block, so it can return that set, and `commit_block` can write exactly those DAGs without comparing anything.
+
+The budget should be stated in both terms, the way `state-model.md` §7.1 states the account case. A clone should cost O(1) regardless of contract count or DAG size, and per-block DAG work should scale with the contracts the block executes and the size of their DAGs, not with every contract in state. A count-only budget misses one very large DAG; a size-only budget misses many small contracts. As in §7.1, the always-on tests should check the structure (a clone shares the map, and an untouched contract is neither compared by content nor rewritten). Wall-clock numbers belong in an `--ignored` probe, not a CI gate.
+
+#### [QUESTION]
+The `Fuzz` workflow failed while building on every run from its first PR (#28) until this fix, and #28 and #29 were both merged with it red. When M4's branch protection is turned on, which workflows should be required checks? In particular, should the nightly-pinned `Fuzz` job be required on every PR, so that a toolchain or prebuilt-tool change can block unrelated merges, or should only the stable-toolchain jobs be required, with fuzz failures on `main` triaged through a separate alert?
