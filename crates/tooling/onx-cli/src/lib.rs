@@ -20,8 +20,9 @@ use onx_primitives::SecretKey;
 use onx_stf::{derive_address, ExternalMessage, MsgKind};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MnemonicEntry {
@@ -165,22 +166,17 @@ pub fn wallet_create(out_dir: impl AsRef<Path>) -> Result<WalletCreateResponse, 
         address_hex: hex::encode(derive_address(&public_key).to_bytes()),
     };
 
-    fs::create_dir_all(out_dir.as_ref()).map_err(|err| err.to_string())?;
-    let path = out_dir.as_ref().join("wallet.json");
+    let out_dir = out_dir.as_ref();
+    fs::create_dir_all(out_dir).map_err(|err| err.to_string())?;
+    let path = out_dir.join("wallet.json");
     let json = serde_json::to_string_pretty(&response).map_err(|err| err.to_string())?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(&path)
-        .map_err(|err| format!("cannot create {}: {err}", path.display()))?;
-    file.write_all(json.as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
+    // Write a private temp file, then hard-link it into place: `hard_link`
+    // fails if `wallet.json` already exists (never overwrites), and a failed
+    // write never leaves a partial `wallet.json` that would block a retry.
+    let tmp = write_unique_temp(out_dir, "wallet", json.as_bytes(), true)?;
+    let linked = fs::hard_link(&tmp, &path);
+    let _ = fs::remove_file(&tmp);
+    linked.map_err(|err| format!("cannot create {}: {err}", path.display()))?;
     Ok(response)
 }
 
@@ -281,18 +277,16 @@ pub fn build_transfer(
 /// Write `msg` into an `onxd` tx-pool drop directory as `<hash>.msg`.
 ///
 /// Follows the pool's atomic-write convention: the bytes go to a temp file
-/// the intake scan ignores (no `.msg` extension), are synced, and are then
-/// renamed into place, so the node never reads a half-written message.
+/// the intake scan ignores (no `.msg` extension), unique to this call, are
+/// synced, and are then renamed into place, so the node never reads a
+/// half-written message even when the same message is submitted twice at
+/// once.
 pub fn write_to_pool(pool_dir: impl AsRef<Path>, msg: &ExternalMessage) -> Result<PathBuf, String> {
     let pool_dir = pool_dir.as_ref();
     let name = hex::encode(msg.hash());
-    let tmp = pool_dir.join(format!(".{name}.tmp"));
     let dest = pool_dir.join(format!("{name}.msg"));
-    let mut file =
-        fs::File::create(&tmp).map_err(|err| format!("cannot create {}: {err}", tmp.display()))?;
-    file.write_all(&msg.to_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|err| format!("cannot write {}: {err}", tmp.display()))?;
+    let tmp = write_unique_temp(pool_dir, &name, &msg.to_bytes(), false)?;
+    // Replacing an existing `<hash>.msg` is harmless: same name, same bytes.
     fs::rename(&tmp, &dest).map_err(|err| {
         let _ = fs::remove_file(&tmp);
         format!("cannot rename into {}: {err}", dest.display())
@@ -300,10 +294,53 @@ pub fn write_to_pool(pool_dir: impl AsRef<Path>, msg: &ExternalMessage) -> Resul
     Ok(dest)
 }
 
+/// Write `bytes` to a new, uniquely named, hidden `.tmp` file in `dir` and
+/// sync it. The file is created exclusively (`create_new`, which also
+/// refuses to follow a pre-placed symlink), so two concurrent writers never
+/// share or truncate one file. `private` sets mode 0600 on Unix (wallets);
+/// pool messages keep default permissions so an `onxd` running as another
+/// user can read them. On any failure the temp file is removed.
+fn write_unique_temp(
+    dir: &Path,
+    stem: &str,
+    bytes: &[u8],
+    private: bool,
+) -> Result<PathBuf, String> {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let mut attempts = 0;
+    let (tmp, mut file) = loop {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = dir.join(format!(".{stem}.{}.{seq}.tmp", std::process::id()));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        #[cfg(not(unix))]
+        let _ = private;
+        match options.open(&tmp) {
+            Ok(file) => break (tmp, file),
+            // A stale temp from an earlier process with the same pid.
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempts < 16 => {
+                attempts += 1;
+            }
+            Err(err) => return Err(format!("cannot create {}: {err}", tmp.display())),
+        }
+    };
+    if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("cannot write {}: {err}", tmp.display()));
+    }
+    Ok(tmp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::AtomicU32;
 
     fn scratch_dir(tag: &str) -> PathBuf {
         static N: AtomicU32 = AtomicU32::new(0);
@@ -352,6 +389,8 @@ mod tests {
         }
         let err = wallet_create(&dir).unwrap_err();
         assert!(err.contains("cannot create"), "{err}");
+        // Neither the success nor the refusal leaves a temp file behind.
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
         // The original wallet survives.
         assert_eq!(
             load_wallet_key(dir.join("wallet.json"))
@@ -484,6 +523,58 @@ mod tests {
         );
         assert_eq!(fs::read(&path).unwrap(), msg.to_bytes());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_identical_pool_writes_never_publish_partial_bytes() {
+        let dir = scratch_dir("pool-race");
+        fs::create_dir_all(&dir).unwrap();
+        let msg = build_transfer(&request(), &secret(0x22)).unwrap();
+        let handles: Vec<_> = (0..16)
+            .map(|_| {
+                let (dir, msg) = (dir.clone(), msg.clone());
+                std::thread::spawn(move || {
+                    let path = write_to_pool(&dir, &msg).unwrap();
+                    // Whatever is published at any moment is the full message.
+                    assert_eq!(fs::read(&path).unwrap(), msg.to_bytes());
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec![format!("{}.msg", hex::encode(msg.hash()))]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unique_temps_are_distinct_and_private_only_on_request() {
+        let dir = scratch_dir("temp");
+        fs::create_dir_all(&dir).unwrap();
+        let a = write_unique_temp(&dir, "x", b"one", false).unwrap();
+        let b = write_unique_temp(&dir, "x", b"two", false).unwrap();
+        assert_ne!(a, b);
+        assert_eq!(fs::read(&a).unwrap(), b"one");
+        assert_eq!(fs::read(&b).unwrap(), b"two");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let p = write_unique_temp(&dir, "p", b"k", true).unwrap();
+            assert_eq!(
+                fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let q = write_unique_temp(&dir, "q", b"k", false).unwrap();
+            assert_ne!(
+                fs::metadata(&q).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

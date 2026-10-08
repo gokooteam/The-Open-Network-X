@@ -229,7 +229,9 @@ fn cli_refuses_stateless_invalid_transfers() {
     let dir = scratch("invalid");
     let seed = dir.join("faucet.seed");
     std::fs::write(&seed, "11".repeat(32)).unwrap();
-    let base = |amount: &str, extra: &[&str]| {
+    // Each case must fail inside onx-cli's own validation, so every case
+    // checks the specific error text, not just a non-zero exit.
+    let fails_with = |to: &str, amount: &str, extra: &[&str], expected: &str| {
         let mut args = vec![
             "transfer".to_string(),
             "--chain-id".into(),
@@ -237,25 +239,30 @@ fn cli_refuses_stateless_invalid_transfers() {
             "--seed-file".into(),
             seed.to_str().unwrap().into(),
             "--to".into(),
-            FAUCET.into(),
+            to.into(),
             "--amount".into(),
             amount.into(),
             "--nonce".into(),
             "0".into(),
         ];
         args.extend(extra.iter().map(|s| s.to_string()));
-        Command::new(env!("CARGO_BIN_EXE_onx-cli"))
+        let out = Command::new(env!("CARGO_BIN_EXE_onx-cli"))
             .args(&args)
             .output()
-            .unwrap()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{args:?} unexpectedly succeeded");
+        assert!(stderr.contains(expected), "{args:?}: stderr {stderr:?}");
     };
-    let zero = base("0", &[]);
-    assert!(!zero.status.success());
-    assert!(String::from_utf8_lossy(&zero.stderr).contains("non-zero"));
+    fails_with(FAUCET, "0", &[], "amount must be non-zero");
     // The faucet's explicit genesis address is not derived from its key.
-    let reveal = base("1", &["--from", FAUCET, "--reveal-key"]);
-    assert!(!reveal.status.success());
-    let short_to = base("1", &["--to", "abcd"]);
-    assert!(!short_to.status.success());
+    fails_with(
+        FAUCET,
+        "1",
+        &["--from", FAUCET, "--reveal-key"],
+        "not the key-derived address",
+    );
+    fails_with("abcd", "1", &[], "--to: expected 32 bytes, got 2");
+    fails_with(FAUCET, "1", &["--from", "zz"], "--from: invalid hex");
     let _ = std::fs::remove_dir_all(&dir);
 }
