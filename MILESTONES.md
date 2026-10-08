@@ -380,7 +380,15 @@ under *Known bugs* below.
       repeat out of `main`, the `CI` Rust job now type-checks the fuzz crate
       on stable (`cargo check --locked --manifest-path fuzz/Cargo.toml --bins`). With the
       pre-fix target, this check fails with the same missing `chain_id`
-      error.
+      error. **Count since #33** (push runs on `main`, checked 2026-10-08):
+      #38 (`a1eade9`) and #34 (`91a84a6`) had `Code Coverage` red, from the
+      timing-sensitive `onxd` `producer_loop` test that #40 then fixed; #35
+      (`53c6d57`) was all green; #40 (`c140ce1`) had `CI` and `Code
+      Coverage` cancelled, because #36 was pushed 25 s later; #36
+      (`706afe5`) was all green. `Code Coverage` is not a required check in
+      `.github/rulesets/main.json`. Counting every workflow, the run of
+      green merges restarts at #36 (1 of 10). Counting required checks only,
+      #38, #35 and #36 are green and #40 has no completed `CI` run.
 - [x] Add a finite fuzz regression run per target to CI, so all three
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
@@ -396,7 +404,11 @@ under *Known bugs* below.
 
 *Release hygiene*
 - [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.
-      devnet-1 is public.
+      devnet-1 is public. **Progress:** `SECURITY.md` exists and points to
+      GitHub private vulnerability reporting. That channel only works once a
+      repo admin enables it (Settings → Code security → Private vulnerability
+      reporting). Tick this box when the "Report a vulnerability" button
+      appears on the Security tab.
 - [ ] Publish the GitHub Release for `v0.2.0`. The tag exists and
       `release.yml` creates a *draft*, but no published release exists yet.
 - [ ] Tag `v0.3.0` through the Version Bump workflow.

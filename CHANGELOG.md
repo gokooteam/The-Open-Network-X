@@ -18,6 +18,8 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Added
 
+- `SECURITY.md`: how to report a vulnerability privately (GitHub private
+  vulnerability reporting), what counts, and response targets.
 - `site/`: the source of on-x.live, imported from the live server and
   corrected. Repository facts on it (spec and ADR lists, version, toolchain,
   block format, current milestone, devnet-1 chain ID, test count, replay
@@ -157,6 +159,8 @@ signatures `ONX_MSG_EXT_V1`, addresses `ONX_ADDR_V1`.
 
 ### Added
 
+- `SECURITY.md`: how to report a vulnerability privately (GitHub private
+  vulnerability reporting), what counts, and response targets.
 - Deterministic replay: real genesis, pure state transition function, atomic
   redb storage with crash recovery, and the `onx replay` command (#1).
 - Ed25519 transaction authorization with per-account nonces (#2).
