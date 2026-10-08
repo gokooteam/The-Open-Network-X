@@ -80,6 +80,15 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Fixed
 
+- VM: code length is the code cell's exact `bit_len()` (ADR-0036), not
+  `8 × data_bytes.len()`. In a bit-granular code cell the completion tag
+  and padding bits no longer execute as instructions; trailing bits too
+  few for an opcode or operand raise `MalformedCell`. Evidence:
+  `crates/protocol/onx-execution/tests/code_bit_len.rs`.
+- `onxd` producer: a batch over `MAX_GAS_PER_BLOCK` is split across blocks
+  instead of rejecting the message that tipped it over (which stranded the
+  sender's later nonces and let heavy calls get honest messages dropped).
+  The block ends before that message and the rest stay in `pending/`.
 - Explorer: its self-test failed for every visitor ("do not trust
   results") because the header vector was still the 148-byte pre-`ONXBLK05`
   one; it now uses the 160-byte vector from `hand_derived_vectors.rs`. The

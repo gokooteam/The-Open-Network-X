@@ -200,14 +200,22 @@ under *Known bugs* below.
       never runs. Reproduced on `main` @ `9d2b452`. Fix: reset `c0` from the
       remaining call stack on implicit return too. Evidence needed: a test
       of that A → B → C shape where A's code after the call runs.
-- [ ] Code length ignores a code cell's exact bit length. `step()` and the
+- [x] Code length ignores a code cell's exact bit length. `step()` and the
       operand readers measure code as `8 × data_bytes.len()`, not
       `bit_len()`, so in a bit-granular code cell (ADR-0036) the completion
       tag and padding bits execute as instructions. Reproduced: a 1-bit code
       cell stores byte `0x40` and runs it as `NEWC`. Fix: bound reads by
       `bit_len()`, or reject code cells that aren't byte-aligned. Evidence
       needed: that 1-bit cell raises `MalformedCell` instead.
-- [ ] Hitting the block gas cap drops a valid message. `propose_block`
+      **Done:** `step()`, `read_uint8` and the `IFELSE`/`REPEAT`/`UNTIL`
+      jump bounds all measure code with `Cell::bit_len()`; trailing bits too
+      few for an opcode or operand raise `MalformedCell`. Evidence:
+      `one_bit_code_cell_raises_malformed_cell_instead_of_running_newc` in
+      `crates/protocol/onx-execution/tests/code_bit_len.rs` (the 1-bit cell
+      stores `0x40` and raises `MalformedCell` with 0 gas used), plus 9- and
+      12-bit cases where only the leading `NOP` runs. Three of the four
+      tests fail on the old reader.
+- [x] Hitting the block gas cap drops a valid message. `propose_block`
       returns `BlockGasExceeded`, and `onxd`'s producer
       (`crates/node/onxd/src/producer.rs`) treats it like any rejection: it
       bisects to the message that tipped the block over, moves it to
@@ -215,6 +223,16 @@ under *Known bugs* below.
       calls can be used to get honest messages dropped. Fix: hold that
       message for a later block. Evidence needed: a producer test where an
       over-cap batch splits across two blocks with nothing rejected.
+      **Done:** the bisection now returns the error of the first failing
+      prefix; when it is `BlockGasExceeded`, `propose_robust` ends the block
+      before that message and leaves it and the rest in `pending/`. Only a
+      message that exceeds the cap by itself is rejected (it can never fit,
+      and holding it would stall everything behind it). Evidence:
+      `block_gas_cap_splits_batch_across_blocks_without_rejecting` in
+      `producer.rs`: twelve ~9.8M-gas contract calls from six senders go
+      through two real `run_tick`s; block 1 commits ten, block 2 the other
+      two, every nonce reaches 2, and `rejected/` stays empty. On the old
+      producer it fails: the eleventh call is rejected.
 - [ ] Genesis contracts whose code cell has children can't be called.
       Since ADR-0039, `run()` resolves every child of the root code cell
       before the first instruction and fails with `AbsentNode` if one is
