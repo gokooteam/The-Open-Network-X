@@ -16,6 +16,9 @@
 //! 3. The document survives its canonical encoding (version 2) unchanged.
 //! 4. A config that omits the child's content is refused at genesis
 //!    instead of producing a contract that can never run.
+//! 5. The data-only case: childless code whose data root has a child
+//!    (read by `LDREF`) also selects version 2 and executes, in memory
+//!    and through storage.
 
 use onx_data_structures::AccountId;
 use onx_genesis::{build_genesis_document, Balance, GenesisConfig, Validator, Workchain};
@@ -54,6 +57,30 @@ fn counter_data(value: u64) -> Cell {
     Cell::new(value.to_be_bytes().to_vec(), vec![]).unwrap()
 }
 
+/// Step amount the data-only contract adds per call, kept in a data child.
+const STEP: u64 = 5;
+
+fn step_cell() -> Cell {
+    counter_data(STEP)
+}
+
+/// Data root for the data-only contract: the counter, referencing the step.
+fn stepped_counter_data(value: u64) -> Cell {
+    Cell::new(value.to_be_bytes().to_vec(), vec![step_cell().hash()]).unwrap()
+}
+
+/// Childless code that reads its step from a data child:
+/// `CTOS; LDU 64; SWAP; LDREF; NIP; DUP; CTOS; LDU 64; NIP; ROT; ADD 128;
+/// NEWC; SWAP; STBITS 64; SWAP; STREF; ENDC; SETDATA` — the new data keeps
+/// the counter's reference to the step cell.
+fn data_child_code() -> Cell {
+    let code = vec![
+        0x45, 0x46, 0x00, 0x40, 0x03, 0x48, 0x0A, 0x02, 0x45, 0x46, 0x00, 0x40, 0x0A, 0x05, 0x10,
+        0x00, 0x80, 0x00, 0x40, 0x03, 0x42, 0x00, 0x40, 0x00, 0x03, 0x43, 0x41, 0x4D,
+    ];
+    Cell::new(code, vec![]).unwrap()
+}
+
 fn cell_hex(cell: &Cell) -> String {
     hex::encode(cell.to_bytes())
 }
@@ -85,12 +112,20 @@ fn balance(address: String, amount: u64) -> Balance {
 /// The genesis config: a keyed sender, the caller contract (counter 0)
 /// with `child_cells` as its `child_cells_hex`, and a fee collector.
 fn config(child_cells: &[Cell]) -> GenesisConfig {
-    let callee = increment_callee();
+    config_with(
+        &caller_code(&increment_callee()),
+        &counter_data(0),
+        child_cells,
+    )
+}
+
+/// [`config`] with an arbitrary contract code and data.
+fn config_with(code: &Cell, data: &Cell, child_cells: &[Cell]) -> GenesisConfig {
     let mut sender = balance(addr_hex(SENDER), 1_000_000_000_000);
     sender.public_key = Some(hex::encode(key(SENDER).public_key().encode()));
     let mut contract = balance(addr_hex(CONTRACT), 1_000_000);
-    contract.code_hex = Some(cell_hex(&caller_code(&callee)));
-    contract.data_hex = Some(cell_hex(&counter_data(0)));
+    contract.code_hex = Some(cell_hex(code));
+    contract.data_hex = Some(cell_hex(data));
     contract.child_cells_hex = child_cells.iter().map(cell_hex).collect();
     GenesisConfig {
         balances: vec![sender, contract, balance(addr_hex(COLLECTOR), 1_000_000)],
@@ -108,6 +143,16 @@ fn config(child_cells: &[Cell]) -> GenesisConfig {
 
 fn genesis_doc() -> GenesisDocument {
     build_genesis_document(&config(&[increment_callee()])).expect("genesis builds")
+}
+
+/// Genesis with the data-only contract (childless code, data child).
+fn data_child_genesis_doc() -> GenesisDocument {
+    build_genesis_document(&config_with(
+        &data_child_code(),
+        &stepped_counter_data(0),
+        &[step_cell()],
+    ))
+    .expect("data-only genesis builds")
 }
 
 fn id(byte: u8) -> AccountId {
@@ -251,4 +296,69 @@ fn genesis_refuses_contract_with_missing_child_content() {
     let err = build_genesis_document(&config(&[increment_callee(), stray]))
         .expect_err("unreachable child must be refused");
     assert!(err.contains("neither its code"), "{err}");
+}
+
+#[test]
+fn genesis_contract_data_child_executes_in_memory_and_through_storage() {
+    let doc = data_child_genesis_doc();
+    let bytes = doc.to_bytes();
+    assert_eq!(
+        u32::from_be_bytes(bytes[4..8].try_into().unwrap()),
+        GENESIS_VERSION_CONTRACT_DAGS,
+        "a data child alone selects version 2"
+    );
+    assert_eq!(
+        GenesisDocument::from_bytes(&bytes).unwrap().to_bytes(),
+        bytes
+    );
+
+    // In memory.
+    let state = State::from_genesis(&doc);
+    let block = call_block(&state, 1);
+    let (state, receipts) = apply_block(&state, &block).expect("call 1 applies");
+    assert_executed(&receipts, "data-child call 1");
+    assert_eq!(
+        counter_of(&state),
+        STEP,
+        "the step came from the data child"
+    );
+    let block = call_block(&state, 2);
+    let (state, receipts) = apply_block(&state, &block).expect("call 2 applies");
+    assert_executed(&receipts, "data-child call 2");
+    assert_eq!(counter_of(&state), 2 * STEP, "the new data kept its child");
+
+    // Through storage.
+    let path = temp_db("data-child");
+    {
+        let store = ChainStore::open(&path).expect("fresh store opens");
+        store.init_genesis(&doc).expect("genesis initializes");
+    }
+    let store = ChainStore::open(&path).expect("genesis DAGs pass the startup invariant");
+    let state = store.load_state().unwrap().expect("genesis state loads");
+    let dags = state
+        .tree
+        .contract_cells(&id(CONTRACT))
+        .expect("genesis persisted the contract's DAGs");
+    assert!(
+        dags.data.get_cell(&step_cell().hash()).is_some(),
+        "the persisted data DAG carries the step cell"
+    );
+    let block = call_block(&state, 1);
+    let (next, receipts) = apply_block(&state, &block).expect("stored call applies");
+    assert_executed(&receipts, "stored data-child call");
+    assert_eq!(counter_of(&next), STEP);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+
+    // Without the step cell's content the config is refused.
+    let err = build_genesis_document(&config_with(
+        &data_child_code(),
+        &stepped_counter_data(0),
+        &[],
+    ))
+    .expect_err("missing data child must be refused");
+    assert!(
+        err.contains("data DAG references a child cell missing"),
+        "{err}"
+    );
 }
