@@ -41,7 +41,7 @@ async fn main() {
     let _sentry_guard = env::var("SENTRY_DSN")
         .ok()
         .filter(|s| !s.is_empty())
-        .map(|dsn| {
+        .and_then(|dsn| {
             // ClientOptions is non-exhaustive: configure via mutation, not struct syntax.
             let mut opts = sentry::ClientOptions::default();
             opts.release = sentry::release_name!();
@@ -55,12 +55,20 @@ async fn main() {
             // longer than this anyway; without it, a slow endpoint stalls
             // the panicking thread up to the default 2s per panic.
             opts.shutdown_timeout = Duration::from_millis(500);
-            // Timeout-configured transport (see struct docs above).
-            let client = reqwest::Client::builder()
+            // Timeout-configured transport (see struct docs above). A
+            // reporting-only feature must never prevent startup: if the
+            // client can't be built, log and run without Sentry.
+            let client = match reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .connect_timeout(Duration::from_secs(5))
                 .build()
-                .expect("reqwest client with timeouts builds");
+            {
+                Ok(client) => client,
+                Err(err) => {
+                    eprintln!("warning: sentry disabled: cannot build HTTP client: {err}");
+                    return None;
+                }
+            };
             opts.transport = Some(Arc::new(TimeoutTransportFactory { client }));
             let guard = sentry::init((dsn, opts));
             // Skip sentry's panic hook entirely while the producer is inside
@@ -79,7 +87,7 @@ async fn main() {
                     sentry_hook(info);
                 }
             }));
-            guard
+            Some(guard)
         });
 
     let args: Vec<String> = env::args().collect();
@@ -91,12 +99,23 @@ async fn main() {
         }
     };
 
+    // Operator-controlled paths, captured before `config` is moved into
+    // `run_daemon`: some startup errors echo them, and they must not leave
+    // the machine for Sentry (see `redact_sensitive_paths`).
+    let sensitive_paths: Vec<String> = [&config.signing_key_path, &config.bootstrap_genesis]
+        .into_iter()
+        .flatten()
+        .cloned()
+        .collect();
+
     if let Err(err) = run_daemon(config).await {
         eprintln!("onxd failed: {err}");
         // The panic hook never fires for these exits (no panic), so without
         // this Sentry stays blind to the daemon's most common fatal path.
+        // Redact operator-controlled paths first (see above).
         // No-op when Sentry is not initialized.
-        sentry::capture_message(&format!("onxd failed: {err}"), sentry::Level::Error);
+        let redacted = redact_sensitive_paths(&err, &sensitive_paths);
+        sentry::capture_message(&format!("onxd failed: {redacted}"), sentry::Level::Error);
         // Bounded flush: give the report a chance to leave, but never stall
         // shutdown on a slow endpoint. exit(1) below skips the guard drop,
         // so this is the only flush this path gets.
@@ -105,4 +124,15 @@ async fn main() {
         }
         std::process::exit(1);
     }
+}
+
+/// Remove operator-controlled filesystem paths from an error message before
+/// it leaves the machine for Sentry. The paths themselves are configuration,
+/// not key material, but they don't help diagnose the event.
+fn redact_sensitive_paths(err: &str, sensitive_paths: &[String]) -> String {
+    let mut out = err.to_string();
+    for path in sensitive_paths {
+        out = out.replace(path.as_str(), "[redacted-path]");
+    }
+    out
 }
