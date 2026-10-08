@@ -8,7 +8,7 @@ repo="${1:-gokooteam/The-Open-Network-X}"
 file="$(dirname "$0")/../.github/rulesets/main.json"
 name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["name"])' "$file")"
 
-id="$(gh api "repos/$repo/rulesets" --paginate --jq ".[] | select(.name == \"$name\") | .id" | head -n1)"
+id="$(gh api "repos/$repo/rulesets" --paginate --jq ".[] | select(.name == \"$name\") | .id" | sed -n 1p)"
 if [ -n "$id" ]; then
   gh api -X PUT "repos/$repo/rulesets/$id" --input "$file" --jq '"updated ruleset \(.id): \(.name)"'
 else
