@@ -156,7 +156,7 @@ same roots, and look at them in the explorer.
 | Status | Tasks |
 | --- | --- |
 | **Integrated and hardened** (on the replay/producer path, adversarially tested) | TASK-001 storage (realized as `onx-storage`/redb), TASK-020 genesis |
-| **Integrated, partial** | TASK-002/003 TVM: a deliberately minimal opcode set; `JMPREF`/`CALLREF` are broken from real contracts (see M4). TASK-012 `onxd`: single node only, no roles, no network. TASK-019 telemetry: `onxd` serves metrics on `127.0.0.1:9100`; there is no Grafana dashboard |
+| **Integrated, partial** | TASK-002/003 TVM: a deliberately minimal opcode set; `JMPREF`/`CALLREF` work from real contracts since #32, with open control-flow bugs (see M4). TASK-012 `onxd`: single node only, no roles, no network. TASK-019 telemetry: `onxd` serves metrics on `127.0.0.1:9100`; there is no Grafana dashboard |
 | **Library only** (has unit tests, not used by `onxd`) | TASK-004/005/006 ADNL/RLDP/DHT, TASK-007 consensus engine, TASK-008 block sync, TASK-009 shard pipeline, TASK-010 hypercube router, TASK-011 election/slashing, TASK-013 RPC (2 unit tests, none over HTTP), TASK-015 system contracts, TASK-016 payment-channel daemon |
 | **Placeholder or not running** | TASK-014 `onx-cli` (placeholder encodings). TASK-017 simulation: a Python model, not real binaries, and not run in CI. TASK-018 fuzz targets exist, but no workflow runs them _(since resolved: see the fuzz criterion under M4)_ |
 
@@ -170,21 +170,59 @@ same roots, and look at them in the explorer.
 bugs, docs that say the wrong thing, and a `main` that is often red get
 harder to fix once networking adds a second moving part.
 
-**In flight:** Wave 4 (branch `wave4-gas-caps`, awaiting audit) hardens the
-VM: gas caps, 257-bit ints, cell bit-length, storage stats, chain-bound
-`CHKSIGNU`, and live `code_refs`. It merges before M4's criteria are
-ticked.
+**Merged:** Wave 4 (#32, 2026-10-08) hardens the VM: gas caps, 257-bit
+ints, cell bit-length, storage stats, chain-bound `CHKSIGNU`, and live
+`code_refs` (ADR-0034 `gas-caps` to ADR-0039, all *Proposed*). Review of
+#32 found bugs it introduced or exposed; the ones reproduced are listed
+under *Known bugs* below.
 
 **Exit criteria**
 
 *Known bugs*
-- [ ] `JMPREF`/`CALLREF` work from real contracts. PR #7 flagged this and it
-      is still open on `main`: the STF never fills `Interpreter::code_refs`,
-      and only test code pushes to it. **In flight:** Wave 4 step 7 (ADR-0039,
-      branch `wave4-gas-caps`) wires `code_refs` live and adds the call-stack
-      depth limit; tick this when that branch merges. Evidence: a test where
-      a contract executed through the STF calls `CALLREF` and gets the right
-      result.
+- [x] `JMPREF`/`CALLREF` work from real contracts. PR #7 flagged that the
+      STF never filled `Interpreter::code_refs`; only test code pushed to it.
+      **Done (#32):** Wave 4 step 7 (ADR-0039) fills `code_refs` from the
+      current code cell's children through the cell store on every code
+      switch, and caps the call stack at 256 frames. Evidence:
+      `stf_contract_callref_returns_right_result` in
+      `crates/protocol/onx-stf/tests/callref_stf.rs`: a contract run through
+      `propose_block`/`apply_block` `CALLREF`s a child that does the
+      increment, and the counter goes 0 → 1 → 2 without bouncing; it fails
+      on the pre-#32 `main`. `stf_contract_callref_without_callee_content_bounces`
+      is the negative control. Nested calls are still wrong in one case:
+      see the implicit-return bug below.
+- [ ] Nested calls return to the wrong place after an implicit return. When
+      a callee runs off the end of its code, the interpreter pops the call
+      stack but leaves `c0` pointing at the frame it just restored
+      (`step()` in `onx-execution/src/interpreter.rs`); an explicit `RET`
+      resets it. So if A calls B, B calls C, and C falls off its end, B's
+      `RET` jumps back into B and drops A's frame, and A's remaining code
+      never runs. Reproduced on `main` @ `9d2b452`. Fix: reset `c0` from the
+      remaining call stack on implicit return too. Evidence needed: a test
+      of that A → B → C shape where A's code after the call runs.
+- [ ] Code length ignores a code cell's exact bit length. `step()` and the
+      operand readers measure code as `8 × data_bytes.len()`, not
+      `bit_len()`, so in a bit-granular code cell (ADR-0036) the completion
+      tag and padding bits execute as instructions. Reproduced: a 1-bit code
+      cell stores byte `0x40` and runs it as `NEWC`. Fix: bound reads by
+      `bit_len()`, or reject code cells that aren't byte-aligned. Evidence
+      needed: that 1-bit cell raises `MalformedCell` instead.
+- [ ] Hitting the block gas cap drops a valid message. `propose_block`
+      returns `BlockGasExceeded`, and `onxd`'s producer
+      (`crates/node/onxd/src/producer.rs`) treats it like any rejection: it
+      bisects to the message that tipped the block over, moves it to
+      `rejected/`, and the sender's later nonces wait forever on it. Heavy
+      calls can be used to get honest messages dropped. Fix: hold that
+      message for a later block. Evidence needed: a producer test where an
+      over-cap batch splits across two blocks with nothing rejected.
+- [ ] Genesis contracts whose code cell has children can't be called.
+      Since ADR-0039, `run()` resolves every child of the root code cell
+      before the first instruction and fails with `AbsentNode` if one is
+      missing. `onx-genesis` never seeds `contract_cells`, and they are only
+      written after a successful run, so such a contract bounces on every
+      call. Fix: seed the code DAG at genesis, or resolve a child only when
+      `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
+      contract that `CALLREF`s through the STF.
 - [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other. **Done (spec follows
@@ -213,12 +251,17 @@ ticked.
       as open, but PR #7 fixed it. Re-grade the row. **Done:** the row is
       now ⚠️ partial: `LDREF` fixed (#7, `vm_child_cells.rs`), checked
       arithmetic (#8), `tvm_execution` fuzzed in CI, with `JMPREF`/`CALLREF`
-      named as still open. Evidence: the VM row of the README status table.
+      named as still open. _(Updated after #32: `JMPREF`/`CALLREF` are now
+      wired; the row names the open implicit-return and bit-granular-code
+      bugs instead.)_ Evidence: the VM row of the README status table.
 - [x] ADR-0032's status line still says the Rust decoder is "not yet
       implemented", but it shipped in #13. **Done:** the status line names
       what shipped where (#12–#14). Evidence: `docs/adr/0032-onxblk05-authenticated-headers.md`.
 - [ ] ADR-0029 and ADR-0034: accept or reject them. Don't leave them
-      *Proposed*.
+      *Proposed*. Since #32 there are two ADR-0034 records,
+      `0034-versioning-standard.md` and `0034-gas-caps.md`, and the Wave 4
+      records ADR-0035 to ADR-0039 are *Proposed* too. Renumber one of the
+      ADR-0034s (and every reference to it), then accept or reject each.
 - [x] `tests/simulation/README.md` says the simulation is wired into `ci.yml`,
       but it isn't. Wire it in or correct the README. **Done (corrected):**
       the README now says it is a Python model that no workflow runs, and
@@ -260,7 +303,14 @@ ticked.
       `OpenSSF Scorecard` (every push since #21) and `Workflow Security`
       (actionlint). #30 addresses all three; the Scorecard fix can only be
       confirmed by the first push to `main` after it merges. Tick this box
-      only after 10 green merges.
+      only after 10 green merges. **Setback:** #32 was merged with its own
+      `Fuzz` run (#12) red, and `Fuzz` failed on `main` @ `9d2b452` (run
+      #13): the `tvm_execution` target no longer built, because ADR-0038
+      made `ExecutionContext.chain_id` required and the fuzz crate sits
+      outside the workspace, so the workspace build didn't catch it. Fixed
+      by giving the target a fixed test chain ID; locally,
+      `nightly-2026-09-20` ran it for 60 s (1.88M executions) with no
+      crash.
 - [x] Add a finite fuzz regression run per target to CI, so all three
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
