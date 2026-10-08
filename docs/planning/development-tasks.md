@@ -64,22 +64,22 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 | Task ID | Component / Domain | Description | References | Priority |
 | :--- | :--- | :--- | :--- | :--- |
-| **TASK-001** | State / Storage | Persistent State Storage Engine & Key-Value DB | `state-model.md`, `ADR-0003` | Critical |
-| **TASK-002** | Execution / VM | TVM Opcode Expansion (Arithmetic, Stack, Control Flow) | `tvm-instruction-set.md`, `ADR-0017` | High |
-| **TASK-003** | Execution / VM | Continuations Register Model & Dictionary Engine | `execution.md`, `ADR-0007` | High |
-| **TASK-004** | Networking | ADNL UDP Network Transport & Session Handshake | `networking-adnl.md`, `ADR-0009` | High |
-| **TASK-005** | Networking | RLDP Reliable Datagram Transfer Protocol Implementation | `networking-adnl.md`, `ADR-0009` | High |
-| **TASK-006** | Networking | Kademlia DHT Discovery Daemon & Routing Table | `networking-dht.md`, `ADR-0010` | Medium |
-| **TASK-007** | Consensus | Catchain BFT Consensus Engine & Round State Machine | `consensus.md`, `ADR-0008` | Critical |
-| **TASK-008** | Blockchain | Block Synchronization Protocol & Sync Engine | `blocks.md`, `ADR-0006` | High |
-| **TASK-009** | Sharding | Dynamic Shard Split & Merge Execution Pipeline | `sharding.md`, `ADR-0012` | High |
-| **TASK-010** | Transactions | Hypercube Cross-Shard Message Routing Engine | `transactions.md`, `ADR-0018` | High |
-| **TASK-011** | Validator Ops | Automated Validator Election & Slashing Manager | `consensus.md`, `economics.md`, `ADR-0019` | High |
-| **TASK-012** | Node Runtime | ONX Node Daemon (`onxd`) Process Integration | `architecture.md`, `ADR-0001` | Critical |
+| **TASK-001** | State / Storage | Persistent State Storage Engine & Key-Value DB | `state-model.md`, `ADR-0010` | Critical |
+| **TASK-002** | Execution / VM | TVM Opcode Expansion (Arithmetic, Stack, Control Flow) | `tvm-instruction-set.md`, `ADR-0024` | High |
+| **TASK-003** | Execution / VM | Continuations Register Model & Dictionary Engine | `execution.md`, `ADR-0014` | High |
+| **TASK-004** | Networking | ADNL UDP Network Transport & Session Handshake | `networking-adnl.md`, `ADR-0016` | High |
+| **TASK-005** | Networking | RLDP Reliable Datagram Transfer Protocol Implementation | `networking-adnl.md`, `ADR-0016` | High |
+| **TASK-006** | Networking | Kademlia DHT Discovery Daemon & Routing Table | `networking-dht.md`, `ADR-0017` | Medium |
+| **TASK-007** | Consensus | Catchain BFT Consensus Engine & Round State Machine | `consensus.md`, `ADR-0015` | Critical |
+| **TASK-008** | Blockchain | Block Synchronization Protocol & Sync Engine | `blocks.md`, `ADR-0013` | High |
+| **TASK-009** | Sharding | Dynamic Shard Split & Merge Execution Pipeline | `sharding.md`, `ADR-0019` | High |
+| **TASK-010** | Transactions | Hypercube Cross-Shard Message Routing Engine | `transactions.md`, `ADR-0025` | High |
+| **TASK-011** | Validator Ops | Automated Validator Election & Slashing Manager | `consensus.md`, `economics.md`, `ADR-0026` | High |
+| **TASK-012** | Node Runtime | ONX Node Daemon (`onxd`) Process Integration | `architecture.md`, `ADR-0008` | Critical |
 | **TASK-013** | RPC / API | JSON-RPC & Lite Client Server Gateway | `architecture.md`, `state-model.md` | High |
 | **TASK-014** | Developer Tools | Command Line Interface (`onx-cli`) & Wallet Core | `protocol-primitives.md`, `transactions.md` | Medium |
 | **TASK-015** | Smart Contracts | Masterchain System Smart Contracts (Elector, Config) | `architecture.md`, `execution.md` | High |
-| **TASK-016** | Off-Chain | Payment Channel Hub Daemon & Resolution Arbiter | `payment-channels.md`, `ADR-0014` | Medium |
+| **TASK-016** | Off-Chain | Payment Channel Hub Daemon & Resolution Arbiter | `payment-channels.md`, `ADR-0021` | Medium |
 | **TASK-017** | Testing | Multi-Node Local Network Simulator & Testbed | `INSTRUCTIONS.md` §19 | High |
 | **TASK-018** | Security | Consensus & VM Differential Fuzzing Suite | `INSTRUCTIONS.md` §10, §19 | High |
 | **TASK-019** | Telemetry | Prometheus Metrics & OpenTelemetry Node Monitoring | `INSTRUCTIONS.md` §20 | Medium |
@@ -115,7 +115,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 - **Description:**
   Expand the execution engine from the baseline 46 opcodes to support full TVM standard operations, including 64-bit/257-bit signed integer arithmetic (`ADD`, `SUB`, `MUL`, `DIV`, `LSHIFT`, `RSHIFT`), stack manipulation (`SWAP`, `NIP`, `TUCK`, `ROLL`, `BLKSWAP`), and conditional branching (`IFELSE`, `IFRET`, `REPEAT`, `UNTIL`).
 - **Requirements:**
-  1. Strictly enforce gas consumption tables defined in ADR-0017 for every new opcode.
+  1. Strictly enforce gas consumption tables defined in ADR-0024 for every new opcode.
   2. Implement overflow protection and explicit stack depth limits (1023 elements max).
   3. Ensure deterministic failure modes on stack underflow or invalid integer conversion.
 - **Deliverables:**
@@ -272,7 +272,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-011: Automated Validator Election & Slashing Manager
 - **Subsystem:** Validator Ops / Economics (`crates/protocol/onx-consensus`, `crates/protocol/onx-economics`)
-- **References:** `docs/specification/consensus.md`, `docs/specification/economics.md`, `ADR-0019`
+- **References:** `docs/specification/consensus.md`, `docs/specification/economics.md`, `ADR-0026`
 - **Priority:** High
 - **Description:**
   Implement validator election tracking, stake locking, inflation reward distribution, and uncooperative validator slashing.
@@ -433,7 +433,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 
 ### TASK-020: Devnet Genesis Generator & Testnet Launch Tools
 - **Subsystem:** Deployment / Network Launch (`crates/tooling/onx-genesis`)
-- **References:** `docs/specification/architecture.md`, `docs/specification/economics.md`, `ADR-0013`
+- **References:** `docs/specification/architecture.md`, `docs/specification/economics.md`, `ADR-0020`
 - **Priority:** High
 - **Description:**
   Build the genesis block generator tool (`onx-genesis`) for creating initial chain states and launching private/public testnets.

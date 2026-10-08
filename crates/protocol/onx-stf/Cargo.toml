@@ -1,6 +1,6 @@
 [package]
 name = "onx-stf"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX pure state transition function: block bodies and deterministic Onyxi transfer/fee application per the deterministic-replay plan (Phase 3)"
 license = "Apache-2.0"

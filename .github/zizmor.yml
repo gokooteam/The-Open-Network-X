@@ -1,0 +1,12 @@
+# zizmor configuration: https://docs.zizmor.sh/configuration/
+#
+# The repo pins actions to major-version tags (not SHAs) by convention;
+# SHA-pinning everything is a separate follow-up, not this PR.
+
+rules:
+  unpinned-uses:
+    disable: true
+  superfluous-actions:
+    ignore:
+      # Pre-existing release workflow; rewriting it is out of scope.
+      - release.yml

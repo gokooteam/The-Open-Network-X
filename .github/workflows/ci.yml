@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
@@ -51,6 +53,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
@@ -76,6 +80,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
@@ -91,6 +97,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       # The independent Python implementation (reference/, stdlib only)
       # regenerates the checked-in vectors; any drift between the

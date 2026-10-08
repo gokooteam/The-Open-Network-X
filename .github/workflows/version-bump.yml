@@ -1,0 +1,92 @@
+name: Version Bump
+
+# Manually start a release: bumps [workspace.package] version, refreshes
+# Cargo.lock, moves CHANGELOG.md "Unreleased" under the new version, and opens
+# a release/vX.Y.Z PR. Merging it lets versioning.yml tag and draft the release.
+# Policy: docs/adr/0034-versioning-standard.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'patch (compatible fix), minor (breaking while 0.x), major, or explicit'
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - explicit
+      version:
+        description: 'Explicit version, e.g. 0.3.0-rc.1 (only when bump = explicit)'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    name: Open release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Bump version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT: ${{ inputs.version }}
+        run: |
+          if [ "$BUMP" = "explicit" ]; then
+            if [ -z "$EXPLICIT" ]; then
+              echo "::error::bump = explicit needs a version"
+              exit 1
+            fi
+            BUMP="$EXPLICIT"
+          fi
+          old=$(python3 scripts/version.py current)
+          new=$(python3 scripts/version.py bump "$BUMP")
+          cargo update --workspace
+          python3 scripts/version.py check --base-version "$old"
+          {
+            echo "old=$old"
+            echo "new=$new"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Push branch and open PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          OLD: ${{ steps.bump.outputs.old }}
+          NEW: ${{ steps.bump.outputs.new }}
+        run: |
+          branch="release/v$NEW"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "release: v$NEW"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" "HEAD:refs/heads/$branch"
+          notes=$(python3 scripts/version.py notes "$NEW")
+          # The backticks in the format string are literal Markdown, not
+          # command substitution.
+          # shellcheck disable=SC2016
+          body=$(printf 'Bumps the workspace version %s → %s (see docs/adr/0034-versioning-standard.md).\n\nMerging this PR tags `v%s` and drafts the GitHub Release.\n\n## Changelog\n\n%s\n' "$OLD" "$NEW" "$NEW" "$notes")
+          gh pr create --repo "$REPO" --base main --head "$branch" \
+            --title "release: v$NEW" --body "$body"

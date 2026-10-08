@@ -9,7 +9,7 @@
 use crate::error::TransactionsError;
 use onx_data_structures::{Message, MessageType, ShardIdent};
 
-/// Logical-time lifetime for cross-workchain messages, from ADR-0018.
+/// Logical-time lifetime for cross-workchain messages, from ADR-0025.
 pub const MAX_CROSS_WORKCHAIN_LT_WINDOW: u64 = 1_000_000;
 
 /// One directed, neighboring transition in a slow-path route.

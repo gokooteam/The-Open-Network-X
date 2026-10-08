@@ -617,5 +617,8 @@ fn tvm_contract_call_is_deterministic_across_processes() {
             *s = next;
         }
     }
-    assert_eq!(a.tree.accounts(), b.tree.accounts());
+    assert_eq!(
+        a.tree.accounts().collect::<Vec<_>>(),
+        b.tree.accounts().collect::<Vec<_>>()
+    );
 }

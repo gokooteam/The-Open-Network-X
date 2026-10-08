@@ -8,7 +8,7 @@
 ## 1. Reference
 
 - `docs/specification/execution.md` §3.1–§3.4: the execution contract (`execute(code, data, message, context) -> ...`), the six required semantic categories, the closed five-member `ExceptionKind` set, and the explicit deferral of concrete opcodes and gas pricing to this document.
-- `docs/specification/execution.md` §3.5, ADR-0007: the reserved Merkle-proof "pruned branch" special-cell semantics and `AbsentNode`, which this instruction set's cell-access opcodes must respect.
+- `docs/specification/execution.md` §3.5, ADR-0014: the reserved Merkle-proof "pruned branch" special-cell semantics and `AbsentNode`, which this instruction set's cell-access opcodes must respect.
 - `docs/specification/state-model.md` §3.3–§4.2: the `Cell`/`BagOfCells` representation this instruction set's `code` and `data` operate on, including `MAX_CELL_DATA_BYTES = 128`, `MAX_CELL_REFS = 4`, and the `is_special` flag.
 - `docs/specification/protocol-primitives.md`: canonical fixed-width integer encoding (`Uint8`–`Uint256`, `Int8`–`Int256`) and domain-separated SHA-256/Ed25519 primitives this instruction set's arithmetic and cryptographic opcodes reuse rather than redefine.
 - `docs/specification/transactions.md`: `MAX_TENTATIVE_GAS = 10,000`, the External Inbound tentative-execution gas cap this document's cryptographic opcode pricing (§3.6) is checked against for plausibility.
@@ -81,8 +81,9 @@ A contract's `code` (`execution.md` §3.2) is a `Cell` whose up to `MAX_CELL_DAT
 
 Per `execution.md` §3.5, a `Cell` may be a pruned Merkle-proof branch (`is_special = true`, §3.2's `Cell.is_special_flag`). This instruction set draws the `AbsentNode` boundary at **content access**, not at reference-passing or hashing, matching `WHITEPAPER.md` §5.1.9's design intent that a Merkle proof's *shape and hash* remain usable even where its *content* is deliberately absent:
 
-- `CTOS` (§4.4) raises `AbsentNode` if its operand `Cell` is a pruned special cell — this is the only opcode that raises it.
-- `LDREF` (§4.4) never raises `AbsentNode`: it hands back the child `Cell` reference itself (pruned or not) without reading its content, so a contract can pass a pruned reference along (e.g. store it, or hash it) without being forced to dereference it.
+- `CTOS` (§4.4) raises `AbsentNode` if its operand `Cell` is a pruned special cell. It is the only opcode that raises `AbsentNode` on a pruned branch.
+- `LDREF` (§4.4) never raises `AbsentNode` on a pruned branch: it hands back the child `Cell` itself (pruned or not) without reading its content, so a contract can pass a pruned reference along (e.g. store it, or hash it) without being forced to dereference it.
+- `LDREF` (§4.4) **does** raise `AbsentNode` on an **unresolved** child: a reference hash for which the executing node holds no `Cell` at all (not even a pruned one). A `Cell` stack value is a cell's descriptor, data and references, not a bare hash, so there is nothing truthful to push; any substitute (for example an empty cell carrying only the hash) would be invented data that a node holding the real child would not see, so the two nodes would diverge (ADR-0029). The VM therefore fails closed. A conforming host avoids this by seeding the VM with every cell in the `code` and `data` DAGs before execution (`onx-execution`'s `Interpreter::cell_store` calling convention); a Merkle proof supplies its pruned branches as special cells, which are resolved, not unresolved.
 - `HASHCELL` (§4.6) never raises `AbsentNode`: a pruned cell's committed hash is exactly the information a Merkle proof supplies, and hashing it requires no hidden content.
 - `ISEXOTIC` (§4.4) never raises anything: it inspects only the cell descriptor's special-cell bit, which is present on every cell regardless of pruning.
 
@@ -169,7 +170,7 @@ All thirteen raise `MalformedCell` if the instruction requires more stack items 
 | `0x45` | `CTOS` | — | `(Cell) -> (Slice)`, at `(0, 0)` | 10 | `AbsentNode` if `Cell` is a pruned special cell (§3.5.3) |
 | `0x46` | `LDU` | `width: uint16` | `(Slice) -> (Slice, Integer)`, unsigned | 10 | `MalformedCell` if fewer than `width` bits remain |
 | `0x47` | `LDI` | `width: uint16` | `(Slice) -> (Slice, Integer)`, signed: the `width`-bit two's-complement field is sign-extended into the full Integer domain | 10 | `MalformedCell` if fewer than `width` bits remain |
-| `0x48` | `LDREF` | — | `(Slice) -> (Slice, Cell)` | 10 | `MalformedCell` if no references remain; never `AbsentNode` (§3.5.3) |
+| `0x48` | `LDREF` | — | `(Slice) -> (Slice, Cell)` | 10 | `MalformedCell` if no references remain; `AbsentNode` if the child is unresolved (no `Cell` held for its hash); never on a pruned child (§3.5.3) |
 | `0x49` | `ISEXOTIC` | — | `(Cell) -> (bool)` | 10 | — |
 | `0x4A` | `SEMPTY` | — | `(Slice) -> (bool)`, true iff both bits and refs are exhausted | 1 | — |
 | `0x4B` | `SBITS` | — | `(Slice) -> (Integer)`, remaining bits, unsigned 16-bit | 1 | — |
@@ -222,7 +223,7 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 2. **Stack arity violation:** an opcode requires more operand-stack items than are present, or a `PICK`/`ROLL` `depth` operand is not a valid index into the current stack (`MalformedCell`, §3.5.4).
 3. **Reference operand out of range:** a `ref_index` operand (§4.5) names a child-cell reference the current code `Cell` does not have (`MalformedCell`, §3.5.4).
 4. **Arithmetic overflow:** an unsigned/signed `ADD`/`SUB`/`NEG`/`MUL`/`DIVMOD`/`CONV`/`STBITS` result does not fit its declared width, or `DIVMOD`'s divisor is zero (`IntegerOverflow`, §3.3, §4.3).
-5. **Pruned-branch content access:** `CTOS` is applied to a pruned special `Cell` (`AbsentNode`, §3.5.3).
+5. **Pruned-branch content access or unresolved child:** `CTOS` is applied to a pruned special `Cell`, or `LDREF` reaches a child reference for which no `Cell` is held (`AbsentNode`, §3.5.3).
 6. **Cell/slice structural violation:** `LDU`/`LDI` requests more bits than a `Slice` has remaining, `LDREF` requests a reference a `Slice` does not have remaining, `SUBBYTES` requests a range outside its `Bytes` operand, or `STBITS`/`STBYTES` would grow a `Builder` past 1024 bits, or `STREF` past 4 references (`MalformedCell`).
 7. **Cryptographic shape violation:** `CHKSIGNU`'s `pubkey` or `signature` operand is not exactly 32 or 64 bytes respectively (`TypeMismatch`).
 8. **Gas exhaustion:** debiting the next instruction's gas cost (§4) would exceed the supplied limit (`OutOfGas`, at that exact instruction, per `execution.md` §3.4).
@@ -237,7 +238,7 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 3. **Conversion tests:** `CONV` accepts values that fit the target width/signedness and raises `IntegerOverflow` for values that don't, at both the unsigned and signed boundaries.
 4. **Bit-string/byte-string tests:** `CONCAT`/`SUBBYTES`/`BYTEEQ`/`BYTELEN` round-trip correctly; `SUBBYTES` with an out-of-range `offset`/`len` raises `MalformedCell`.
 5. **Cell/slice tests:** a `Builder` built via `NEWC`/`STBITS`/`STREF`/`STBYTES`/`ENDC` round-trips through `CTOS`/`LDU`/`LDI`/`LDREF` to the original values; exceeding 128 bytes or 4 references during `ST*` raises `MalformedCell`; reading past a `Slice`'s remaining bits/refs raises `MalformedCell`.
-6. **Pruned-branch tests:** `CTOS` on a pruned special `Cell` raises `AbsentNode`; `LDREF` and `HASHCELL` on/of the same pruned `Cell` do not raise anything and return the reference/hash respectively (§3.5.3).
+6. **Pruned-branch tests:** `CTOS` on a pruned special `Cell` raises `AbsentNode`; `LDREF` and `HASHCELL` on/of the same pruned `Cell` do not raise anything and return the reference/hash respectively; `LDREF` on a child reference with no held `Cell` raises `AbsentNode` (§3.5.3).
 7. **Control-flow tests:** `JMPREF`/`CALLREF`/`RET`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` correctly transfer control per §4.5; an out-of-range `ref_index` raises `MalformedCell` only when the branch is actually taken; `RET` with an empty call stack terminates execution successfully; `THROW` raises exactly the requested kind for each of its four valid operand values; a `CALLREF` taken at 256 frames raises `CallStackOverflow` (ADR-0039) while `JMPREF` at a full call stack still succeeds; `code_refs` resolves from the current code cell's children (`AbsentNode` on an unseeded child) and is refreshed across `RET`.
 8. **Gas accounting tests:** total `gas_used` after a run equals the sum of each executed instruction's §4 cost; exhausting the limit mid-run raises `OutOfGas` at the exact instruction that would exceed it (cross-references `execution.md` §6's determinism and gas tests).
 9. **`MAX_TENTATIVE_GAS` plausibility test:** a representative External Inbound admission check (`LDREF`/`LDU` cell reads plus one `CHKSIGNU`) consumes strictly less than `transactions.md`'s `MAX_TENTATIVE_GAS = 10,000` (§3.6).

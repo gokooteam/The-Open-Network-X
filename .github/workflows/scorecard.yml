@@ -1,0 +1,46 @@
+name: OpenSSF Scorecard
+
+# Weekly supply-chain health score for the repo (branch protection, pinned
+# dependencies, token permissions, etc.). Publishes results to the repo's
+# Security tab. Cheap, objective hygiene signal.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1' # weekly Monday 06:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: read-all
+
+jobs:
+  scorecard:
+    name: Scorecard
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      # publish_results signs the results through Sigstore, which needs an
+      # OIDC token. Without it the signer falls back to an interactive
+      # device-code login and every push to main timed out after ~15 min.
+      # (PR runs never publish, which is why they stayed green.)
+      id-token: write
+      actions: read
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true

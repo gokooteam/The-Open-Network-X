@@ -2,6 +2,12 @@
 
 This logbook maintains a running chain of research and development questions for Open Network X (ONX).
 
+> **ADR numbers in older entries.** Entries written before PR #6 cite ADRs by
+> the retired `docs/decisions/ADR-0001…0020` numbering, which is now
+> `docs/adr/0008…0027` (add 7). The entries are left as written; see
+> [`docs/decisions/README.md`](../decisions/README.md) for the mapping.
+> Whether this convention continues is an open M4 item in `MILESTONES.md`.
+
 ## Rules for Contributors
 
 Every contributor making a pull request to ONX must participate in the Research Question Logbook:
@@ -126,3 +132,21 @@ Scheduled fuzzing should publish a per-target corpus snapshot and run each targe
 
 #### [QUESTION]
 When reorganizing the workspace into protocol, node, and tooling tiers, should CI enforce dependency-direction rules explicitly, or is Cargo's acyclic package graph sufficient for the first implementation milestone?
+
+### Entry #13
+
+#### [ANSWER]
+The per-block account-map copy (MILESTONES.md M4) came from `ShardStateTree` keeping a full `BTreeMap` of accounts next to a trie that was already persistent. Because `propose_block` and `apply_block` must not mutate the caller's state (a failed or panicking block has to leave it intact, ADR-0029), each of them cloned the tree, and that clone was O(n). Storing each account record in its trie leaf removes the duplicate map: a clone becomes one reference-count increment, lookups walk the key's path, and a left-first walk preserves ascending `AccountId` order because the trie branches on key bits most-significant first. No state root changes, and no dependency was added. At 100k accounts the clone dropped from milliseconds to tens of nanoseconds, and an 8-transfer block from about 6–8 ms to about 0.75 ms per STF call (`state-model.md` §7.1).
+
+#### [QUESTION]
+The contract cell DAG map is still copied with every `ShardStateTree` clone and fully compared in `ChainStore::commit_block`. Should those DAGs become reference-counted and compared by pointer before contract-heavy load arrives, and should a regression budget for that path be specified in terms of contract count, DAG size, or both?
+
+### Entry #14
+
+#### [ANSWER]
+Share the DAGs, but don't use pointer comparison as the test for "changed". `ShardStateTree::contract_cells` is a `BTreeMap<AccountId, ContractCellDags>`, so every clone deep-copies every contract's code and data `BagOfCells`, and `ChainStore::commit_block` evaluates `old != dags` over the full content of every contract's DAGs on every block. With reference-counted values (or a persistent map, like the account trie) a clone copies pointers, and `Rc::ptr_eq` can skip an entry that was carried over untouched. Pointer equality only works in one direction, though. Equal pointers prove a DAG is unchanged. Unequal pointers don't prove it changed, because re-execution can rebuild an identical DAG in a new allocation. That costs at most a redundant write, so it's fine as a fast path for persistence. Nothing consensus-relevant may depend on it. A better source of truth is the STF itself: it knows which contracts executed in the block, so it can return that set, and `commit_block` can write exactly those DAGs without comparing anything.
+
+The budget should be stated in both terms, the way `state-model.md` §7.1 states the account case. A clone should cost O(1) regardless of contract count or DAG size, and per-block DAG work should scale with the contracts the block executes and the size of their DAGs, not with every contract in state. A count-only budget misses one very large DAG; a size-only budget misses many small contracts. As in §7.1, the always-on tests should check the structure (a clone shares the map, and an untouched contract is neither compared by content nor rewritten). Wall-clock numbers belong in an `--ignored` probe, not a CI gate.
+
+#### [QUESTION]
+The `Fuzz` workflow failed while building on every run from its first PR (#28) until this fix, and #28 and #29 were both merged with it red. When M4's branch protection is turned on, which workflows should be required checks? In particular, should the nightly-pinned `Fuzz` job be required on every PR, so that a toolchain or prebuilt-tool change can block unrelated merges, or should only the stable-toolchain jobs be required, with fuzz failures on `main` triaged through a separate alert?

@@ -1,0 +1,47 @@
+name: Rust Hygiene
+
+# Fast static hygiene gates for the Rust workspace:
+#  - cargo-machete: fails on unused dependencies (nothing else catches these)
+#  - taplo: lints/validates every Cargo.toml (catches what rustfmt can't see)
+#  - typos: spell-checks source and docs
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Rust hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Install hygiene tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,taplo,typos
+
+      - name: Check for unused dependencies
+        run: cargo machete
+
+      - name: Lint TOML files
+        run: taplo lint
+
+      - name: Check spelling
+        run: typos

@@ -1,0 +1,81 @@
+name: Fuzz
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # cargo-fuzz needs nightly (-Zsanitizer). Pinned to a dated nightly so a
+  # new nightly can't turn PRs red overnight; bump it deliberately.
+  FUZZ_TOOLCHAIN: nightly-2026-09-20
+  # Seconds each target runs per CI job.
+  FUZZ_SECONDS: 60
+  # cargo-fuzz defaults --target to the triple it was itself compiled for.
+  # install-action currently installs a prebuilt musl binary (cargo-binstall), so
+  # without this every build targets musl, where AddressSanitizer cannot
+  # link ("sanitizer is incompatible with statically linked libc").
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [boc_parser, tvm_execution, block_header]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml pins the stable toolchain for the workspace,
+      # so every cargo call below selects the nightly explicitly.
+      - name: Install nightly Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.FUZZ_TOOLCHAIN }}
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          key: ${{ matrix.target }}
+
+      - name: Build fuzz target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz build --target "$FUZZ_TRIPLE" "$TARGET"
+
+      # Time-bounded run from an empty corpus. libFuzzer exits non-zero on a
+      # panic, abort, sanitizer report, timeout or OOM, failing the job.
+      - name: Run fuzz target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo "+$FUZZ_TOOLCHAIN" fuzz run --target "$FUZZ_TRIPLE" "$TARGET" -- -max_total_time="$FUZZ_SECONDS"
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore

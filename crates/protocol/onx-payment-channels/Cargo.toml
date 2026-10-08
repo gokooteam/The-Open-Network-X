@@ -1,6 +1,6 @@
 [package]
 name = "onx-payment-channels"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX payment channels and off-chain payment networks per docs/specification/payment-channels.md"
 license = "Apache-2.0"
@@ -10,7 +10,6 @@ publish = false
 onx-primitives = { path = "../onx-primitives" }
 onx-data-structures = { path = "../onx-data-structures" }
 onx-state-model = { path = "../onx-state-model" }
-onx-transactions = { path = "../onx-transactions" }
 onx-execution = { path = "../onx-execution" }
 tokio = { version = "1.38", features = ["rt", "time", "sync", "macros"] }
 

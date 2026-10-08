@@ -156,6 +156,60 @@ fn ldref_on_unresolved_child_fails_closed_with_absent_node() {
     }
 }
 
+/// `tvm-instruction-set.md` §3.5.3: a *pruned* child (a special cell the
+/// host did provide) is not an absent one. `LDREF` hands it back without
+/// raising, `HASHCELL` and `ISEXOTIC` work on it, and only `CTOS` on the
+/// pruned cell itself raises `AbsentNode`.
+#[test]
+fn ldref_passes_pruned_child_through_and_only_ctos_raises() {
+    let pruned = Cell::new_with_special(vec![0x00], vec![], true).unwrap();
+    let parent = Cell::new(vec![0x01], vec![pruned.hash()]).unwrap();
+
+    // CTOS, LDREF, DUP (0x02), HASHCELL (0x61), SWAP (0x03), DUP,
+    // ISEXOTIC (0x49), SWAP, RET.
+    // Final stack: [slice, hash, is_exotic, pruned].
+    let code = Cell::new(
+        vec![0x45, 0x48, 0x02, 0x61, 0x03, 0x02, 0x49, 0x03, 0x72],
+        vec![],
+    )
+    .unwrap();
+    let mut interp = Interpreter::new(code, empty_cell(), dummy_message(), dummy_context(1000));
+    interp.cell_store.insert(pruned.hash(), pruned.clone());
+    interp.stack.push(StackValue::Cell(parent));
+
+    let res = interp.run();
+    assert!(
+        matches!(res, ExecutionResult::Success { .. }),
+        "LDREF/HASHCELL/ISEXOTIC on a pruned child must not raise, got {res:?}"
+    );
+    match interp.stack.pop() {
+        Some(StackValue::Cell(c)) => assert_eq!(c, pruned),
+        other => panic!("expected the pruned child on top, got {other:?}"),
+    }
+    assert_eq!(
+        interp.stack.pop(),
+        Some(StackValue::Integer(Int257::from_u64(1)))
+    );
+    assert_eq!(
+        interp.stack.pop(),
+        Some(StackValue::Integer(Int257::from_unsigned256(
+            &pruned.hash()
+        )))
+    );
+
+    // Dereferencing the same pruned cell's content is what raises.
+    let code = Cell::new(vec![0x45, 0x72], vec![]).unwrap(); // CTOS, RET
+    let mut interp = Interpreter::new(code, empty_cell(), dummy_message(), dummy_context(1000));
+    interp.stack.push(StackValue::Cell(pruned));
+    match interp.run() {
+        ExecutionResult::Exception {
+            kind: ExceptionKind::AbsentNode,
+            ..
+        } => {}
+        other => panic!("expected AbsentNode from CTOS on a pruned cell, got {other:?}"),
+    }
+}
+
 /// Contract code can read the inbound message: sender address (36 bytes:
 /// workchain i32be || account id), value in nanos (u256be integer), and the
 /// raw body bytes the host provided.

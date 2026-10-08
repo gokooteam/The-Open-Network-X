@@ -655,13 +655,19 @@ fn loop_double_key_reveal_drops_only_second_reveal() {
     // Fund it out-of-band: a transfer landing on a fresh address creates a
     // keyless Active account (this is the only way to become keyless).
     let state: State = h.store().load_state().unwrap().unwrap();
+    let fund_nonce = h
+        .store()
+        .get_account(&account_id(0xaa))
+        .unwrap()
+        .map(|a| a.nonce())
+        .unwrap_or(0);
     let fund = sign_msg_from(
         h.chain_id,
         account_id(0xaa),
         addr,
         1_000_000,
         10,
-        0,
+        fund_nonce,
         [0u8; 32],
         &test_secret(0xaa),
     );

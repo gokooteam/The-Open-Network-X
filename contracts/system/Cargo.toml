@@ -1,6 +1,6 @@
 [package]
 name = "onx-system-contracts"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX masterchain system contract adapters and TVM fixtures."
 license = "Apache-2.0"
@@ -9,4 +9,3 @@ publish = false
 [dependencies]
 hex = "0.4"
 onx-consensus = { path = "../../crates/protocol/onx-consensus" }
-onx-primitives = { path = "../../crates/protocol/onx-primitives" }

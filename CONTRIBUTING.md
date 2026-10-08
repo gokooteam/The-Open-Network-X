@@ -12,15 +12,15 @@ open an issue so this document can be corrected.
 
 1. **Find the specification.** Every protocol layer is specified in
    `docs/specification/` before it is implemented, in the order set out in
-   `docs/specification/architecture.md`. Check `ROADMAP.md` for what's
-   already specified and what's next.
+   `docs/specification/architecture.md`. Check `MILESTONES.md` for what's
+   already done and what's next.
 2. **If the spec doesn't exist yet, write it first**, as its own PR:
    - State the reference sections (`WHITEPAPER.md`, `INSTRUCTIONS.md`) it draws from.
    - Separate what's explicitly required from what you're interpreting.
    - Record ambiguities and the interpretation chosen, with a permanent ID
      (`ONX-ARCH-NNN` or similar) if the architecture baseline already
      anticipates the question.
-   - Add an ADR in `docs/decisions/` if the interpretation is significant
+   - Add an ADR in `docs/adr/` if the interpretation is significant
      enough that a future contributor could reasonably have chosen
      differently (see [Decision records](#decision-records)).
 3. **If the spec already exists, implement against it — not against
@@ -135,10 +135,28 @@ consensus-critical code.
 
 ## Picking up work
 
-`ROADMAP.md` maintains a changelog and a prioritized, up-for-grabs
-checklist. Before starting something from it, check for an open PR or issue
-already claiming it. If you start something not on the list, add it once
-you open the PR so the roadmap stays accurate.
+`MILESTONES.md` holds the prioritized, up-for-grabs work: each milestone's
+exit criteria are the checklist, and `ROADMAP.md` keeps the per-PR
+changelog. Before starting something, check for an open PR or issue
+already claiming it. Tick a criterion in the same PR that earns it, with a
+link to the evidence. Work that isn't in the current milestone goes to
+`MILESTONES.md`'s parking lot rather than into the milestone.
+
+## Versioning and releases
+
+ONX follows [Semantic Versioning 2.0.0](https://semver.org/) with one version
+for the whole workspace, set in `[workspace.package]` in the root
+`Cargo.toml` ([ADR-0034](docs/adr/0034-versioning-standard.md)). While the
+version is `0.y.z`, a breaking change to wire formats, storage, consensus,
+RPC/CLI, or public API needs a **minor** bump; anything compatible is a
+**patch**.
+
+- Every PR that changes behaviour adds a line under `## [Unreleased]` in
+  `CHANGELOG.md`.
+- Do not edit version numbers by hand. Run the **Version Bump** workflow
+  (Actions → Version Bump → patch/minor/major); it opens a `release/vX.Y.Z`
+  PR. Merging it tags the release and drafts the GitHub Release.
+- `python3 scripts/version.py check` runs the same consistency check as CI.
 
 ## Minimum supported Rust version
 

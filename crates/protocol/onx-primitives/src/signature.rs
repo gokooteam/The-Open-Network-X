@@ -1,7 +1,7 @@
 //! Ed25519 keys and domain-separated signing/verification.
 //!
 //! Spec: `docs/specification/protocol-primitives.md`, §3.4, §4.4, §4.5;
-//! `docs/decisions/ADR-0002-protocol-primitives-and-serialization.md`.
+//! `docs/adr/0009-protocol-primitives-and-serialization.md`.
 //! Public keys are 32-byte RFC 8032 encodings and signatures are 64-byte
 //! `R || s` encodings. As with hashing, there is no API to sign or verify
 //! without a [`DomainTag`]: every signature commits to the protocol

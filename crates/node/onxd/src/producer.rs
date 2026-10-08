@@ -84,12 +84,83 @@ use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
 use std::any::Any;
+use std::cell::Cell;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+thread_local! {
+    /// While set, Sentry must not capture (or stall on) panics on this thread.
+    ///
+    /// `propose_block_caught` sets it for the dry-run containment boundary:
+    /// panics there are deliberate probes for hostile-message isolation
+    /// (ADR-0029), not crashes. The panic-hook wrapper installed in `main`
+    /// skips sentry's hook entirely while the flag is set — a `before_send`
+    /// filter is not enough, because the hook's synchronous flush still
+    /// stalls the thread. One summary event is sent for the isolated
+    /// message instead (`drop_panicking_message`, rate-limited).
+    static SUPPRESS_SENTRY_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether Sentry panic reporting is currently suppressed on this thread.
+/// Read by the panic-hook wrapper installed in `main.rs`.
+pub fn suppress_sentry_panic() -> bool {
+    SUPPRESS_SENTRY_PANIC.with(|f| f.get())
+}
+
+/// Which kind of Sentry summary is being rate-limited. Warnings (an isolated
+/// hostile message) and errors (a genuine STF/state bug) get independent
+/// slots: a hostile-message flood must never delay or suppress an STF-bug
+/// report, and the dropped-counts must not mix the two kinds.
+#[derive(Clone, Copy)]
+enum SummaryKind {
+    Warning,
+    Error,
+}
+
+/// Rate-limit state: (current window start, events dropped in this window).
+type RateLimitState = (Option<std::time::Instant>, u32);
+
+/// Pure window logic, extracted for testing: `Some(dropped)` when the
+/// caller may send now (with the count of same-kind events dropped since
+/// the last send), `None` when this event must be dropped.
+fn take_slot(state: &mut RateLimitState, now: std::time::Instant) -> Option<u32> {
+    match state.0 {
+        Some(t) if now.duration_since(t) < Duration::from_secs(60) => {
+            state.1 += 1;
+            None
+        }
+        _ => {
+            let dropped = state.1;
+            state.0 = Some(now);
+            state.1 = 0;
+            Some(dropped)
+        }
+    }
+}
+
+/// At most one Sentry summary event per 60s window *per kind*; returns
+/// `Some(dropped)` with the number of same-kind events dropped since the
+/// last sent one when the caller may send now, `None` when this event must
+/// be dropped. A hostile-message flood must not burn Sentry quota or fill
+/// sentry's queue (a full queue silently drops events, so a real crash
+/// arriving mid-flood could be lost).
+fn take_summary_slot(kind: SummaryKind) -> Option<u32> {
+    use std::sync::{LazyLock, Mutex};
+    use std::time::Instant;
+    static STATES: LazyLock<[Mutex<RateLimitState>; 2]> =
+        LazyLock::new(|| [Mutex::new((None, 0)), Mutex::new((None, 0))]);
+    // Poison recovery instead of expect: the state is a plain
+    // timestamp+counter pair, so a poisoned lock still holds usable data.
+    // A diagnostic-only feature must never panic the producer.
+    let mut state = STATES[kind as usize]
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    take_slot(&mut state, Instant::now())
+}
 
 /// Canonical (pubkey-sorted) genesis validator refs, for `validator_index`
 /// assignment and self-verification (ADR-0032).
@@ -250,6 +321,20 @@ fn propose_block_caught(
     fee_collector: AccountId,
     parent_block_time: u64,
 ) -> Result<Result<Block, StfError>, Box<dyn Any + Send>> {
+    // Suppress Sentry panic reports for the containment boundary (see
+    // SUPPRESS_SENTRY_PANIC). The guard restores the previous value (not
+    // just `false`) so a future nested containment call can't clear the
+    // flag early.
+    struct SuppressGuard {
+        prev: bool,
+    }
+    impl Drop for SuppressGuard {
+        fn drop(&mut self) {
+            SUPPRESS_SENTRY_PANIC.with(|f| f.set(self.prev));
+        }
+    }
+    let prev = SUPPRESS_SENTRY_PANIC.with(|f| f.replace(true));
+    let _guard = SuppressGuard { prev };
     catch_unwind(AssertUnwindSafe(|| {
         // TEST-ONLY: simulates an interpreter/STF panic DURING the
         // dry-run, i.e. inside the containment boundary.
@@ -632,12 +717,47 @@ fn drop_panicking_message(
     mempool: &mut Mempool,
     stats: &mut ProducerStats,
 ) -> Result<(), TickError> {
-    let k = find_first_panicking_prefix(state, candidates, lt, fee_collector).ok_or_else(|| {
-        TickError::Retryable(
-            "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
-                .to_string(),
-        )
-    })?;
+    let k = match find_first_panicking_prefix(state, candidates, lt, fee_collector) {
+        Ok(Some(k)) => k,
+        Ok(None) => {
+            // Defensive: the caller saw the full set panic, so this should
+            // not happen. Retry without a Sentry report — there is no
+            // culprit and no payload to describe.
+            return Err(TickError::Retryable(
+                "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
+                    .to_string(),
+            ));
+        }
+        Err(payload) => {
+            // The dry-run panicked with NO messages: the panic is NOT
+            // message-caused, so this is a genuine STF/state bug, not a
+            // hostile message. It happens under the suppress flag and
+            // retries every tick — without this report it would be
+            // completely invisible in Sentry. Include the caught panic
+            // message (the full backtrace is in the daemon's stderr log
+            // from the producer's panic hook). Rate-limited on the Error
+            // slot, independent of the hostile-message Warning slot.
+            if let Some(dropped) = take_summary_slot(SummaryKind::Error) {
+                let dropped_note = if dropped > 0 {
+                    format!(" ({dropped} similar reports dropped by rate limit)")
+                } else {
+                    String::new()
+                };
+                sentry::capture_message(
+                    &format!(
+                        "producer: dry-run panicked with no panicking message prefix \
+                         (not message-caused; mempool left intact); panic: {}{dropped_note}",
+                        panic_summary(&payload),
+                    ),
+                    sentry::Level::Error,
+                );
+            }
+            return Err(TickError::Retryable(
+                "dry-run panicked but no panicking message prefix found (panic is not message-caused); mempool left intact"
+                    .to_string(),
+            ));
+        }
+    };
     let culprit = candidates.remove(k);
     eprintln!(
         "producer: PANIC CONTAINED — dropping message {} from sender {} nonce {}: \
@@ -647,6 +767,28 @@ fn drop_panicking_message(
         hex::encode(culprit.from.to_bytes()),
         culprit.nonce,
     );
+    // One Sentry event for the isolated message, rate-limited on the Warning
+    // slot (see take_summary_slot). The individual probe panics were
+    // suppressed (see SUPPRESS_SENTRY_PANIC); without this, a hostile
+    // message would be invisible in Sentry. No-op when Sentry is not
+    // initialized.
+    if let Some(dropped) = take_summary_slot(SummaryKind::Warning) {
+        let dropped_note = if dropped > 0 {
+            format!(" ({dropped} similar reports dropped by rate limit)")
+        } else {
+            String::new()
+        };
+        sentry::capture_message(
+            &format!(
+                "producer: contained dry-run panic; dropped message {} from {} nonce {} \
+                 (local fault, not a bounce){dropped_note}",
+                hex::encode(culprit.hash()),
+                hex::encode(culprit.from.to_bytes()),
+                culprit.nonce,
+            ),
+            sentry::Level::Warning,
+        );
+    }
     mempool.reject_candidate(
         &culprit.hash(),
         "dry-run execution panicked (local fault, not a bounce)",
@@ -698,10 +840,11 @@ fn find_first_bad_prefix(
 }
 
 /// Binary search for the smallest `k` such that the dry-run proposal of
-/// `candidates[..=k]` PANICS. Returns `None` when no prefix panics — in
-/// particular when the EMPTY prefix already panics, which means the panic
-/// is not message-caused (bad state/config) and no message may be blamed
-/// for it.
+/// `candidates[..=k]` PANICS. Returns `Ok(Some(k))` for the culprit index,
+/// `Ok(None)` when no prefix panics. Returns `Err(payload)` when the EMPTY
+/// prefix already panics, which means the panic is not message-caused
+/// (bad state/config) — the payload propagates so the caller reports the
+/// genuine bug instead of blaming a message for it.
 ///
 /// Monotonicity caveat: unlike rejections, panics are not provably
 /// monotonic in the prefix (a panic can depend on accumulated dry-run
@@ -715,12 +858,11 @@ fn find_first_panicking_prefix(
     candidates: &[ExternalMessage],
     lt: u64,
     fee_collector: AccountId,
-) -> Option<usize> {
+) -> Result<Option<usize>, Box<dyn Any + Send>> {
     // Empty-prefix probe: panicking here means the panic is not
-    // message-caused. Never blame a message for it.
-    if propose_block_caught(state, Vec::new(), lt, fee_collector, 0).is_err() {
-        return None;
-    }
+    // message-caused. Propagate the payload so the caller can report the
+    // genuine bug; never blame a message for it.
+    let _ = propose_block_caught(state, Vec::new(), lt, fee_collector, 0)?;
     // Invariant: propose(..lo) does not panic, propose(..hi) panics.
     // hi = len holds because the caller observed the full set panic.
     let mut lo = 0usize;
@@ -734,11 +876,11 @@ fn find_first_panicking_prefix(
         }
     }
     // propose(..lo) clean, propose(..lo+1) panics → culprit is index lo.
-    if lo < candidates.len() {
+    Ok(if lo < candidates.len() {
         Some(lo)
     } else {
         None
-    }
+    })
 }
 
 /// Temp path for an atomic block-file write. Hidden name, per-process
@@ -944,5 +1086,68 @@ mod tests {
             "exactly the panicking message is dropped"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::{take_slot, RateLimitState};
+    use std::time::{Duration, Instant};
+
+    fn fresh() -> RateLimitState {
+        (None, 0)
+    }
+
+    #[test]
+    fn first_event_in_window_sends_with_zero_dropped() {
+        let mut s = fresh();
+        let now = Instant::now();
+        assert_eq!(take_slot(&mut s, now), Some(0));
+    }
+
+    #[test]
+    fn events_within_window_are_dropped() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        // Second and third events inside the 60s window must drop.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(59)), None);
+    }
+
+    #[test]
+    fn dropped_count_reported_on_next_send() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(2)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(3)), None);
+        // Window expired: next send reports the 3 dropped events.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(61)), Some(3));
+    }
+
+    #[test]
+    fn window_resets_dropped_count_after_send() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(61)), Some(1));
+        // Fresh window: no drops accumulated.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(122)), Some(0));
+    }
+
+    #[test]
+    fn warning_and_error_states_are_independent() {
+        // Two separate states must not cross-contaminate: burning the
+        // Warning slot leaves the Error slot able to send.
+        let mut warning: RateLimitState = fresh();
+        let mut error: RateLimitState = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut warning, t0), Some(0));
+        assert_eq!(take_slot(&mut warning, t0 + Duration::from_secs(1)), None);
+        // Error slot untouched: sends immediately with zero dropped.
+        assert_eq!(take_slot(&mut error, t0 + Duration::from_secs(1)), Some(0));
     }
 }

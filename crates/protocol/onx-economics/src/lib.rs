@@ -32,7 +32,7 @@ pub use slashing::{
 
 impl std::error::Error for EconomicsError {}
 
-/// Economic parameters per docs/specification/economics.md and ADR-0019.
+/// Economic parameters per docs/specification/economics.md and ADR-0026.
 pub const INITIAL_SUPPLY_NANOS: u128 = 5_000_000_000_000_000_000; // 5 Billion Onyxi
 pub const ANNUAL_INFLATION_RATE_BPS: u64 = 175; // 1.75% (175 bps)
 pub const FEE_BURN_RATIO_PERCENT: u64 = 50; // 50% burned

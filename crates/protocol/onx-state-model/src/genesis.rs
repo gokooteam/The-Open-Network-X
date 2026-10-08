@@ -234,11 +234,11 @@ impl GenesisDocument {
             });
         }
 
-        let acount_bytes = take(&mut cursor, 4)?;
-        let acount = u32::from_be_bytes(acount_bytes.try_into().unwrap()) as usize;
+        let account_bytes = take(&mut cursor, 4)?;
+        let account = u32::from_be_bytes(account_bytes.try_into().unwrap()) as usize;
         let mut accounts = BTreeMap::new();
         let mut prev_id: Option<AccountId> = None;
-        for _ in 0..acount {
+        for _ in 0..account {
             let id_bytes = take(&mut cursor, 32)?;
             let id = AccountId::from_bytes(id_bytes.try_into().unwrap());
             if let Some(prev) = prev_id {

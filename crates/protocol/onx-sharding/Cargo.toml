@@ -1,6 +1,6 @@
 [package]
 name = "onx-sharding"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX dynamic sharding, shard tree invariants, split/merge triggers, state migration, and routing continuity per docs/specification/sharding.md"
 license = "Apache-2.0"
@@ -10,7 +10,6 @@ publish = false
 onx-primitives = { path = "../onx-primitives" }
 onx-data-structures = { path = "../onx-data-structures" }
 onx-state-model = { path = "../onx-state-model" }
-onx-blocks = { path = "../onx-blocks" }
 
 [dev-dependencies]
 hex = "0.4"

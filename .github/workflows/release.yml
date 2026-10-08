@@ -1,13 +1,24 @@
 name: Release
 
+# Builds, tests, and drafts a GitHub Release for a vX.Y.Z tag. Runs on a
+# manually pushed tag, or is called by versioning.yml after it tags a new
+# workspace version on main (tags created with GITHUB_TOKEN do not trigger
+# `push: tags` themselves). Policy: docs/adr/0034-versioning-standard.md.
+
 on:
   push:
     tags:
       - 'v*'
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag to release, e.g. v0.2.0'
+        required: true
+        type: string
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.tag || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -17,12 +28,28 @@ jobs:
   build-release:
     name: Build & Draft Release
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Check tag matches workspace version
+        if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/')
+        run: |
+          python3 scripts/version.py check
+          version=$(python3 scripts/version.py current)
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match workspace version v$version"
+            exit 1
+          fi
+          python3 scripts/version.py notes "$version" > "$RUNNER_TEMP/release-notes.md"
 
       - name: Build workspace in release mode
         run: cargo build --workspace --release
@@ -32,7 +59,11 @@ jobs:
 
       - name: Create Release Draft
         uses: softprops/action-gh-release@v3
-        if: startsWith(github.ref, 'refs/tags/')
+        if: inputs.tag != '' || startsWith(github.ref, 'refs/tags/')
         with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
           draft: true
+          prerelease: ${{ contains(env.TAG, '-') }}
+          body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true

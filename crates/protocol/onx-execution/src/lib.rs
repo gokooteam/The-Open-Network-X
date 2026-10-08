@@ -8,8 +8,8 @@
 #![deny(clippy::arithmetic_side_effects)]
 //! ONX Virtual Machine Execution Engine and Interpreter.
 //!
-//! Implements `docs/specification/execution.md` (ADR-0007) and
-//! `docs/specification/tvm-instruction-set.md` (ADR-0017).
+//! Implements `docs/specification/execution.md` (ADR-0014) and
+//! `docs/specification/tvm-instruction-set.md` (ADR-0024).
 
 pub mod continuation;
 pub mod dictionary;

@@ -1,6 +1,6 @@
 [package]
 name = "onx-storage"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX atomic chain storage: redb-backed persistence for the deterministic-replay plan (Phase 4). One atomic transaction covers state, block body, seqno index, and head pointer."
 license = "Apache-2.0"
