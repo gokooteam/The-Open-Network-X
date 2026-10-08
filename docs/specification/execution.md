@@ -76,7 +76,8 @@ Workchains other than the basic workchain may adopt a different VM entirely (`WH
   - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell.
   - `MalformedCell` — a cell violates `state-model.md` §5's structural rules (e.g. data/reference-count limits) when accessed as a typed value.
   - `TypeMismatch` — code accessed a cell's contents as an algebraic-type shape its tag/descriptor does not support.
-- All five exception kinds have the same effect on state per §3.2: atomic rollback of `data`, retention of `gas_used`.
+- All five exception kinds have the same effect on *state* per §3.2: atomic rollback of `data`, retention of `gas_used`. Their effect on the *delivery* differs — see the fatal-vs-bounce taxonomy below (ADR-0037).
+- **Fatal-vs-bounce taxonomy (ADR-0037, Wave 4):** a contract-execution failure is **fatal** iff the message's gas budget was exhausted (`OutOfGas`); it **bounces** otherwise (`IntegerOverflow`, `AbsentNode`, `MalformedCell`, `TypeMismatch` — whether raised by the VM or deliberately by the contract via `THROW`, which maps onto these same kinds). Fatal mechanics: the delivery's value is credited to the destination like a plain transfer (no data update, no bounce queued); a fatal delivery is still a valid delivery and does not invalidate the block. Rationale: returning the value after the network spent the full paid budget prices griefing at the fee alone. Bounce and fatal receipts both report the gas the VM actually burned, so the per-block gas cap accounts for executed work even when state effects revert.
 
 ### 3.5 Decision: reserve a Merkle-proof VM primitive now (accept)
 

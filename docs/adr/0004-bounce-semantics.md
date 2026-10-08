@@ -1,6 +1,10 @@
 # ADR-0004 — Bounce semantics
 
-**Status:** Accepted
+**Status:** Accepted; **amended by ADR-0037** (2026-10-07): the "VM
+exceptions bounce (including out-of-gas)" rule below no longer holds for
+`ExceptionKind::OutOfGas`, which is now **fatal** (value credited to the
+destination, no bounce). All other exception kinds still bounce as
+described here. See ADR-0037 for the taxonomy and rationale.
 **Date:** 2026-10-05
 **Milestone:** message-based single-shard chain
 

@@ -1,0 +1,145 @@
+{
+  "adr": "ADR-0037",
+  "note": "bit_count is sum(Cell.bit_len()); byte_count is sum of canonical cell bytes. The 3-bit flagged cell and the 8-bit byte-granular cell share byte_count but differ in bit_count \u2014 that is the ADR-0036 precision this step adds.",
+  "cases": [
+    {
+      "name": "empty",
+      "cells": [],
+      "stat": {
+        "cell_count": 0,
+        "byte_count": 0,
+        "bit_count": 0
+      }
+    },
+    {
+      "name": "single_byte_granular",
+      "cells": [
+        {
+          "role": "code",
+          "data_hex": "01020304",
+          "bit_len": 32,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 1,
+        "byte_count": 6,
+        "bit_count": 32
+      }
+    },
+    {
+      "name": "code_and_data",
+      "cells": [
+        {
+          "role": "code",
+          "data_hex": "01020304",
+          "bit_len": 32,
+          "refs_hex": []
+        },
+        {
+          "role": "data",
+          "data_hex": "0000000000000000",
+          "bit_len": 64,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 2,
+        "byte_count": 16,
+        "bit_count": 96
+      }
+    },
+    {
+      "name": "flagged_3bit",
+      "cells": [
+        {
+          "role": "data",
+          "data_hex": "b0",
+          "bit_len": 3,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 1,
+        "byte_count": 3,
+        "bit_count": 3
+      }
+    },
+    {
+      "name": "byte_8bit_collision_pair",
+      "cells": [
+        {
+          "role": "data",
+          "data_hex": "a0",
+          "bit_len": 8,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 1,
+        "byte_count": 3,
+        "bit_count": 8
+      }
+    },
+    {
+      "name": "flagged_12bit",
+      "cells": [
+        {
+          "role": "data",
+          "data_hex": "abc8",
+          "bit_len": 12,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 1,
+        "byte_count": 4,
+        "bit_count": 12
+      }
+    },
+    {
+      "name": "cell_with_refs",
+      "cells": [
+        {
+          "role": "code",
+          "data_hex": "ff",
+          "bit_len": 8,
+          "refs_hex": [
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          ]
+        }
+      ],
+      "stat": {
+        "cell_count": 1,
+        "byte_count": 67,
+        "bit_count": 8
+      }
+    },
+    {
+      "name": "mixed",
+      "cells": [
+        {
+          "role": "code",
+          "data_hex": "ff",
+          "bit_len": 8,
+          "refs_hex": [
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222"
+          ]
+        },
+        {
+          "role": "data",
+          "data_hex": "b0",
+          "bit_len": 3,
+          "refs_hex": []
+        }
+      ],
+      "stat": {
+        "cell_count": 2,
+        "byte_count": 70,
+        "bit_count": 11
+      }
+    }
+  ]
+}

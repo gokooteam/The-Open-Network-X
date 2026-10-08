@@ -76,6 +76,14 @@ Active account state record binary layout (`AccountState`), 141 bytes total:
                             all-zero = keyless: can receive, never spend)
 9. nonce         : uint64  (8 bytes, big-endian per-account sequence number)
 ```
+
+`StorageStat` additionally carries `bit_count` (uint64, sum of exact
+cell bit lengths per §4.2.1) — but it is **not serialized**: the 141-byte
+header layout above is pinned by the V2 golden vectors
+(`reference/account.py`), so `AccountState::from_bytes` derives
+`bit_count` from the decoded code/data cells instead (ADR-0037). The
+persisted `(cell_count, byte_count)` plus the embedded cells fully
+determine it.
 The `pubkey`/`nonce` pair is the message-authorization mechanism
 (`ONX_MSG_EXT_V1`, see `docs/adr/0002-message-encoding-and-domain-tags.md`):
 an external message is valid only if its signature verifies against the

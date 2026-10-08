@@ -147,6 +147,7 @@ fn active_contract(code: Cell, data: Cell) -> AccountState {
         storage_stat: StorageStat {
             cell_count: 2,
             byte_count: 0,
+            bit_count: 0,
         },
         pubkey: [0u8; 32],
         nonce: 0,
@@ -163,6 +164,7 @@ fn funded_sender(secret: &SecretKey) -> (AccountId, AccountState) {
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
+            bit_count: 0,
         },
         pubkey: secret.public_key().encode(),
         nonce: 0,

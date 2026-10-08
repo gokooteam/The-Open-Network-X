@@ -30,7 +30,7 @@ use crate::error::StfError;
 use crate::message::{derive_address, ExternalMessage, InternalMessage, MsgKind};
 use crate::state::State;
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
-use onx_execution::{ExecutionContext, ExecutionResult, Interpreter, StackValue};
+use onx_execution::{ExceptionKind, ExecutionContext, ExecutionResult, Interpreter, StackValue};
 use onx_primitives::{domain_hash, DomainTag, PublicKey};
 use onx_state_model::{
     AccountState, BagOfCells, Cell, ContractCellDags, ShardStateTree, StorageStat,
@@ -111,7 +111,17 @@ pub struct DeliveryReceipt {
     /// True when the message could not be processed and was bounced
     /// (value returned to `src` minus fees, as a new internal message).
     pub bounced: bool,
-    /// TVM gas consumed; 0 for plain value deliveries and for bounces.
+    /// True when the delivery failed *fatally* (ADR-0037): the message's
+    /// gas budget was exhausted (`ExceptionKind::OutOfGas`), so the value
+    /// is NOT returned — it is credited to the destination like a plain
+    /// transfer, with no contract data update and no bounce queued.
+    /// Invariant: at most one of `bounced` / `fatal` is true; both false
+    /// means the delivery was processed.
+    pub fatal: bool,
+    /// TVM gas consumed; 0 for plain value deliveries. Bounce and fatal
+    /// receipts report the gas the VM burned before failing (ADR-0037) —
+    /// the ADR-0034 block cap must see executed work even when the
+    /// delivery's state effects reverted.
     pub gas_used: u64,
 }
 
@@ -555,7 +565,9 @@ fn wallet_receive(
 /// Then the destination decides:
 /// - `Active` + empty payload → plain value credit.
 /// - `Active` + payload + code → TVM execution (gas from the message fee);
-///   success credits value and updates contract data, failure bounces.
+///   success credits value and updates contract data, a non-fatal failure
+///   bounces, gas exhaustion is fatal (ADR-0037: value credited to the
+///   destination, no bounce).
 /// - `Active` + payload + no code → bounce.
 /// - `Uninitialized` + empty payload → create a keyless `Active` account.
 /// - `Uninitialized` + payload → bounce (calls never create accounts).
@@ -590,6 +602,7 @@ fn deliver(
         dest: msg.dest,
         value_nanos: msg.value_nanos,
         bounced: false,
+        fatal: false,
         gas_used: 0,
     };
 
@@ -598,11 +611,12 @@ fn deliver(
         .cloned()
         .unwrap_or(AccountState::Uninitialized);
 
-    // Decide process vs bounce. The VM runs pure here (no tree mutation);
-    // its output is applied only on the process path below.
+    // Decide process vs bounce vs fatal. The VM runs pure here (no tree
+    // mutation); its output is applied only on the process/fatal paths below.
     let mut gas_used = 0u64;
     let mut new_data: Option<Cell> = None;
     let mut must_bounce = false;
+    let mut is_fatal = false;
     match &dest_state {
         AccountState::Frozen { .. } | AccountState::Destroyed => must_bounce = true,
         AccountState::Uninitialized if !msg.payload.is_empty() => must_bounce = true,
@@ -623,14 +637,35 @@ fn deliver(
                 msg.dest,
                 tree.contract_cells_mut(),
             ) {
-                Some(out) => {
+                ExecOutcome::Success(out) => {
                     gas_used = out.gas_used;
                     new_data = Some(out.new_data);
                 }
-                None => must_bounce = true,
+                ExecOutcome::Bounce { gas } => {
+                    gas_used = gas;
+                    must_bounce = true;
+                }
+                ExecOutcome::Fatal { gas } => {
+                    gas_used = gas;
+                    is_fatal = true;
+                }
             }
         }
         _ => {}
+    }
+
+    if is_fatal {
+        // ADR-0037: the message exhausted its gas budget. The value is NOT
+        // returned — it is credited to the destination like a plain
+        // transfer (no data update, no bounce queued). A bounce message
+        // carries an empty payload and can never reach this arm, so there
+        // is no bounce-of-bounce case here.
+        debug_assert!(!must_bounce, "fatal and bounce are mutually exclusive");
+        check_lt(&dest_state, lt, msg.dest)?;
+        credit_account(tree, msg.dest, &dest_state, msg.value_nanos, lt)?;
+        receipt.fatal = true;
+        receipt.gas_used = gas_used;
+        return Ok(receipt);
     }
 
     if must_bounce {
@@ -649,6 +684,7 @@ fn deliver(
         };
         queue.push_back((bounced, ext_idx));
         receipt.bounced = true;
+        receipt.gas_used = gas_used;
         return Ok(receipt);
     }
 
@@ -720,6 +756,7 @@ fn credit_account(
             StorageStat {
                 cell_count: 0,
                 byte_count: 0,
+                bit_count: 0,
             },
             [0u8; 32],
             0,
@@ -746,19 +783,57 @@ fn credit_account(
 
 /// Output of a successful contract execution: the contract's new
 /// persistent data cell and the gas consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ContractExecOutput {
     new_data: Cell,
     gas_used: u64,
 }
 
+/// What a contract execution attempt means for the delivery (ADR-0037).
+///
+/// - `Success`: apply the value credit and the data update.
+/// - `Bounce`: queue a bounce message returning the value to the sender.
+/// - `Fatal`: credit the value to the destination (no data update, no
+///   bounce) — the message exhausted its gas budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExecOutcome {
+    Success(ContractExecOutput),
+    Bounce { gas: u64 },
+    Fatal { gas: u64 },
+}
+
+/// The ADR-0037 fatal-vs-bounce taxonomy, as a pure predicate over the
+/// closed `ExceptionKind` set. Only `OutOfGas` is fatal: the network spent
+/// the full paid budget, so returning the value would price griefing at
+/// the fee alone. Every other kind — whether raised by the VM or
+/// deliberately by the contract via `THROW` (0x77 maps onto these same
+/// kinds) — bounces: an early, cheap failure or a deliberate rejection,
+/// and the sender is refunded.
+///
+/// `reference/vectors/fatal_bounce.json` pins this table; the agreement
+/// test asserts it covers the closed set exhaustively.
+///
+/// The match is explicit (no wildcard): adding a sixth `ExceptionKind`
+/// fails compilation here until its outcome is decided.
+pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
+    match kind {
+        ExceptionKind::OutOfGas => true,
+        ExceptionKind::IntegerOverflow
+        | ExceptionKind::AbsentNode
+        | ExceptionKind::MalformedCell
+        | ExceptionKind::TypeMismatch => false,
+    }
+}
+
 /// Execute a contract call against the recipient's code and data.
 ///
 /// Pure: reads only the already-fetched code/data and the tree's persisted
-/// contract cell DAGs, never touches the tree's accounts. Returns `None`
-/// when the delivery must bounce: a TVM exception (including out-of-gas)
-/// or an out-message egress attempt (deliberately unwired this milestone —
-/// the message would otherwise be silently dropped, so the value bounces
-/// instead).
+/// contract cell DAGs, never touches the tree's accounts. Returns the
+/// ADR-0037 delivery outcome: `Success` on clean execution with no
+/// out-messages; `Bounce` on a non-fatal TVM exception or an out-message
+/// egress attempt (deliberately unwired this milestone — the message would
+/// otherwise be silently dropped, so the value bounces instead); `Fatal`
+/// when the execution exhausted its gas budget (`OutOfGas`).
 ///
 /// Calling convention (documented, deterministic):
 /// - The contract's persistent data cell is pushed on the operand stack at
@@ -785,7 +860,7 @@ fn try_execute_contract(
     workchain: i32,
     account_id: AccountId,
     contract_cells: &mut BTreeMap<AccountId, ContractCellDags>,
-) -> Option<ContractExecOutput> {
+) -> ExecOutcome {
     let data_cell = data
         .cloned()
         .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"));
@@ -830,8 +905,17 @@ fn try_execute_contract(
                 // hashes) as Bags-of-Cells, collected by reachability from
                 // the roots through the drained store.
                 let drained = std::mem::take(&mut interp.cell_store);
-                let code_boc = dag_boc(&drained, code.hash())?;
-                let data_boc = dag_boc(&drained, new_data.hash())?;
+                // A missing DAG root is an internal invariant violation
+                // (the root was just seeded or materialized). Fail safe:
+                // bounce the delivery rather than applying a half-built
+                // state — same as the old `None` path.
+                let (code_boc, data_boc) = match (
+                    dag_boc(&drained, code.hash()),
+                    dag_boc(&drained, new_data.hash()),
+                ) {
+                    (Some(c), Some(d)) => (c, d),
+                    _ => return ExecOutcome::Bounce { gas: gas_used },
+                };
                 contract_cells.insert(
                     account_id,
                     ContractCellDags {
@@ -839,12 +923,18 @@ fn try_execute_contract(
                         data: data_boc,
                     },
                 );
-                Some(ContractExecOutput { new_data, gas_used })
+                ExecOutcome::Success(ContractExecOutput { new_data, gas_used })
             } else {
-                None
+                ExecOutcome::Bounce { gas: gas_used }
             }
         }
-        ExecutionResult::Exception { .. } => None,
+        ExecutionResult::Exception { kind, gas_used } => {
+            if is_fatal_exception(&kind) {
+                ExecOutcome::Fatal { gas: gas_used }
+            } else {
+                ExecOutcome::Bounce { gas: gas_used }
+            }
+        }
     }
 }
 
@@ -934,20 +1024,26 @@ fn update_contract_data(
     }
 }
 
-/// Storage accounting for embedded contract cells: counts the cells and
-/// their canonical byte sizes. Deterministic; recomputed whenever code or
-/// data changes.
+/// Storage accounting for embedded contract cells: counts the cells, their
+/// canonical byte sizes, and their precise bit lengths (ADR-0037; bit
+/// granularity matters after ADR-0036). Deterministic; recomputed whenever
+/// code or data changes. This is the single writer of `StorageStat` on the
+/// state-transition path — `AccountState::from_bytes` derives the same
+/// `bit_count` from the decoded cells, so the two always agree.
 fn storage_stat_for(code: Option<&Cell>, data: Option<&Cell>) -> StorageStat {
     let mut cell_count = 0u32;
     let mut byte_count = 0u64;
+    let mut bit_count = 0u64;
     for cell in [code, data].into_iter().flatten() {
         // At most two cells, each a few hundred bytes: saturation unreachable.
         cell_count = cell_count.saturating_add(1);
         byte_count = byte_count.saturating_add(cell.to_bytes().len() as u64);
+        bit_count = bit_count.saturating_add(cell.bit_len() as u64);
     }
     StorageStat {
         cell_count,
         byte_count,
+        bit_count,
     }
 }
 
@@ -985,6 +1081,7 @@ mod tests {
                     storage_stat: StorageStat {
                         cell_count: 0,
                         byte_count: 0,
+                        bit_count: 0,
                     },
                     pubkey,
                     nonce: 0,
@@ -1209,5 +1306,69 @@ mod tests {
         let s = format!("{err}");
         assert!(s.contains("101"), "display should name used: {s}");
         assert!(s.contains("100"), "display should name cap: {s}");
+    }
+
+    #[test]
+    fn storage_stat_for_agrees_with_python() {
+        // ADR-0037: storage_stat_for must agree with the independent Python
+        // reference (reference/gen_storage_vectors.py,
+        // reference/vectors/storage_stat.json), generated from the spec
+        // text. Fixtures are rebuilt via Cell::new_with_bit_len from the
+        // recorded (data_hex, bit_len, refs_hex) inputs.
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../reference/vectors/storage_stat.json"
+        );
+        let text = std::fs::read_to_string(path).expect("storage_stat.json must exist");
+        let v: serde_json::Value =
+            serde_json::from_str(&text).expect("storage_stat.json must parse");
+        assert_eq!(v["adr"].as_str(), Some("ADR-0037"));
+        for case in v["cases"].as_array().expect("cases array") {
+            let name = case["name"].as_str().expect("name");
+            let mut cells: Vec<Cell> = Vec::new();
+            for fc in case["cells"].as_array().expect("cells array") {
+                let data =
+                    hex::decode(fc["data_hex"].as_str().expect("data_hex")).expect("valid hex");
+                let bit_len = fc["bit_len"].as_u64().expect("bit_len") as usize;
+                let refs: Vec<[u8; 32]> = fc["refs_hex"]
+                    .as_array()
+                    .expect("refs_hex")
+                    .iter()
+                    .map(|r| {
+                        let b = hex::decode(r.as_str().expect("hex")).expect("valid hex");
+                        let mut arr = [0u8; 32];
+                        arr.copy_from_slice(&b);
+                        arr
+                    })
+                    .collect();
+                cells.push(
+                    Cell::new_with_bit_len(data, bit_len, refs)
+                        .unwrap_or_else(|e| panic!("fixture {name} rebuild failed: {e:?}")),
+                );
+            }
+            let (code, data) = match cells.as_slice() {
+                [] => (None, None),
+                [c] => (Some(c), None),
+                [c, d] => (Some(c), Some(d)),
+                _ => panic!("fixture {name} has more than 2 cells"),
+            };
+            let stat = storage_stat_for(code, data);
+            let exp = &case["stat"];
+            assert_eq!(
+                stat.cell_count,
+                exp["cell_count"].as_u64().expect("cell_count") as u32,
+                "{name}: cell_count"
+            );
+            assert_eq!(
+                stat.byte_count,
+                exp["byte_count"].as_u64().expect("byte_count"),
+                "{name}: byte_count"
+            );
+            assert_eq!(
+                stat.bit_count,
+                exp["bit_count"].as_u64().expect("bit_count"),
+                "{name}: bit_count"
+            );
+        }
     }
 }

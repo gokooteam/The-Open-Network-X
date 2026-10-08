@@ -1383,11 +1383,13 @@ dependencies = [
 name = "onx-stf"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "onx-data-structures",
  "onx-economics",
  "onx-execution",
  "onx-primitives",
  "onx-state-model",
+ "serde_json",
 ]
 
 [[package]]

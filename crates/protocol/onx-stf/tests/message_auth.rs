@@ -53,6 +53,7 @@ fn active(balance: u128, pubkey: [u8; 32]) -> AccountState {
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
+            bit_count: 0,
         },
         pubkey,
         nonce: 0,

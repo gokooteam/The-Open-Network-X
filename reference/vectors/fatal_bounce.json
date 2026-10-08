@@ -1,0 +1,47 @@
+{
+  "adr": "ADR-0037",
+  "exception_outcomes": [
+    {
+      "exception_kind": "OutOfGas",
+      "outcome": "fatal"
+    },
+    {
+      "exception_kind": "IntegerOverflow",
+      "outcome": "bounce"
+    },
+    {
+      "exception_kind": "AbsentNode",
+      "outcome": "bounce"
+    },
+    {
+      "exception_kind": "MalformedCell",
+      "outcome": "bounce"
+    },
+    {
+      "exception_kind": "TypeMismatch",
+      "outcome": "bounce"
+    }
+  ],
+  "situation_outcomes": [
+    {
+      "situation": "success_with_out_messages",
+      "outcome": "bounce"
+    },
+    {
+      "situation": "frozen_destination",
+      "outcome": "bounce"
+    },
+    {
+      "situation": "destroyed_destination",
+      "outcome": "bounce"
+    },
+    {
+      "situation": "uninitialized_with_payload",
+      "outcome": "bounce"
+    },
+    {
+      "situation": "codeless_active_with_payload",
+      "outcome": "bounce"
+    }
+  ]
+}

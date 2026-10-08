@@ -76,6 +76,7 @@ fn active(balance_nanos: u128, id: &AccountId) -> AccountState {
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
+            bit_count: 0,
         },
         pubkey: test_secret(id).public_key().encode(),
         nonce: 0,

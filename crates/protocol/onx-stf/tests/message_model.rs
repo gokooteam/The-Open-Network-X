@@ -40,6 +40,7 @@ fn keyed(balance: u128, key: &SecretKey) -> AccountState {
         storage_stat: StorageStat {
             cell_count: 0,
             byte_count: 0,
+            bit_count: 0,
         },
         pubkey: key.public_key().encode(),
         nonce: 0,

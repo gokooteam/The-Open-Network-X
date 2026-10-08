@@ -779,6 +779,7 @@ mod tests {
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
+                    bit_count: 0,
                 },
                 pubkey: [0; 32],
                 nonce: 0,
@@ -798,6 +799,7 @@ mod tests {
             storage_stat: StorageStat {
                 cell_count: 0,
                 byte_count: 0,
+                bit_count: 0,
             },
             pubkey: [0; 32],
             nonce: 0,
@@ -831,6 +833,7 @@ mod tests {
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
+                    bit_count: 0,
                 },
                 pubkey: [0x22; 32],
                 nonce,
@@ -880,6 +883,7 @@ mod tests {
                 storage_stat: StorageStat {
                     cell_count: 0,
                     byte_count: 0,
+                    bit_count: 0,
                 },
                 pubkey: [0x33; 32],
                 nonce: 0,

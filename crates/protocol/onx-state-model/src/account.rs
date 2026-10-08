@@ -78,10 +78,20 @@ impl AccountType {
 }
 
 /// Storage resource consumption statistics for an account.
+///
+/// `cell_count` and `byte_count` are persisted in the account record codec
+/// (`state-model.md` §4.1). `bit_count` is NOT on the wire: the 141-byte
+/// `Active` header layout is pinned by the V2 golden vectors
+/// (`reference/account.py`), so `AccountState::from_bytes` derives
+/// `bit_count` from the decoded code/data cells instead. The persisted
+/// fields plus the embedded cells fully determine it — the struct field is
+/// a cached precise measure (ADR-0036 made cells bit-granular, so bytes
+/// alone are ambiguous), not new wire state. ADR-0037.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StorageStat {
     pub cell_count: u32,
     pub byte_count: u64,
+    pub bit_count: u64,
 }
 
 /// Canonical Account State record per docs/specification/state-model.md §3.2 and §4.1.
@@ -335,6 +345,15 @@ impl AccountState {
                     None
                 };
 
+                // ADR-0037: bit_count is derived, never on the wire. The
+                // 141-byte header layout is pinned by the V2 golden vectors;
+                // the decoded cells fully determine the precise bit measure.
+                let bit_count: u64 = [code.as_ref(), data.as_ref()]
+                    .into_iter()
+                    .flatten()
+                    .map(|c| c.bit_len() as u64)
+                    .sum();
+
                 Ok((
                     Self::Active {
                         balance_nanos: balance_val.0,
@@ -344,6 +363,7 @@ impl AccountState {
                         storage_stat: StorageStat {
                             cell_count: cell_count_val.0,
                             byte_count: byte_count_val.0,
+                            bit_count,
                         },
                         pubkey,
                         nonce: nonce_val.0,
