@@ -1,6 +1,6 @@
 [package]
 name = "onx-execution"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX execution engine and TVM 46-opcode interpreter per docs/specification/execution.md and docs/specification/tvm-instruction-set.md"
 license = "Apache-2.0"

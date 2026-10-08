@@ -1,6 +1,6 @@
 [package]
 name = "onx-state-model"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX state model, account states/lifecycle, Cell hashing, Bag-of-Cells (BoC), and Merkle proofs per docs/specification/state-model.md"
 license = "Apache-2.0"

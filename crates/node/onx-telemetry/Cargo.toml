@@ -1,6 +1,6 @@
 [package]
 name = "onx-telemetry"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX telemetry, metrics, and tracing scaffolding for node and consensus integration"
 license = "Apache-2.0"

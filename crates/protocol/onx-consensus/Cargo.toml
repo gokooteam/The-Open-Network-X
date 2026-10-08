@@ -1,6 +1,6 @@
 [package]
 name = "onx-consensus"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX consensus, validator lifecycle, election, BFT quorum voting, and finality per docs/specification/consensus.md"
 license = "Apache-2.0"

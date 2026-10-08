@@ -23,3 +23,8 @@ members = [
     "crates/tooling/onx",
 ]
 exclude = ["fuzz"]
+
+# Single source of truth for the software version of every workspace crate.
+# Policy: docs/adr/0034-versioning-standard.md. Bump with scripts/version.py.
+[workspace.package]
+version = "0.2.0"

@@ -1,0 +1,96 @@
+name: Versioning
+
+# Keeps the workspace version organised (policy: docs/adr/0034-versioning-standard.md):
+#  - PRs and pushes: every crate inherits [workspace.package] version, Cargo.lock
+#    agrees, CHANGELOG.md has Unreleased + the current version, and a PR moves the
+#    version at most one SemVer step forward.
+#  - main: when the version has no tag yet, tag vX.Y.Z and draft the release.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.current.outputs.version }}
+      tag_exists: ${{ steps.tag.outputs.exists }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Read workspace version
+        id: current
+        run: echo "version=$(python3 scripts/version.py current)" >> "$GITHUB_OUTPUT"
+
+      - name: Check version consistency
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$BASE_SHA" ]; then
+            git show "$BASE_SHA:Cargo.toml" > "$RUNNER_TEMP/base-Cargo.toml"
+            base_version=$(python3 -c 'import sys, tomllib; d = tomllib.load(open(sys.argv[1], "rb")); print(d.get("workspace", {}).get("package", {}).get("version", ""))' "$RUNNER_TEMP/base-Cargo.toml")
+            if [ -n "$base_version" ]; then
+              python3 scripts/version.py check --base-version "$base_version"
+              exit 0
+            fi
+          fi
+          python3 scripts/version.py check
+
+      - name: Check for existing tag
+        id: tag
+        env:
+          VERSION: ${{ steps.current.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$VERSION already exists."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v$VERSION does not exist yet."
+          fi
+
+  tag:
+    name: Tag release
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.check.outputs.tag_exists == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.create.outputs.tag }}
+    steps:
+      - name: Create tag
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          gh api "repos/$REPO/git/refs" -f "ref=refs/tags/v$VERSION" -f "sha=$SHA"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  release:
+    name: Release
+    needs: tag
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml  # zizmor: ignore[self-repository]
+    with:
+      tag: ${{ needs.tag.outputs.tag }}

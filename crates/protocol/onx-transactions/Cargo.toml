@@ -1,6 +1,6 @@
 [package]
 name = "onx-transactions"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "ONX transaction and messaging semantics: external/internal message admission, output-queue-only delivery, per-account FIFO ordering, and double-delivery prevention per docs/specification/transactions.md"
 license = "Apache-2.0"
