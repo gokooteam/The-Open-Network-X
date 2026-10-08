@@ -307,10 +307,19 @@ fn write_unique_temp(
     private: bool,
 ) -> Result<PathBuf, String> {
     static SEQ: AtomicU64 = AtomicU64::new(0);
+    // pid + start-time nanos + counter: a restarted process that reuses a
+    // pid (e.g. PID 1 in a container) does not regenerate the names of
+    // temp files a killed predecessor left behind.
+    let started = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
     let mut attempts = 0;
     let (tmp, mut file) = loop {
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = dir.join(format!(".{stem}.{}.{seq}.tmp", std::process::id()));
+        let tmp = dir.join(format!(
+            ".{stem}.{}.{started}.{seq}.tmp",
+            std::process::id()
+        ));
         let mut options = fs::OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
@@ -322,7 +331,7 @@ fn write_unique_temp(
         let _ = private;
         match options.open(&tmp) {
             Ok(file) => break (tmp, file),
-            // A stale temp from an earlier process with the same pid.
+            // Defensive: a name collision with a stale temp file.
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists && attempts < 16 => {
                 attempts += 1;
             }
@@ -549,6 +558,21 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec![format!("{}.msg", hex::encode(msg.hash()))]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_temps_from_a_killed_same_pid_process_do_not_block_writes() {
+        // A process killed mid-write leaves `.<stem>.<pid>.<seq>`-style
+        // temps; a restart can reuse the pid and restart the counter.
+        let dir = scratch_dir("stale");
+        fs::create_dir_all(&dir).unwrap();
+        let pid = std::process::id();
+        for seq in 0..20 {
+            fs::write(dir.join(format!(".x.{pid}.{seq}.tmp")), b"stale").unwrap();
+        }
+        let tmp = write_unique_temp(&dir, "x", b"fresh", false).unwrap();
+        assert_eq!(fs::read(&tmp).unwrap(), b"fresh");
         let _ = fs::remove_dir_all(&dir);
     }
 
