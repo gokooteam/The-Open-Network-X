@@ -533,9 +533,9 @@ impl Mempool {
                 let attempts = self.intake_retries.get(path).copied().unwrap_or(0) + 1;
                 if attempts >= INTAKE_RETRY_LIMIT {
                     self.intake_retries.remove(path);
-                    self.reject_file(path, &format!("unparseable message file: {e}"));
+                    self.reject_file(path, &format!("unparsable message file: {e}"));
                     return Ok(IntakeOutcome::Rejected {
-                        reason: format!("unparseable: {e}"),
+                        reason: format!("unparsable: {e}"),
                     });
                 }
                 self.intake_retries.insert(path.to_path_buf(), attempts);

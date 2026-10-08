@@ -124,6 +124,24 @@ enum SummaryKind {
 /// Rate-limit state: (current window start, events dropped in this window).
 type RateLimitState = (Option<std::time::Instant>, u32);
 
+/// Pure window logic, extracted for testing: `Some(dropped)` when the
+/// caller may send now (with the count of same-kind events dropped since
+/// the last send), `None` when this event must be dropped.
+fn take_slot(state: &mut RateLimitState, now: std::time::Instant) -> Option<u32> {
+    match state.0 {
+        Some(t) if now.duration_since(t) < Duration::from_secs(60) => {
+            state.1 += 1;
+            None
+        }
+        _ => {
+            let dropped = state.1;
+            state.0 = Some(now);
+            state.1 = 0;
+            Some(dropped)
+        }
+    }
+}
+
 /// At most one Sentry summary event per 60s window *per kind*; returns
 /// `Some(dropped)` with the number of same-kind events dropped since the
 /// last sent one when the caller may send now, `None` when this event must
@@ -141,19 +159,7 @@ fn take_summary_slot(kind: SummaryKind) -> Option<u32> {
     let mut state = STATES[kind as usize]
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let now = Instant::now();
-    match state.0 {
-        Some(t) if now.duration_since(t) < Duration::from_secs(60) => {
-            state.1 += 1;
-            None
-        }
-        _ => {
-            let dropped = state.1;
-            state.0 = Some(now);
-            state.1 = 0;
-            Some(dropped)
-        }
-    }
+    take_slot(&mut state, Instant::now())
 }
 
 /// Canonical (pubkey-sorted) genesis validator refs, for `validator_index`
@@ -834,10 +840,11 @@ fn find_first_bad_prefix(
 }
 
 /// Binary search for the smallest `k` such that the dry-run proposal of
-/// `candidates[..=k]` PANICS. Returns `None` when no prefix panics — in
-/// particular when the EMPTY prefix already panics, which means the panic
-/// is not message-caused (bad state/config) and no message may be blamed
-/// for it.
+/// `candidates[..=k]` PANICS. Returns `Ok(Some(k))` for the culprit index,
+/// `Ok(None)` when no prefix panics. Returns `Err(payload)` when the EMPTY
+/// prefix already panics, which means the panic is not message-caused
+/// (bad state/config) — the payload propagates so the caller reports the
+/// genuine bug instead of blaming a message for it.
 ///
 /// Monotonicity caveat: unlike rejections, panics are not provably
 /// monotonic in the prefix (a panic can depend on accumulated dry-run
@@ -1079,5 +1086,68 @@ mod tests {
             "exactly the panicking message is dropped"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::{take_slot, RateLimitState};
+    use std::time::{Duration, Instant};
+
+    fn fresh() -> RateLimitState {
+        (None, 0)
+    }
+
+    #[test]
+    fn first_event_in_window_sends_with_zero_dropped() {
+        let mut s = fresh();
+        let now = Instant::now();
+        assert_eq!(take_slot(&mut s, now), Some(0));
+    }
+
+    #[test]
+    fn events_within_window_are_dropped() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        // Second and third events inside the 60s window must drop.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(59)), None);
+    }
+
+    #[test]
+    fn dropped_count_reported_on_next_send() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(2)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(3)), None);
+        // Window expired: next send reports the 3 dropped events.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(61)), Some(3));
+    }
+
+    #[test]
+    fn window_resets_dropped_count_after_send() {
+        let mut s = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut s, t0), Some(0));
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(1)), None);
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(61)), Some(1));
+        // Fresh window: no drops accumulated.
+        assert_eq!(take_slot(&mut s, t0 + Duration::from_secs(122)), Some(0));
+    }
+
+    #[test]
+    fn warning_and_error_states_are_independent() {
+        // Two separate states must not cross-contaminate: burning the
+        // Warning slot leaves the Error slot able to send.
+        let mut warning: RateLimitState = fresh();
+        let mut error: RateLimitState = fresh();
+        let t0 = Instant::now();
+        assert_eq!(take_slot(&mut warning, t0), Some(0));
+        assert_eq!(take_slot(&mut warning, t0 + Duration::from_secs(1)), None);
+        // Error slot untouched: sends immediately with zero dropped.
+        assert_eq!(take_slot(&mut error, t0 + Duration::from_secs(1)), Some(0));
     }
 }

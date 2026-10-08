@@ -99,22 +99,26 @@ async fn main() {
         }
     };
 
-    // Operator-controlled paths, captured before `config` is moved into
+    // Operator-controlled values, captured before `config` is moved into
     // `run_daemon`: some startup errors echo them, and they must not leave
-    // the machine for Sentry (see `redact_sensitive_paths`).
-    let sensitive_paths: Vec<String> = [&config.signing_key_path, &config.bootstrap_genesis]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect();
+    // the machine for Sentry (see `redact_sensitive_values`).
+    let sensitive_values: Vec<String> = [
+        &config.signing_key_path,
+        &config.bootstrap_genesis,
+        &config.fee_collector,
+    ]
+    .into_iter()
+    .flatten()
+    .cloned()
+    .collect();
 
     if let Err(err) = run_daemon(config).await {
         eprintln!("onxd failed: {err}");
         // The panic hook never fires for these exits (no panic), so without
         // this Sentry stays blind to the daemon's most common fatal path.
-        // Redact operator-controlled paths first (see above).
+        // Redact operator-controlled values first (see above).
         // No-op when Sentry is not initialized.
-        let redacted = redact_sensitive_paths(&err, &sensitive_paths);
+        let redacted = redact_sensitive_values(&err, &sensitive_values);
         sentry::capture_message(&format!("onxd failed: {redacted}"), sentry::Level::Error);
         // Bounded flush: give the report a chance to leave, but never stall
         // shutdown on a slow endpoint. exit(1) below skips the guard drop,
@@ -126,13 +130,57 @@ async fn main() {
     }
 }
 
-/// Remove operator-controlled filesystem paths from an error message before
-/// it leaves the machine for Sentry. The paths themselves are configuration,
-/// not key material, but they don't help diagnose the event.
-fn redact_sensitive_paths(err: &str, sensitive_paths: &[String]) -> String {
+/// Remove operator-controlled values (filesystem paths, account IDs) from an
+/// error message before it leaves the machine for Sentry. The values
+/// themselves are configuration, not key material, but they don't help
+/// diagnose the event.
+fn redact_sensitive_values(err: &str, sensitive_values: &[String]) -> String {
     let mut out = err.to_string();
-    for path in sensitive_paths {
-        out = out.replace(path.as_str(), "[redacted-path]");
+    for value in sensitive_values {
+        out = out.replace(value.as_str(), "[redacted]");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacts_signing_key_path() {
+        let err = "failed to read key at /home/onx/.onx/signing.key: permission denied";
+        let out = redact_sensitive_values(err, &["/home/onx/.onx/signing.key".to_string()]);
+        assert_eq!(out, "failed to read key at [redacted]: permission denied");
+    }
+
+    #[test]
+    fn redacts_genesis_path() {
+        let err = "genesis not found: /var/lib/onx/genesis.toml";
+        let out = redact_sensitive_values(err, &["/var/lib/onx/genesis.toml".to_string()]);
+        assert!(!out.contains("/var/lib/onx/genesis.toml"));
+        assert!(out.contains("[redacted]"));
+    }
+
+    #[test]
+    fn redacts_fee_collector_account() {
+        let collector = "d04ab2326789abcdef0123456789abcdef0123456789abcdef0123456789abcd";
+        let err = format!("fee collector {collector} has insufficient balance");
+        let out = redact_sensitive_values(&err, &[collector.to_string()]);
+        assert!(!out.contains("d04ab232"));
+        assert!(out.contains("[redacted]"));
+    }
+
+    #[test]
+    fn redacts_multiple_values() {
+        let err = "key /a.key and genesis /b.toml failed";
+        let out = redact_sensitive_values(err, &["/a.key".to_string(), "/b.toml".to_string()]);
+        assert_eq!(out, "key [redacted] and genesis [redacted] failed");
+    }
+
+    #[test]
+    fn leaves_clean_messages_untouched() {
+        let err = "connection refused: timeout after 500ms";
+        let out = redact_sensitive_values(err, &["/a.key".to_string()]);
+        assert_eq!(out, err);
+    }
 }
