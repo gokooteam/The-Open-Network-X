@@ -9,6 +9,9 @@ For a structured breakdown of 20 actionable development tasks advancing ONX
 from protocol libraries toward a production-grade node daemon, network, and
 tooling ecosystem, see [`docs/planning/development-tasks.md`](docs/planning/development-tasks.md).
 
+For milestones with checkable exit criteria, and the gate that says when to
+stop developing and start maintaining, see [`MILESTONES.md`](MILESTONES.md).
+
 ## Changelog
 
 ### 2026-10-05

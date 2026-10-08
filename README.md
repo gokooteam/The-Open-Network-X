@@ -27,6 +27,7 @@ ONX explores, reconstructs, and implements that vision independently and from fi
 - [Project philosophy](#project-philosophy)
 - [Project status](#project-status)
 - [Changelog and roadmap](ROADMAP.md)
+- [Milestones and the maintenance gate](MILESTONES.md)
 - [Development tasks](docs/planning/development-tasks.md)
 - [Contributing](CONTRIBUTING.md)
 - [Repository structure](#repository-structure)
@@ -119,7 +120,7 @@ test suite once coexisted with all four original bugs; the probes are the
 point, not the suite.
 
 
-See [`ROADMAP.md`](ROADMAP.md) for the full changelog and roadmap of what has been built, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow every contribution is expected to follow.
+See [`ROADMAP.md`](ROADMAP.md) for the full changelog and roadmap of what has been built, [`MILESTONES.md`](MILESTONES.md) for the milestones still ahead and the criteria for switching from development to maintenance, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for the workflow every contribution is expected to follow.
 
 ## Repository structure
 
@@ -148,6 +149,7 @@ See [`ROADMAP.md`](ROADMAP.md) for the full changelog and roadmap of what has be
 ├── INSTRUCTIONS.md          # Development principles for this repository
 ├── CONTRIBUTING.md          # Contribution workflow
 ├── LICENSE                  # Project license
+├── MILESTONES.md            # Milestones and the maintenance gate
 ├── ROADMAP.md               # Changelog and high-level roadmap
 ├── WHITEPAPER.md            # Reference white paper (unmodified)
 ├── deny.toml                # cargo-deny configuration
