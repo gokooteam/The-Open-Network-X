@@ -126,3 +126,11 @@ Scheduled fuzzing should publish a per-target corpus snapshot and run each targe
 
 #### [QUESTION]
 When reorganizing the workspace into protocol, node, and tooling tiers, should CI enforce dependency-direction rules explicitly, or is Cargo's acyclic package graph sufficient for the first implementation milestone?
+
+### Entry #13
+
+#### [ANSWER]
+The per-block account-map copy (MILESTONES.md M4) came from `ShardStateTree` keeping a full `BTreeMap` of accounts next to a trie that was already persistent. Because `propose_block` and `apply_block` must not mutate the caller's state (a failed or panicking block has to leave it intact, ADR-0029), each of them cloned the tree, and that clone was O(n). Storing each account record in its trie leaf removes the duplicate map: a clone becomes one reference-count increment, lookups walk the key's path, and a left-first walk preserves ascending `AccountId` order because the trie branches on key bits most-significant first. No state root changes, and no dependency was added. At 100k accounts the clone dropped from milliseconds to tens of nanoseconds, and an 8-transfer block from about 6–8 ms to about 0.75 ms per STF call (`state-model.md` §7.1).
+
+#### [QUESTION]
+The contract cell DAG map is still copied with every `ShardStateTree` clone and fully compared in `ChainStore::commit_block`. Should those DAGs become reference-counted and compared by pointer before contract-heavy load arrives, and should a regression budget for that path be specified in terms of contract count, DAG size, or both?

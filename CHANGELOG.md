@@ -25,6 +25,14 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Changed
 
+- `ShardStateTree` stores account records in its Merkle trie leaves instead
+  of a separate `BTreeMap`, so `clone()` is O(1) and the STF no longer
+  deep-copies every account on each `propose_block` and `apply_block`. At
+  100k accounts this cut per-block STF time about 10× in local measurement
+  (see `docs/specification/state-model.md` §7.1). State roots and the cell
+  layout are unchanged. `ShardStateTree::accounts()` now returns an
+  ascending-order iterator (`onx_state_model::Accounts`) instead of
+  `&BTreeMap`; `len()` and `is_empty()` were added.
 - `onx-cli transfer` now builds a real, signed `ONX_MSG_EXT_V1` external
   message that `onxd` accepts. It takes the chain ID from `--genesis` or
   `--chain-id`, the key from `--wallet` or `--seed-file` (never from argv),

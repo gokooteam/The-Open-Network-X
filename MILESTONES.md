@@ -188,8 +188,17 @@ ticked.
 - [ ] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other.
-- [ ] Measure the per-block account-map copy at 100k accounts. PR #7 noted
-      27–53 ms. Then fix it, or write the budget into the spec.
+- [x] Measure the per-block account-map copy at 100k accounts. PR #7 noted
+      27–53 ms. Then fix it, or write the budget into the spec. **Done
+      (both):** measured, then fixed. The trie is now the only account store,
+      so `ShardStateTree::clone()` is O(1). At 100k accounts (release, 2-core
+      sandbox) the clone went from 6.7–11.1 ms to ~32 ns, and
+      `propose_block`/`apply_block` for an 8-transfer block from 5.8–8.3 ms
+      to ~0.75 ms each. The O(1)-copy requirement, the numbers and the
+      remaining contract-cell copy are in `state-model.md` §7.1. Evidence:
+      `crates/protocol/onx-stf/tests/account_map_copy.rs` (timing probe,
+      `--ignored`) and the `clone_shares_trie_and_copies_on_write` /
+      `trie_behaves_like_btreemap_model` tests in `onx-state-model`.
 
 *Docs that tell the truth*
 - [ ] README status table: the VM row still lists the `LDREF` child-cell bug

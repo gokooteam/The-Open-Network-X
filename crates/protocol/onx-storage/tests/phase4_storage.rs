@@ -155,7 +155,10 @@ fn storage_commit_roundtrip_matches_pure_stf() -> Result<(), StorageError> {
 
         // Loaded state must equal the pure-STF state exactly.
         let loaded = store.load_state()?.expect("state");
-        assert_eq!(loaded.tree.accounts(), expected.tree.accounts());
+        assert_eq!(
+            loaded.tree.accounts().collect::<Vec<_>>(),
+            expected.tree.accounts().collect::<Vec<_>>()
+        );
         assert_eq!(loaded.seqno, expected.seqno);
         assert_eq!(loaded.last_lt, expected.last_lt);
         assert_eq!(loaded.last_hash, expected.last_hash);

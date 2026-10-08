@@ -36,8 +36,10 @@ fn key_bit(key: &[u8; 32], depth: usize) -> usize {
 /// mutated in place. `insert` rebuilds only the O(log n) nodes on the key's
 /// path and shares every other subtree with the previous version.
 /// Consequences:
-/// - `ShardStateTree::clone()` is O(1) for the trie (a single `Rc` bump);
-///   only the accounts map is copied.
+/// - `ShardStateTree::clone()` is O(1) (a single `Rc` bump for the trie;
+///   see the note on [`ShardStateTree`] for the contract-cell map). Leaves
+///   hold the account records themselves, so there is no second,
+///   separately copied accounts map.
 /// - Replaced nodes are freed automatically when the old root is dropped:
 ///   no refcounts, no orphan sweeps, no leaks.
 /// - The node set is exactly what `build_trie_cells` produces for the same
@@ -55,6 +57,10 @@ struct TrieNode {
     /// Chunks are stored per-leaf (not refcounted): each account owns its
     /// chunks, so replacing a leaf drops the old chunks automatically.
     chunks: Vec<Cell>,
+    /// For leaves: the account this leaf commits to. `cell` and `chunks`
+    /// are a pure function of it (`id.to_bytes()`, `state.to_bytes()`).
+    /// `None` for branches and the empty node.
+    entry: Option<(AccountId, AccountState)>,
 }
 
 impl TrieNode {
@@ -67,14 +73,23 @@ impl TrieNode {
             left: None,
             right: None,
             chunks: vec![],
+            entry: None,
         })
     }
 
     /// Build a leaf node for `(key, value)`, mirroring `build_trie_cells`'
     /// leaf case exactly: the value is chunked into 128-byte cells and the
     /// leaf commits to the key plus the chunk hashes. Pure: constructs
-    /// cells without touching any cache.
-    fn build_leaf(key: &[u8; 32], value: &[u8]) -> Result<Self, StateModelError> {
+    /// cells without touching any cache. `value` must be
+    /// `state.to_bytes()` and `key` must be `id.to_bytes()`; the caller
+    /// has both already (it checks the value size first).
+    fn build_leaf(
+        id: AccountId,
+        state: &AccountState,
+        key: &[u8; 32],
+        value: &[u8],
+    ) -> Result<Self, StateModelError> {
+        debug_assert_eq!(&id.to_bytes(), key);
         let mut chunks = Vec::new();
         for chunk in value.chunks(128) {
             chunks.push(Cell::new(chunk.to_vec(), vec![])?);
@@ -86,6 +101,7 @@ impl TrieNode {
             left: None,
             right: None,
             chunks,
+            entry: Some((id, state.clone())),
         })
     }
 
@@ -109,6 +125,22 @@ impl TrieNode {
     }
 }
 
+/// The account an `insert` is writing, with its canonical encodings
+/// computed once up front (the size check needs `value` before any trie
+/// work starts).
+struct Leaf<'a> {
+    id: AccountId,
+    state: &'a AccountState,
+    key: &'a [u8; 32],
+    value: &'a [u8],
+}
+
+impl Leaf<'_> {
+    fn build(&self) -> Result<TrieNode, StateModelError> {
+        TrieNode::build_leaf(self.id, self.state, self.key, self.value)
+    }
+}
+
 /// Shard State Tree mapping account IDs to account states using a binary trie.
 ///
 /// The Merkle trie over `(account_id, state.to_bytes())` is maintained
@@ -116,10 +148,23 @@ impl TrieNode {
 /// key's path, so `state_root_hash()` is an O(1) cache read instead of an
 /// O(n) full recomputation. Block validation and replay therefore scale
 /// with the accounts a block touches, not with total state.
-#[derive(Debug, Clone)]
+///
+/// The trie is also the account map: each leaf holds its account record,
+/// so lookups walk the key's path and `clone()` shares the whole trie.
+/// The STF clones the tree once per `propose_block` and once per
+/// `apply_block` (so a failed or panicking block can never touch the
+/// caller's state); before this, that clone deep-copied a separate
+/// `BTreeMap` of every account, O(n) per block (MILESTONES.md M4,
+/// `docs/specification/state-model.md` §7.1).
+///
+/// `contract_cells` is still a plain map and is still copied by `clone()`.
+/// That cost scales with the number of *contract* accounts and their DAG
+/// sizes, not with all accounts; see the same spec section.
+#[derive(Clone)]
 pub struct ShardStateTree {
-    accounts: BTreeMap<AccountId, AccountState>,
-    /// Root of the persistent Merkle trie.
+    /// Number of accounts (leaves) in the trie.
+    len: usize,
+    /// Root of the persistent Merkle trie. Leaves hold the account records.
     trie_root: Rc<TrieNode>,
     /// Trie cells constructed by the incremental path. Instrumentation for
     /// regression tests — proves updates cost O(log n) cells, not O(n).
@@ -137,20 +182,85 @@ pub struct ShardStateTree {
     contract_cells: BTreeMap<AccountId, ContractCellDags>,
 }
 
-// Consensus equality is over the accounts map alone. The trie is a
-// deterministic function of it; the build counter and the contract cell
-// DAGs are auxiliary execution state, not consensus state.
+// Consensus equality is over the account set alone: the same
+// `(AccountId, AccountState)` pairs, compared value by value in key order.
+// The trie cells are a deterministic function of that set; the build
+// counter and the contract cell DAGs are auxiliary execution state, not
+// consensus state. Two trees that share a root node trivially hold the same
+// accounts, so that case skips the walk (equality is still exact: it never
+// compares hashes in place of values).
 impl PartialEq for ShardStateTree {
     fn eq(&self, other: &Self) -> bool {
-        self.accounts == other.accounts
+        if Rc::ptr_eq(&self.trie_root, &other.trie_root) {
+            return true;
+        }
+        self.len == other.len && self.accounts().eq(other.accounts())
     }
 }
 impl Eq for ShardStateTree {}
 
+// Hand-written so the output stays what it was with the old `BTreeMap`
+// field (the accounts, in key order) instead of dumping trie internals.
+impl std::fmt::Debug for ShardStateTree {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShardStateTree")
+            .field("accounts", &DebugAccounts(self))
+            .field("trie_cells_built", &self.trie_cells_built)
+            .field("contract_cells", &self.contract_cells)
+            .finish()
+    }
+}
+
+struct DebugAccounts<'a>(&'a ShardStateTree);
+
+impl std::fmt::Debug for DebugAccounts<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_map().entries(self.0.accounts()).finish()
+    }
+}
+
+/// In-order (ascending `AccountId`) iterator over a trie's leaves.
+///
+/// Ascending key order falls out of the layout: the trie branches on key
+/// bits most-significant first, left = 0, and `AccountId` orders as its
+/// big-endian 32 bytes, so a left-first walk visits keys in exactly the
+/// order the old `BTreeMap<AccountId, _>` iterated them.
+pub struct Accounts<'a> {
+    stack: Vec<&'a TrieNode>,
+    remaining: usize,
+}
+
+impl<'a> Iterator for Accounts<'a> {
+    type Item = (&'a AccountId, &'a AccountState);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(node) = self.stack.pop() {
+            if let Some((id, state)) = &node.entry {
+                self.remaining = self.remaining.saturating_sub(1);
+                return Some((id, state));
+            }
+            // Right first so left is popped (visited) first.
+            if let Some(right) = &node.right {
+                self.stack.push(right);
+            }
+            if let Some(left) = &node.left {
+                self.stack.push(left);
+            }
+        }
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl ExactSizeIterator for Accounts<'_> {}
+
 impl ShardStateTree {
     pub fn new() -> Self {
         Self {
-            accounts: BTreeMap::new(),
+            len: 0,
             trie_root: TrieNode::empty(),
             // The empty-subtree cell itself.
             trie_cells_built: 1,
@@ -179,13 +289,24 @@ impl ShardStateTree {
                 value.len(),
             )));
         }
+        let is_new = self.get(&account_id).is_none();
         let mut built = 0u64;
-        let new_root = Self::insert_at(&self.trie_root, &key, &value, 0, &mut built)?;
+        let leaf = Leaf {
+            id: account_id,
+            state: &state,
+            key: &key,
+            value: &value,
+        };
+        let new_root = Self::insert_at(&self.trie_root, &leaf, 0, &mut built)?;
         // Diagnostic counter: saturating is behavior-identical in practice
         // (u64 counts cells; overflow would need exabytes of trie).
         self.trie_cells_built = self.trie_cells_built.saturating_add(built);
         self.trie_root = new_root;
-        self.accounts.insert(account_id, state);
+        if is_new {
+            // At most 2^256 distinct keys exist, but `usize` counts leaves
+            // that each occupy memory, so this cannot overflow in practice.
+            self.len = self.len.saturating_add(1);
+        }
         Ok(())
     }
 
@@ -193,13 +314,13 @@ impl ShardStateTree {
     /// every unchanged child via `Rc`. `built` counts constructed cells.
     fn insert_at(
         node: &Rc<TrieNode>,
-        key: &[u8; 32],
-        value: &[u8],
+        leaf: &Leaf<'_>,
         depth: usize,
         built: &mut u64,
     ) -> Result<Rc<TrieNode>, StateModelError> {
+        let key = leaf.key;
         if node.is_empty_node() {
-            let leaf = TrieNode::build_leaf(key, value)?;
+            let leaf = leaf.build()?;
             *built = (*built)
                 .saturating_add(1)
                 .saturating_add(leaf.chunks.len() as u64);
@@ -207,10 +328,16 @@ impl ShardStateTree {
         }
         if let Some(node_key) = node.leaf_key() {
             if node_key == *key {
-                // Same key: replace the value. If the value is identical
+                // Same key: replace the value. If the record is identical
                 // the leaf (and its hash) are identical — share the node.
-                let candidate = TrieNode::build_leaf(key, value)?;
-                if candidate.cell.hash() == node.cell.hash() {
+                // Compare the records, not just the hashes, so a lookup
+                // always returns exactly the value last inserted.
+                let candidate = leaf.build()?;
+                let same_record = node
+                    .entry
+                    .as_ref()
+                    .is_some_and(|(_, old)| old == leaf.state);
+                if same_record && candidate.cell.hash() == node.cell.hash() {
                     return Ok(Rc::clone(node));
                 }
                 *built = (*built)
@@ -221,7 +348,7 @@ impl ShardStateTree {
             // Different key: expand the leaf into a branch chain down to
             // the first differing bit — exactly what `build_trie_cells`
             // produces for the two-item set at this depth.
-            return Self::expand_leaf(node, key, value, depth, built);
+            return Self::expand_leaf(node, leaf, depth, built);
         }
         // Branch node: recurse into the child selected by the key bit,
         // rebuild the path. Unchanged subtrees are shared.
@@ -235,7 +362,7 @@ impl ShardStateTree {
         };
         let bit = key_bit(key, depth);
         let old_child = if bit == 0 { left } else { right };
-        let new_child = Self::insert_at(old_child, key, value, depth.saturating_add(1), built)?;
+        let new_child = Self::insert_at(old_child, leaf, depth.saturating_add(1), built)?;
         if Rc::ptr_eq(&new_child, old_child) {
             return Ok(Rc::clone(node));
         }
@@ -252,6 +379,7 @@ impl ShardStateTree {
             left: Some(new_left),
             right: Some(new_right),
             chunks: vec![],
+            entry: None,
         }))
     }
 
@@ -259,11 +387,11 @@ impl ShardStateTree {
     /// `key`, splitting at the first differing bit at or after `depth`.
     fn expand_leaf(
         old_node: &Rc<TrieNode>,
-        key: &[u8; 32],
-        value: &[u8],
+        leaf: &Leaf<'_>,
         depth: usize,
         built: &mut u64,
     ) -> Result<Rc<TrieNode>, StateModelError> {
+        let key = leaf.key;
         let old_key: [u8; 32] = old_node
             .leaf_key()
             .expect("expand_leaf called on a leaf node");
@@ -278,7 +406,7 @@ impl ShardStateTree {
                 "duplicate key in trie expansion".to_string(),
             ));
         }
-        let new_leaf = TrieNode::build_leaf(key, value)?;
+        let new_leaf = leaf.build()?;
         *built = (*built)
             .saturating_add(1)
             .saturating_add(new_leaf.chunks.len() as u64);
@@ -317,15 +445,53 @@ impl ShardStateTree {
             left: Some(left),
             right: Some(right),
             chunks: vec![],
+            entry: None,
         })
     }
 
+    /// Look up an account by walking its key's path: one step per branch
+    /// level, O(log n) for uniformly distributed (hash-derived) IDs and at
+    /// most 256 steps for any key set.
     pub fn get(&self, account_id: &AccountId) -> Option<&AccountState> {
-        self.accounts.get(account_id)
+        let key = account_id.to_bytes();
+        let mut node: &TrieNode = &self.trie_root;
+        let mut depth = 0usize;
+        loop {
+            if let Some((id, state)) = &node.entry {
+                return (id == account_id).then_some(state);
+            }
+            let next = if depth < 256 && key_bit(&key, depth) == 0 {
+                node.left.as_deref()
+            } else if depth < 256 {
+                node.right.as_deref()
+            } else {
+                None
+            };
+            // `None` here is the empty node (or a malformed branch, which
+            // `insert_at` would already have refused): the key is absent.
+            node = next?;
+            depth = depth.saturating_add(1);
+        }
     }
 
-    pub fn accounts(&self) -> &BTreeMap<AccountId, AccountState> {
-        &self.accounts
+    /// Every account, in ascending `AccountId` order (the same order the
+    /// previous `BTreeMap` field iterated in). O(n) to exhaust; not used on
+    /// the block path.
+    pub fn accounts(&self) -> Accounts<'_> {
+        Accounts {
+            stack: vec![&self.trie_root],
+            remaining: self.len,
+        }
+    }
+
+    /// Number of accounts in the tree.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// True if the tree holds no accounts.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     /// Trie cells constructed by the incremental path since this tree was
@@ -397,7 +563,7 @@ impl ShardStateTree {
         target_account_id: AccountId,
     ) -> Result<MerkleProof, StateModelError> {
         let target_key = target_account_id.to_bytes();
-        if !self.accounts.contains_key(&target_account_id) {
+        if self.get(&target_account_id).is_none() {
             return Err(StateModelError::InvalidMerkleProof(format!(
                 "cannot generate proof: target key {:x?} not present in state tree",
                 &target_key[..8],
@@ -405,8 +571,7 @@ impl ShardStateTree {
         }
 
         let items: Vec<([u8; 32], Vec<u8>)> = self
-            .accounts
-            .iter()
+            .accounts()
             .map(|(acc_id, state)| (acc_id.to_bytes(), state.to_bytes()))
             .collect();
 
@@ -910,5 +1075,167 @@ mod tests {
         );
         // And the tries themselves compare equal (same accounts).
         assert_eq!(a, b);
+    }
+
+    // --- The trie is the account map (MILESTONES.md M4) -------------------
+
+    fn model_state(balance: u128, nonce: u64) -> AccountState {
+        AccountState::Active {
+            balance_nanos: balance,
+            last_trans_lt: 0,
+            code: None,
+            data: None,
+            storage_stat: crate::account::StorageStat {
+                cell_count: 0,
+                byte_count: 0,
+            },
+            pubkey: [0x33; 32],
+            nonce,
+        }
+    }
+
+    /// Check every observable view of `tree` against a `BTreeMap` model:
+    /// lookups (present and absent), length, iteration order, and the root
+    /// (against the independent batch builder).
+    fn assert_matches_model(tree: &ShardStateTree, model: &BTreeMap<AccountId, AccountState>) {
+        assert_eq!(tree.len(), model.len());
+        assert_eq!(tree.is_empty(), model.is_empty());
+        assert_eq!(tree.accounts().len(), model.len());
+        let walked: Vec<(&AccountId, &AccountState)> = tree.accounts().collect();
+        let expected: Vec<(&AccountId, &AccountState)> = model.iter().collect();
+        assert_eq!(walked, expected, "iteration must be ascending AccountId");
+        for (id, st) in model {
+            assert_eq!(tree.get(id), Some(st));
+        }
+        let mut absent = [0xA5u8; 32];
+        while model.contains_key(&AccountId::from_bytes(absent)) {
+            absent[31] = absent[31].wrapping_add(1);
+        }
+        assert_eq!(tree.get(&AccountId::from_bytes(absent)), None);
+        let items: Vec<([u8; 32], Vec<u8>)> = model
+            .iter()
+            .map(|(id, st)| (id.to_bytes(), st.to_bytes()))
+            .collect();
+        let mut cells = BTreeMap::new();
+        let batch_root = build_trie_cells(&items, 0, &mut cells).unwrap().hash();
+        assert_eq!(tree.state_root_hash().unwrap(), batch_root);
+    }
+
+    proptest::proptest! {
+        /// Random inserts and overwrites (small key space so overwrites are
+        /// common; keys that share long prefixes so splits happen deep)
+        /// behave exactly like the `BTreeMap` the tree used to carry.
+        #[test]
+        fn trie_behaves_like_btreemap_model(
+            ops in proptest::collection::vec((0u8..48, 0u8..4, 0u64..5), 0..120)
+        ) {
+            let mut tree = ShardStateTree::new();
+            let mut model = BTreeMap::new();
+            for (k, prefix, v) in ops {
+                let mut kb = [0u8; 32];
+                kb[0] = prefix;
+                kb[31] = k;
+                let id = AccountId::from_bytes(kb);
+                let st = model_state(u128::from(v) * 10, v);
+                tree.insert(id, st.clone()).unwrap();
+                model.insert(id, st);
+            }
+            assert_matches_model(&tree, &model);
+        }
+    }
+
+    #[test]
+    fn empty_tree_views() {
+        let tree = ShardStateTree::new();
+        assert_matches_model(&tree, &BTreeMap::new());
+        assert_eq!(tree.accounts().next(), None);
+    }
+
+    /// Keys that differ only in the last bit force a 255-level branch chain;
+    /// lookups must still terminate and find both.
+    #[test]
+    fn get_handles_maximally_deep_split() {
+        let a = AccountId::from_bytes([0u8; 32]);
+        let mut kb = [0u8; 32];
+        kb[31] = 1;
+        let b = AccountId::from_bytes(kb);
+        let mut tree = ShardStateTree::new();
+        let mut model = BTreeMap::new();
+        for (id, v) in [(a, 1u64), (b, 2)] {
+            tree.insert(id, model_state(1, v)).unwrap();
+            model.insert(id, model_state(1, v));
+        }
+        assert_matches_model(&tree, &model);
+    }
+
+    /// `clone()` shares the trie instead of copying it, and the clone and
+    /// original then evolve independently.
+    #[test]
+    fn clone_shares_trie_and_copies_on_write() {
+        let mut tree = ShardStateTree::new();
+        for i in 0..200u64 {
+            tree.insert(
+                AccountId::from_bytes(domain_key(i)),
+                model_state(u128::from(i), 0),
+            )
+            .unwrap();
+        }
+        let before = tree.state_root_hash().unwrap();
+        let mut copy = tree.clone();
+        assert!(Rc::ptr_eq(&tree.trie_root, &copy.trie_root));
+
+        let id = AccountId::from_bytes(domain_key(5));
+        copy.insert(id, model_state(999, 1)).unwrap();
+        assert!(!Rc::ptr_eq(&tree.trie_root, &copy.trie_root));
+        assert_eq!(tree.state_root_hash().unwrap(), before);
+        assert_eq!(tree.get(&id).unwrap().balance_nanos(), 5);
+        assert_eq!(copy.get(&id).unwrap().balance_nanos(), 999);
+        assert_eq!(tree.len(), copy.len());
+        assert_ne!(tree, copy);
+    }
+
+    /// Re-inserting an identical record shares the leaf (no cells built),
+    /// and equality is by value even for trees built in different orders
+    /// (different `Rc` allocations, same accounts).
+    #[test]
+    fn identical_reinsert_is_free_and_equality_is_by_value() {
+        let ids: Vec<AccountId> = (0..50u64)
+            .map(|i| AccountId::from_bytes(domain_key(i)))
+            .collect();
+        let mut fwd = ShardStateTree::new();
+        let mut rev = ShardStateTree::new();
+        for id in &ids {
+            fwd.insert(*id, model_state(7, 0)).unwrap();
+        }
+        for id in ids.iter().rev() {
+            rev.insert(*id, model_state(7, 0)).unwrap();
+        }
+        assert!(!Rc::ptr_eq(&fwd.trie_root, &rev.trie_root));
+        assert_eq!(fwd, rev);
+
+        let built = fwd.trie_cells_built();
+        fwd.insert(ids[3], model_state(7, 0)).unwrap();
+        assert_eq!(fwd.trie_cells_built(), built);
+        assert_eq!(fwd.len(), 50);
+
+        rev.insert(ids[3], model_state(8, 0)).unwrap();
+        assert_ne!(fwd, rev);
+    }
+
+    /// The `Debug` output still lists accounts by ID (what the old derived
+    /// impl printed), rather than trie internals.
+    #[test]
+    fn debug_lists_accounts() {
+        let mut tree = ShardStateTree::new();
+        tree.insert(AccountId::from_bytes([1u8; 32]), model_state(42, 0))
+            .unwrap();
+        let s = format!("{tree:?}");
+        assert!(s.contains("accounts"));
+        assert!(s.contains("balance_nanos: 42"));
+        assert!(!s.contains("chunks"));
+    }
+
+    fn domain_key(i: u64) -> [u8; 32] {
+        onx_primitives::domain_hash(&ONX_TRIE_NODE_TAG, &i.to_be_bytes())
     }
 }

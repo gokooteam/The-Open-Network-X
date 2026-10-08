@@ -260,3 +260,58 @@ Consensus execution and state transition validation MUST reject and fail immedia
    - Negative tests for forged Merkle proofs or modified sibling hashes.
 4. **State Transition Determinism Tests:**
    - Re-execute identical transaction sequences from identical initial states and verify exact bit-for-bit `state_root_hash` equivalence.
+
+---
+
+## 7. Implementation notes (non-consensus)
+
+Nothing in this section changes what a block, account record, or state root
+*is*. It records performance properties of the ONX implementation that the
+node relies on, and the measurements behind them, so a later change that
+breaks them is visible as a regression rather than a surprise.
+
+### 7.1 Per-block state-tree copy
+
+**Why there is a copy.** `onx_stf::propose_block` and `onx_stf::apply_block`
+take the chain state by shared reference and work on a copy of the account
+tree. A block that fails validation (or panics inside the producer's
+dry-run, ADR-0029) therefore cannot leave the caller holding a
+half-applied state. The producer copies at least twice per block (dry-run,
+then real application in `commit_block`), plus once per bisection probe when
+a candidate set has to be narrowed down.
+
+**Requirement (ONX).** Copying a `ShardStateTree` MUST cost O(1) in the
+number of accounts. Per-block work must scale with the accounts the block
+touches, as §4.5's incremental root already does, not with total state.
+
+**How it is met.** The persistent Merkle trie of §4.5 is the only account
+store: each leaf holds its `(AccountId, AccountState)` record alongside the
+cells that commit to it, and `clone()` shares the trie through a single
+reference-count increment. Lookups walk the key's path (O(log n) for
+hash-derived IDs, at most 256 levels). Iteration is a left-first walk, which
+visits accounts in ascending `AccountId` order. The cell layout and every
+state root are unchanged.
+
+**Measurement (2026-10-08, M4).** 100,000 accounts, release build,
+2-core sandbox, Rust 1.97.0, medians of 15 rounds across 3 runs, blocks of
+8 signed transfers
+(`cargo test --release -p onx-stf --test account_map_copy -- --ignored --nocapture`):
+
+| Step | Before (separate `BTreeMap` copied per clone) | After (trie is the map) |
+| --- | --- | --- |
+| `ShardStateTree::clone()` | 6.7–11.1 ms | ~32 ns |
+| `propose_block` | 7.0–8.3 ms | 0.74–0.78 ms |
+| `apply_block` | 5.8–7.5 ms | 0.73–0.75 ms |
+
+These are machine-dependent and are not CI gates. The always-on tests check
+the structural property instead: a clone shares the trie root, and the clone
+and original then evolve independently.
+
+**Known remaining O(n)-shaped cost.** The contract cell DAG map
+(`ShardStateTree::contract_cells`) is still a plain map copied by `clone()`.
+Its cost grows with the number of *contract* accounts and the size of their
+cell DAGs, not with all accounts, and it was not part of the measurement
+above (the benchmark accounts have no code). `ChainStore::commit_block` also
+compares every contract's DAGs against the previous state to find changed
+ones. Both should move to shared, reference-counted DAGs when the
+contract-execution path in `onx-stf` is next reworked.
