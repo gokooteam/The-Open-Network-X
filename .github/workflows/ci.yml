@@ -44,6 +44,13 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace --all-targets
 
+      # fuzz/ is excluded from the workspace, so the build above never
+      # compiles it; an API change can break a target with only the Fuzz
+      # workflow noticing (Fuzz run #13 on main). Type-checking it here on
+      # stable puts that failure in the main CI job.
+      - name: Check fuzz targets compile
+        run: cargo check --locked --manifest-path fuzz/Cargo.toml --bins
+
       - name: Run tests
         run: cargo test --workspace --all-targets
 

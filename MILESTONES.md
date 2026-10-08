@@ -357,7 +357,14 @@ under *Known bugs* below.
       outside the workspace, so the workspace build didn't catch it. Fixed
       by giving the target a fixed test chain ID; locally,
       `nightly-2026-09-20` ran it for 60 s (1.88M executions) with no
-      crash.
+      crash. Confirmed on `main` @ `205465b` (#33): all 11 workflows that
+      ran on that push are green, `Fuzz` included (run #15), and
+      `OpenSSF Scorecard` has stayed green on every push since #30. Because
+      #32 was red, the 10-merge count restarts at #33 (1 of 10). To keep a
+      repeat out of `main`, the `CI` Rust job now type-checks the fuzz crate
+      on stable (`cargo check --locked --manifest-path fuzz/Cargo.toml --bins`). With the
+      pre-fix target, this check fails with the same missing `chain_id`
+      error.
 - [x] Add a finite fuzz regression run per target to CI, so all three
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
