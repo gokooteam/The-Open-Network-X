@@ -36,7 +36,11 @@ On the default branch (`main`):
   Each check is pinned to the GitHub Actions app (`integration_id` 15368),
   so another app cannot satisfy it by posting a status with the same name.
 - No force-pushes to `main`, and `main` cannot be deleted.
-- Nobody bypasses it, admins included.
+- Nobody bypasses it, admins included. So release PRs opened by
+  `version-bump.yml` need the `RELEASE_PR_TOKEN` secret: a PR opened with
+  `GITHUB_TOKEN` never runs its checks and can't be merged until someone
+  pushes a commit to the branch (see
+  [ADR-0040](../adr/0040-versioning-standard.md)).
 
 Deliberately not required:
 
