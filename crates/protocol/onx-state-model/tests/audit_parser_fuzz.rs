@@ -99,7 +99,11 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
     let mut accounts = BTreeMap::new();
     accounts.insert(AccountId::from_bytes([1; 32]), active.clone());
     accounts.insert(AccountId::from_bytes([2; 32]), AccountState::Uninitialized);
-    let gen = GenesisDocument::new(
+    // `active`'s code root has children, so genesis must carry its DAGs
+    // (ADR-0040): this seed is a version-2 document.
+    let mut contract_cells = BTreeMap::new();
+    contract_cells.insert(AccountId::from_bytes([1; 32]), dags.clone());
+    let gen = GenesisDocument::with_contract_cells(
         WorkchainIdent::MASTERCHAIN,
         ShardIdent::root(WorkchainIdent::MASTERCHAIN),
         vec![
@@ -113,6 +117,7 @@ fn seeds() -> Vec<(&'static str, Vec<u8>)> {
             },
         ],
         accounts,
+        contract_cells,
     )
     .unwrap();
     let mut proof_like = MERKLE_PROOF_MAGIC.to_be_bytes().to_vec();

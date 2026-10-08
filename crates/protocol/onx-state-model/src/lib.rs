@@ -29,6 +29,6 @@ pub use error::StateModelError;
 pub use genesis::{
     derive_account_id, derive_validator_pubkey, is_explicit_hex_key, parse_or_derive_account_id,
     parse_or_derive_pubkey, GenesisDocument, GenesisValidator, GENESIS_MAGIC, GENESIS_VERSION,
-    ONX_GENESIS_ADDR_V1, ONX_GENESIS_V1, ONX_GENESIS_VALKEY_V1,
+    GENESIS_VERSION_CONTRACT_DAGS, ONX_GENESIS_ADDR_V1, ONX_GENESIS_V1, ONX_GENESIS_VALKEY_V1,
 };
 pub use tree::{Accounts, MerkleProof, ShardStateTree, MAX_TRIE_VALUE_BYTES, MERKLE_PROOF_MAGIC};

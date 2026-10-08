@@ -2,11 +2,11 @@
 use onx_data_structures::{ShardIdent, WorkchainIdent};
 use onx_primitives::PublicKey;
 use onx_state_model::{
-    is_explicit_hex_key, parse_or_derive_account_id, parse_or_derive_pubkey, AccountState, Cell,
-    GenesisDocument, GenesisValidator, StorageStat,
+    is_explicit_hex_key, parse_or_derive_account_id, parse_or_derive_pubkey, AccountState,
+    BagOfCells, Cell, ContractCellDags, GenesisDocument, GenesisValidator, StorageStat,
 };
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -33,6 +33,14 @@ pub struct Balance {
     /// Only meaningful alongside `code_hex`; rejected if malformed.
     #[serde(default)]
     pub data_hex: Option<String>,
+    /// Child cells of the code and data roots, each as hex of canonical
+    /// cell bytes, in any order (ADR-0040). The account record embeds only
+    /// the root cells; a root with child references needs every cell it
+    /// reaches here, or the contract could never execute. Genesis rejects
+    /// a reachable child missing from this list and a listed cell neither
+    /// root reaches. Only meaningful alongside `code_hex`.
+    #[serde(default)]
+    pub child_cells_hex: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +74,7 @@ impl Default for GenesisConfig {
                 public_key: None,
                 code_hex: None,
                 data_hex: None,
+                child_cells_hex: Vec::new(),
             }],
             validators: vec![Validator {
                 public_key: "validator-pubkey-00".to_string(),
@@ -210,6 +219,7 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
         return Err("onx-genesis failed: at least one genesis balance is required".to_string());
     }
     let mut accounts = BTreeMap::new();
+    let mut contract_cells = BTreeMap::new();
     for b in &config.balances {
         let id = parse_or_derive_account_id(&b.address).map_err(|e| e.to_string())?;
         if accounts.contains_key(&id) {
@@ -265,6 +275,16 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
                 b.address
             ));
         }
+        if let Some(code) = &code {
+            if let Some(dags) = build_contract_dags(code, data.as_ref(), b)? {
+                contract_cells.insert(id, dags);
+            }
+        } else if !b.child_cells_hex.is_empty() {
+            return Err(format!(
+                "onx-genesis failed: balance {:?} has child_cells_hex without code_hex",
+                b.address
+            ));
+        }
         accounts.insert(
             id,
             AccountState::Active {
@@ -283,7 +303,79 @@ pub fn build_genesis_document(config: &GenesisConfig) -> Result<GenesisDocument,
         );
     }
 
-    GenesisDocument::new(workchain, shard, validators, accounts).map_err(|e| e.to_string())
+    GenesisDocument::with_contract_cells(workchain, shard, validators, accounts, contract_cells)
+        .map_err(|e| e.to_string())
+}
+
+/// Build a genesis contract's code/data DAGs from its roots and
+/// `child_cells_hex` (ADR-0040). Returns `None` when neither root has child
+/// references: the root is then the whole DAG and the document carries no
+/// entry. Fail-closed on a reachable child absent from the list and on a
+/// listed cell neither root reaches.
+fn build_contract_dags(
+    code: &Cell,
+    data: Option<&Cell>,
+    b: &Balance,
+) -> Result<Option<ContractCellDags>, String> {
+    let mut pool = BTreeMap::new();
+    for hex in &b.child_cells_hex {
+        let cell = parse_cell_hex(hex, &b.address, "child_cells_hex")?;
+        pool.insert(cell.hash(), cell);
+    }
+    // The STF executes a contract without data against an empty cell.
+    let data_root = data
+        .cloned()
+        .unwrap_or_else(|| Cell::new(vec![], vec![]).expect("empty cell is valid"));
+    if code.cell_refs().is_empty() && data_root.cell_refs().is_empty() {
+        if !pool.is_empty() {
+            return Err(format!(
+                "onx-genesis failed: balance {:?} has child_cells_hex but its code and data \
+                 cells reference no children",
+                b.address
+            ));
+        }
+        return Ok(None);
+    }
+    let mut used = BTreeSet::new();
+    let mut collect = |root: &Cell, what: &str| -> Result<BagOfCells, String> {
+        let mut cells = BTreeMap::new();
+        cells.insert(root.hash(), root.clone());
+        let mut stack: Vec<[u8; 32]> = root.cell_refs().to_vec();
+        while let Some(hash) = stack.pop() {
+            if cells.contains_key(&hash) {
+                continue;
+            }
+            let cell = pool.get(&hash).ok_or_else(|| {
+                format!(
+                    "onx-genesis failed: balance {:?} {what} DAG references a child cell \
+                     missing from child_cells_hex",
+                    b.address
+                )
+            })?;
+            stack.extend(cell.cell_refs().iter().copied());
+            used.insert(hash);
+            cells.insert(hash, cell.clone());
+        }
+        BagOfCells::new(root.hash(), cells).map_err(|e| {
+            format!(
+                "onx-genesis failed: balance {:?} has an invalid {what} DAG: {e}",
+                b.address
+            )
+        })
+    };
+    let code_boc = collect(code, "code")?;
+    let data_boc = collect(&data_root, "data")?;
+    if used.len() != pool.len() {
+        return Err(format!(
+            "onx-genesis failed: balance {:?} has child_cells_hex entries neither its code \
+             nor its data cell reaches",
+            b.address
+        ));
+    }
+    Ok(Some(ContractCellDags {
+        code: code_boc,
+        data: data_boc,
+    }))
 }
 
 /// Parse hex of canonical cell bytes (`Cell::to_bytes`) into a `Cell`.

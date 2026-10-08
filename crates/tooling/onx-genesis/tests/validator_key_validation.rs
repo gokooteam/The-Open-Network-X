@@ -26,6 +26,7 @@ fn config_with_validator_key(key: &str) -> GenesisConfig {
             public_key: None,
             code_hex: None,
             data_hex: None,
+            child_cells_hex: Vec::new(),
         }],
         validators: vec![Validator {
             public_key: key.to_string(),
@@ -109,6 +110,7 @@ fn validator_index_in_error_names_the_culprit() {
             public_key: None,
             code_hex: None,
             data_hex: None,
+            child_cells_hex: Vec::new(),
         }],
         validators: vec![
             Validator {
@@ -138,6 +140,7 @@ fn config_with_balance_key(key: Option<&str>) -> GenesisConfig {
             public_key: key.map(str::to_string),
             code_hex: None,
             data_hex: None,
+            child_cells_hex: Vec::new(),
         }],
         validators: vec![Validator {
             public_key: "validator-01".to_string(),

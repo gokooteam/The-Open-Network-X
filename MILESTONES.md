@@ -215,7 +215,7 @@ under *Known bugs* below.
       calls can be used to get honest messages dropped. Fix: hold that
       message for a later block. Evidence needed: a producer test where an
       over-cap batch splits across two blocks with nothing rejected.
-- [ ] Genesis contracts whose code cell has children can't be called.
+- [x] Genesis contracts whose code cell has children can't be called.
       Since ADR-0039, `run()` resolves every child of the root code cell
       before the first instruction and fails with `AbsentNode` if one is
       missing. `onx-genesis` never seeds `contract_cells`, and they are only
@@ -223,6 +223,15 @@ under *Known bugs* below.
       call. Fix: seed the code DAG at genesis, or resolve a child only when
       `JMPREF`/`CALLREF` uses it. Evidence needed: a genesis-deployed
       contract that `CALLREF`s through the STF.
+      **Done (seeded at genesis, ADR-0040):** lazy resolution alone could
+      not work, because the child content existed nowhere. The genesis
+      document now carries the complete code/data DAGs of every contract
+      whose roots have children (version 2 only then, so existing chain IDs
+      are unchanged), `onx-genesis` takes them as `child_cells_hex`,
+      `state_tree()` seeds `contract_cells`, and `init_genesis` persists the
+      same DAGs. Evidence: `crates/tooling/onx/tests/genesis_callref.rs`
+      (in memory and through storage; the first call bounces without the
+      seeding).
 - [x] Settle the `LDREF` disagreement. `tvm-instruction-set.md` §3.5.3/§4.4
       says `LDREF` never raises `AbsentNode`. The code fails closed
       (ADR-0029). Make one of them match the other. **Done (spec follows
