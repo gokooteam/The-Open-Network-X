@@ -251,10 +251,14 @@ ticked.
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
       (one matrix job per target, pinned nightly) on every PR and push to
-      `main`, and uploads crash inputs as artifacts. A local 30 s run per
-      target found no crash. The scheduled long-running job and a
-      checked-in corpus are left for the maintenance gate's 24-hour
-      criterion.
+      `main`, and uploads crash inputs as artifacts. Correction: until #30
+      the workflow never built a target in CI. cargo-fuzz was a musl build
+      and defaulted to the musl target, where AddressSanitizer cannot link,
+      so every run from #28 on failed in the build step. Evidence that it
+      now works: Fuzz run 37754903494 on #30, where all three targets built
+      and ran their full 60 s with no crash. The scheduled long-running
+      job and a checked-in corpus are left for the maintenance gate's
+      24-hour criterion.
 
 *Release hygiene*
 - [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.
