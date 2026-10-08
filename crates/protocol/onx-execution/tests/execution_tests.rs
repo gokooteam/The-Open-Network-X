@@ -294,7 +294,7 @@ fn alternative_return_uses_c1_continuation() {
     let mut interpreter = Interpreter::new(code, data, dummy_message(), dummy_context(100));
     interpreter.set_alternative_return(Continuation::new(alternate.clone(), 0));
 
-    assert!(interpreter.return_to_control_register(true));
+    assert!(interpreter.return_to_control_register(true).unwrap());
     assert_eq!(interpreter.current_code, alternate);
     assert_eq!(interpreter.pc_bits, 0);
 }
@@ -464,5 +464,76 @@ fn test_partial_bits_round_trip_through_slice() {
     match stack.last() {
         Some(StackValue::Integer(n)) => assert_eq!(*n, Int257::from_u64(5)),
         other => panic!("expected Integer(5) on stack, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0039 (Wave 4 step 7): code_refs populated from the code cell's
+// children; call-stack depth limit. These tests use real child cells
+// resolved through `cell_store` — no manual `code_refs` pushes.
+// ---------------------------------------------------------------------------
+
+/// Builds an interpreter for `code_bytes` with `children` installed in the
+/// cell store under their real hashes, and `code` referencing them.
+fn interpreter_with_code_children(code_bytes: Vec<u8>, children: Vec<Cell>) -> Interpreter {
+    let child_hashes: Vec<[u8; 32]> = children.iter().map(|c| c.hash()).collect();
+    let code = Cell::new(code_bytes, child_hashes).unwrap();
+    let mut interpreter = Interpreter::new(
+        code,
+        Cell::new(vec![], vec![]).unwrap(),
+        dummy_message(),
+        dummy_context(100_000),
+    );
+    for child in children {
+        interpreter.cell_store.insert(child.hash(), child);
+    }
+    interpreter
+}
+
+#[test]
+fn code_refs_populated_from_code_children() {
+    // Root JMPREFs to its real child; the child pushes 42 and falls off.
+    // Before ADR-0039 this raised MalformedCell (empty code_refs); now the
+    // jump is live.
+    let child_bytes = pushint(42);
+    // No RET: fall off the end with an empty call stack -> Success.
+    let child = Cell::new(child_bytes, vec![]).unwrap();
+    let mut interp = interpreter_with_code_children(vec![0x70, 0x00], vec![child]);
+    let res = interp.run();
+    assert!(
+        matches!(res, ExecutionResult::Success { .. }),
+        "JMPREF to a resolved child must succeed, got {res:?}"
+    );
+    assert_eq!(interp.stack.len(), 1);
+    match &interp.stack[0] {
+        StackValue::Integer(n) => assert_eq!(*n, Int257::from_u64(42)),
+        other => panic!("expected Integer(42), got {other:?}"),
+    }
+}
+
+#[test]
+fn ret_restores_parent_code_refs() {
+    // Root has two children. CALLREF 0 runs child0 (pushes 10, RETs), then
+    // JMPREF 1 must still resolve — i.e. RET refreshed code_refs back to
+    // the *parent's* children, not the child's (empty) set.
+    let mut child0_bytes = pushint(10);
+    child0_bytes.push(0x72); // RET
+    let child0 = Cell::new(child0_bytes, vec![]).unwrap();
+    let child1 = Cell::new(pushint(20), vec![]).unwrap();
+    // Root: CALLREF 0, JMPREF 1.
+    let mut interp =
+        interpreter_with_code_children(vec![0x71, 0x00, 0x70, 0x01], vec![child0, child1]);
+    let res = interp.run();
+    assert!(
+        matches!(res, ExecutionResult::Success { .. }),
+        "CALL then JMPREF across RET must succeed, got {res:?}"
+    );
+    assert_eq!(interp.stack.len(), 2);
+    match (&interp.stack[0], &interp.stack[1]) {
+        (StackValue::Integer(a), StackValue::Integer(b)) => {
+            assert_eq!(*a, Int257::from_u64(10));
+            assert_eq!(*b, Int257::from_u64(20));
+        }
+        other => panic!("expected [10, 20], got {other:?}"),
     }
 }

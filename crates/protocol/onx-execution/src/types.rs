@@ -16,6 +16,13 @@ pub enum ExceptionKind {
     MalformedCell,
     /// Operand stack type mismatch or signature length mismatch.
     TypeMismatch,
+    /// CALLREF (0x71/0x75/0x76) attempted with the call stack already at
+    /// `MAX_CALL_STACK_DEPTH` (interpreter.rs). Wave 4 step 7 (ADR-0039):
+    /// gas bounds *time*, not *memory* — at 4 gas per CALL the ADR-0034
+    /// per-message cap admits ~2.5M frames (~340MB of heap), an
+    /// uncatchable host OOM. The depth limit is a memory-safety bound,
+    /// fail-closed at CALL time.
+    CallStackOverflow,
 }
 
 impl fmt::Display for ExceptionKind {
@@ -26,6 +33,7 @@ impl fmt::Display for ExceptionKind {
             Self::AbsentNode => write!(f, "AbsentNode"),
             Self::MalformedCell => write!(f, "MalformedCell"),
             Self::TypeMismatch => write!(f, "TypeMismatch"),
+            Self::CallStackOverflow => write!(f, "CallStackOverflow"),
         }
     }
 }

@@ -71,9 +71,11 @@ Every arithmetic and conversion opcode (§4.2) carries a `width : uint16` (`1 �
 
 A contract's `code` (`execution.md` §3.2) is a `Cell` whose up to `MAX_CELL_DATA_BYTES = 128` data bytes (`state-model.md` §4.2) are interpreted as a flat instruction stream starting at bit offset 0, and whose up to `MAX_CELL_REFS = 4` child-cell references are addressable as **code continuations** by `JMPREF`/`CALLREF`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` (§4.5) — a program larger than one `Cell`'s data capacity is split across a tree of code `Cell`s exactly the way any other over-128-byte value already must be, per `state-model.md`'s existing limits. This is a deliberate reuse of an existing constraint rather than a new one introduced for code specifically.
 
+**`code_refs` resolution (ADR-0039, Wave 4):** at execution start and after every code switch (`JMPREF`/`CALLREF`/conditional jumps, `RET` restores, c0/c1/c2 continuation jumps), the VM resolves the *current* code cell's child references — in index order — into its `code_refs` table, through the same content-addressed cell store `LDREF`/`CTOS` use. A child reference whose content is absent fails closed with `AbsentNode` (never invented data). The table always mirrors the current code cell, never a stale ancestor: from any code cell in the tree, its own up-to-4 children are the addressable continuations.
+
 #### 3.5.2 Call stack, not general continuations
 
-`CALLREF` (§4.5) pushes a return address `(code_cell, bit_offset)` onto an internal call stack (not an operand-stack value — it is not inspectable or duplicable by contract code); `RET` pops it. No explicit call-stack depth limit is imposed: because `CALLREF` costs gas per invocation (§4.5's table), the existing gas limit already bounds recursion depth, consistent with `execution.md` §3.4 requiring resource exhaustion to be enforced uniformly through gas rather than through a second, independent limit.
+`CALLREF` (§4.5) pushes a return address `(code_cell, bit_offset)` onto an internal call stack (not an operand-stack value — it is not inspectable or duplicable by contract code); `RET` pops it. An explicit call-stack depth limit **is** imposed (ADR-0039, Wave 4): `MAX_CALL_STACK_DEPTH = 256`. A `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` taken while the call stack already holds 256 frames raises `CallStackOverflow` fail-closed, *before* cloning the return frame. Rationale: gas bounds execution *time*, not *memory* — at 4 gas per call the per-message gas cap admits ~2.5M frames (~340MB of heap clones) from a single paid message, an uncatchable host OOM. The depth limit caps worst-case call-stack memory at ~35KB. `JMPREF` and its conditional variants never touch the call stack and are not subject to the limit.
 
 #### 3.5.3 Pruned branches and `AbsentNode`
 
@@ -186,19 +188,19 @@ are checked against it, so reading the completion tag as data fails closed
 | Opcode | Mnemonic | Operands | Effect | Gas | Exceptions |
 | --- | --- | --- | --- | --- | --- |
 | `0x70` | `JMPREF` | `ref_index: uint8` | jump to child cell `ref_index`'s start | 4 | `MalformedCell` if out of range (§3.5.4) |
-| `0x71` | `CALLREF` | `ref_index: uint8` | push return address, then jump as `JMPREF` | 4 | `MalformedCell` if out of range |
+| `0x71` | `CALLREF` | `ref_index: uint8` | push return address, then jump as `JMPREF` | 4 | `MalformedCell` if out of range; `CallStackOverflow` at 256 frames (ADR-0039) |
 | `0x72` | `RET` | — | pop the call stack and resume there; terminate successfully if empty | 4 | — |
 | `0x73` | `IFJMPREF` | `ref_index: uint8` | pop `Integer`; `JMPREF` if nonzero | 4 | `MalformedCell` if out of range and taken |
 | `0x74` | `IFNOTJMPREF` | `ref_index: uint8` | pop `Integer`; `JMPREF` if zero | 4 | `MalformedCell` if out of range and taken |
-| `0x75` | `IFCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if nonzero | 4 | `MalformedCell` if out of range and taken |
-| `0x76` | `IFNOTCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if zero | 4 | `MalformedCell` if out of range and taken |
+| `0x75` | `IFCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if nonzero | 4 | `MalformedCell` if out of range and taken; `CallStackOverflow` at 256 frames (ADR-0039) |
+| `0x76` | `IFNOTCALLREF` | `ref_index: uint8` | pop `Integer`; `CALLREF` if zero | 4 | `MalformedCell` if out of range and taken; `CallStackOverflow` at 256 frames (ADR-0039) |
 | `0x77` | `THROW` | `kind: uint8` (`0`=`IntegerOverflow`, `1`=`AbsentNode`, `2`=`MalformedCell`, `3`=`TypeMismatch`) | unconditionally raise `kind` | 4 | the named kind, always |
 | `0x78` | `IFELSE` | `true_offset: int8`, `false_offset: int8` | pop condition and branch by byte offset | 4 | `MalformedCell` for an out-of-range target |
 | `0x79` | `IFRET` | — | pop condition and return if nonzero | 4 | — |
 | `0x7A` | `REPEAT` | `count: uint8`, `offset: int8` | re-enter preceding block when count is nonzero | 4 | `MalformedCell` for an out-of-range target |
 | `0x7B` | `UNTIL` | `offset: int8` | pop condition and re-enter preceding block while zero | 4 | `MalformedCell` for an out-of-range target |
 
-`0x7C`–`0x7F` are reserved. `THROW` cannot target `OutOfGas`: that kind is raised only by the VM's own gas metering (`execution.md` §3.4), never by contract-directed control flow.
+`0x7C`–`0x7F` are reserved. `THROW` cannot target `OutOfGas` or `CallStackOverflow`: those kinds are raised only by the VM's own gas metering and call-stack depth check (`execution.md` §3.4), never by contract-directed control flow.
 
 ### 4.6 Cryptographic primitives (`0x60`–`0x6F`)
 
@@ -236,6 +238,6 @@ A conforming VM implementation MUST raise the indicated `ExceptionKind` (`execut
 4. **Bit-string/byte-string tests:** `CONCAT`/`SUBBYTES`/`BYTEEQ`/`BYTELEN` round-trip correctly; `SUBBYTES` with an out-of-range `offset`/`len` raises `MalformedCell`.
 5. **Cell/slice tests:** a `Builder` built via `NEWC`/`STBITS`/`STREF`/`STBYTES`/`ENDC` round-trips through `CTOS`/`LDU`/`LDI`/`LDREF` to the original values; exceeding 128 bytes or 4 references during `ST*` raises `MalformedCell`; reading past a `Slice`'s remaining bits/refs raises `MalformedCell`.
 6. **Pruned-branch tests:** `CTOS` on a pruned special `Cell` raises `AbsentNode`; `LDREF` and `HASHCELL` on/of the same pruned `Cell` do not raise anything and return the reference/hash respectively (§3.5.3).
-7. **Control-flow tests:** `JMPREF`/`CALLREF`/`RET`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` correctly transfer control per §4.5; an out-of-range `ref_index` raises `MalformedCell` only when the branch is actually taken; `RET` with an empty call stack terminates execution successfully; `THROW` raises exactly the requested kind for each of its four valid operand values.
+7. **Control-flow tests:** `JMPREF`/`CALLREF`/`RET`/`IFJMPREF`/`IFNOTJMPREF`/`IFCALLREF`/`IFNOTCALLREF` correctly transfer control per §4.5; an out-of-range `ref_index` raises `MalformedCell` only when the branch is actually taken; `RET` with an empty call stack terminates execution successfully; `THROW` raises exactly the requested kind for each of its four valid operand values; a `CALLREF` taken at 256 frames raises `CallStackOverflow` (ADR-0039) while `JMPREF` at a full call stack still succeeds; `code_refs` resolves from the current code cell's children (`AbsentNode` on an unseeded child) and is refreshed across `RET`.
 8. **Gas accounting tests:** total `gas_used` after a run equals the sum of each executed instruction's §4 cost; exhausting the limit mid-run raises `OutOfGas` at the exact instruction that would exceed it (cross-references `execution.md` §6's determinism and gas tests).
 9. **`MAX_TENTATIVE_GAS` plausibility test:** a representative External Inbound admission check (`LDREF`/`LDU` cell reads plus one `CHKSIGNU`) consumes strictly less than `transactions.md`'s `MAX_TENTATIVE_GAS = 10,000` (§3.6).

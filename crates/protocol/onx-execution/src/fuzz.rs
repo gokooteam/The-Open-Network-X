@@ -9,15 +9,17 @@
 //!    every adversarial input to an [`ExceptionKind`], never unwind.
 //!    (`catch_unwind` is used here in the *test harness only* to turn a
 //!    would-be halt into a test failure.)
-//! 2. **Stack-depth cap.** The operand stack never exceeds `MAX_STACK_DEPTH`
-//!    (`push` fails closed with `MalformedCell` past the cap).
+//! 2. **Stack-depth caps.** The operand stack never exceeds `MAX_STACK_DEPTH`
+//!    (`push` fails closed with `MalformedCell` past the cap), and the call
+//!    stack never exceeds `MAX_CALL_STACK_DEPTH` (ADR-0039: `CALLREF`
+//!    fails closed with `CallStackOverflow` past the cap).
 //!
 //! A third property is checked opportunistically: the same program executed
 //! twice yields the same [`ExecutionResult`] (deterministic replay is a
 //! consensus requirement; a nondeterministic interpreter would fork the
 //! chain).
 
-use crate::interpreter::{Interpreter, MAX_STACK_DEPTH};
+use crate::interpreter::{Interpreter, MAX_CALL_STACK_DEPTH, MAX_STACK_DEPTH};
 use crate::types::{ExceptionKind, ExecutionContext, ExecutionResult};
 use onx_data_structures::{AccountId, FullAddress, Message, MessageType, WorkchainIdent};
 use onx_primitives::{Uint128, Uint256, Uint64};
@@ -217,13 +219,22 @@ fn run_checked(program: &[u8]) -> ExecutionResult {
             dummy_context(),
         );
         let result = interp.run();
-        (result, interp.stack.len(), interp.gas_used)
+        (
+            result,
+            interp.stack.len(),
+            interp.call_stack.len(),
+            interp.gas_used,
+        )
     }));
     match outcome {
-        Ok((result, depth, gas_used)) => {
+        Ok((result, depth, call_depth, gas_used)) => {
             assert!(
                 depth <= MAX_STACK_DEPTH,
                 "stack depth {depth} exceeded cap on program {program:02x?}"
+            );
+            assert!(
+                call_depth <= MAX_CALL_STACK_DEPTH,
+                "call-stack depth {call_depth} exceeded cap on program {program:02x?}"
             );
             assert!(
                 gas_used <= dummy_context().gas_limit,

@@ -8,9 +8,10 @@ Usage:
 Implements ADR-0037 from the specification text, not from the Rust code:
   - A contract-execution failure is FATAL iff the message's gas budget was
     exhausted (ExceptionKind::OutOfGas). All other exception kinds bounce,
-    whether raised by the VM or deliberately by the contract via THROW
-    (0x77 maps onto the existing kinds, so user-thrown and VM-raised are
-    indistinguishable by design).
+    whether raised by the VM or deliberately by the contract via THROW.
+  - ADR-0039 adds CallStackOverflow (VM-raised only: THROW's 0x77 operand
+    domain stays 0-3, so user-thrown and VM-raised CallStackOverflow are
+    distinguishable by construction — the former cannot exist).
   - Success with non-empty out_messages bounces (egress unwired).
   - Structural delivery cases (frozen/destroyed/uninitialized+payload/
     codeless+payload) bounce per ADR-0004, unchanged.
@@ -28,12 +29,17 @@ import filecmp
 
 # The closed ExceptionKind set, docs/specification/execution.md §3.4.
 # ADR-0037: only OutOfGas is fatal.
+# ADR-0039 (Wave 4 step 7): CallStackOverflow is VM-raised (the CALLREF
+# depth check), never gas exhaustion, so it bounces like the other
+# structural failures. THROW's operand domain is unchanged (0-3); a
+# contract cannot deliberately raise CallStackOverflow.
 EXCEPTION_OUTCOMES = {
     "OutOfGas": "fatal",
     "IntegerOverflow": "bounce",
     "AbsentNode": "bounce",
     "MalformedCell": "bounce",
     "TypeMismatch": "bounce",
+    "CallStackOverflow": "bounce",
 }
 
 # Non-exception delivery situations and their outcomes.
@@ -50,7 +56,7 @@ SITUATION_OUTCOMES = {
 
 def build_vectors():
     return {
-        "adr": "ADR-0037",
+        "adr": "ADR-0037 + ADR-0039",
         "exception_outcomes": [
             {"exception_kind": kind, "outcome": outcome}
             for kind, outcome in EXCEPTION_OUTCOMES.items()

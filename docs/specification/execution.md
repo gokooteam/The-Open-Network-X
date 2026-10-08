@@ -73,11 +73,12 @@ Workchains other than the basic workchain may adopt a different VM entirely (`WH
 - Exception kinds (closed set; a conforming implementation must not raise any exception outside this list without an ONX specification amendment):
   - `OutOfGas` — the gas limit was reached.
   - `IntegerOverflow` — an unsigned/signed arithmetic or conversion result did not fit its declared width (§3.3, rule 2–3).
-  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell.
+  - `AbsentNode` — an operation attempted to dereference a cell reference that resolves to a pruned/Merkle-proof-only branch (§3.5) rather than a fully present cell; also raised when a code cell's child reference cannot be resolved into `code_refs` (ADR-0039).
   - `MalformedCell` — a cell violates `state-model.md` §5's structural rules (e.g. data/reference-count limits) when accessed as a typed value.
   - `TypeMismatch` — code accessed a cell's contents as an algebraic-type shape its tag/descriptor does not support.
-- All five exception kinds have the same effect on *state* per §3.2: atomic rollback of `data`, retention of `gas_used`. Their effect on the *delivery* differs — see the fatal-vs-bounce taxonomy below (ADR-0037).
-- **Fatal-vs-bounce taxonomy (ADR-0037, Wave 4):** a contract-execution failure is **fatal** iff the message's gas budget was exhausted (`OutOfGas`); it **bounces** otherwise (`IntegerOverflow`, `AbsentNode`, `MalformedCell`, `TypeMismatch` — whether raised by the VM or deliberately by the contract via `THROW`, which maps onto these same kinds). Fatal mechanics: the delivery's value is credited to the destination like a plain transfer (no data update, no bounce queued); a fatal delivery is still a valid delivery and does not invalidate the block. Rationale: returning the value after the network spent the full paid budget prices griefing at the fee alone. Bounce and fatal receipts both report the gas the VM actually burned, so the per-block gas cap accounts for executed work even when state effects revert.
+  - `CallStackOverflow` — a `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` was taken while the call stack already held `MAX_CALL_STACK_DEPTH = 256` frames (ADR-0039, Wave 4).
+- All six exception kinds have the same effect on *state* per §3.2: atomic rollback of `data`, retention of `gas_used`. Their effect on the *delivery* differs — see the fatal-vs-bounce taxonomy below (ADR-0037, extended by ADR-0039).
+- **Fatal-vs-bounce taxonomy (ADR-0037, Wave 4):** a contract-execution failure is **fatal** iff the message's gas budget was exhausted (`OutOfGas`); it **bounces** otherwise (`IntegerOverflow`, `AbsentNode`, `MalformedCell`, `TypeMismatch`, `CallStackOverflow` — the last is VM-raised only; `THROW`'s operand domain is unchanged at 0–3, so a contract cannot deliberately raise it). Fatal mechanics: the delivery's value is credited to the destination like a plain transfer (no data update, no bounce queued); a fatal delivery is still a valid delivery and does not invalidate the block. Rationale: returning the value after the network spent the full paid budget prices griefing at the fee alone. Bounce and fatal receipts both report the gas the VM actually burned, so the per-block gas cap accounts for executed work even when state effects revert.
 
 ### 3.5 Decision: reserve a Merkle-proof VM primitive now (accept)
 
@@ -110,6 +111,7 @@ An execution implementation MUST raise the corresponding exception (§3.4), neve
 3. **Pruned-branch access:** an operation dereferences a cell reference resolving to a special cell reserved for pruned-branch use (§3.5) as though it were a fully present cell (`AbsentNode`).
 4. **Structural cell violation:** a cell's data length exceeds 128 bytes or reference count exceeds 4 (per `state-model.md` §5) when accessed during execution (`MalformedCell`).
 5. **Shape violation:** code accesses a cell's contents under an algebraic-type interpretation inconsistent with its actual tag/descriptor (`TypeMismatch`).
+6. **Call-stack overflow:** a taken `CALLREF`/`IFCALLREF`/`IFNOTCALLREF` with the call stack already holding `MAX_CALL_STACK_DEPTH = 256` frames (`CallStackOverflow`; ADR-0039).
 
 In every case, per §3.2, `data` must remain exactly as it was before execution began, and only `gas_used` up to the point of the exception is retained.
 

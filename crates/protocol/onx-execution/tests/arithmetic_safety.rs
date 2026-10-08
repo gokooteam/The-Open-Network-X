@@ -679,16 +679,25 @@ fn subbytes_happy_path_unchanged() {
 #[test]
 fn stack_depth_cap_holds_under_pushint_flood() {
     // A single cell holds at most 128 bytes, so flood the stack with a
-    // self-recursive cell: 3x PUSHINT + CALLREF to itself. Each iteration
+    // self-recursive cell: 3x PUSHINT + JMPREF to itself. Each iteration
     // pushes 3 values for 7 gas; the 1023 cap trips (~341 iterations,
     // ~2.4k gas) long before the 10k gas limit, and `push` fails closed
     // with MalformedCell instead of growing the stack unboundedly.
+    // JMPREF (not CALLREF) is used deliberately: ADR-0039's call-stack
+    // depth cap would trip first on a CALL loop (~256 iterations), and
+    // this test is about the *operand* stack cap.
+    //
+    // The self-reference goes through `cell_store` (ADR-0039): the cell's
+    // child hash maps back to the cell itself in the store, so `run()`'s
+    // code_refs refresh resolves it and the JMPREF loop is real — no
+    // manual `code_refs` push (which `run()` would overwrite).
     let mut cell_bytes = Vec::new();
     for _ in 0..3 {
         cell_bytes.extend(pushint(1));
     }
-    cell_bytes.extend([0x71, 0x00]); // CALLREF ref 0 (itself)
-    let cell = Cell::new(cell_bytes, vec![]).unwrap();
+    cell_bytes.extend([0x70, 0x00]); // JMPREF ref 0 (itself, via the store)
+    let self_hash = [0xAA; 32];
+    let cell = Cell::new(cell_bytes, vec![self_hash]).unwrap();
 
     let mut interpreter = Interpreter::new(
         cell.clone(),
@@ -696,7 +705,7 @@ fn stack_depth_cap_holds_under_pushint_flood() {
         dummy_message(),
         dummy_context(),
     );
-    interpreter.code_refs.push(cell);
+    interpreter.cell_store.insert(self_hash, cell);
     match interpreter.run() {
         ExecutionResult::Exception { kind, .. } => {
             assert_eq!(kind, ExceptionKind::MalformedCell);

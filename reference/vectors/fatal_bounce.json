@@ -1,5 +1,5 @@
 {
-  "adr": "ADR-0037",
+  "adr": "ADR-0037 + ADR-0039",
   "exception_outcomes": [
     {
       "exception_kind": "OutOfGas",
@@ -19,6 +19,10 @@
     },
     {
       "exception_kind": "TypeMismatch",
+      "outcome": "bounce"
+    },
+    {
+      "exception_kind": "CallStackOverflow",
       "outcome": "bounce"
     }
   ],

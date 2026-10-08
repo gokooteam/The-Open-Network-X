@@ -14,6 +14,17 @@ use std::collections::BTreeMap;
 /// from a single source of truth instead of a magic number.
 pub(crate) const MAX_STACK_DEPTH: usize = 1023;
 
+/// Maximum call-stack depth for `CALLREF` and its conditional variants
+/// (0x71/0x75/0x76). Wave 4 step 7 (ADR-0039): gas bounds execution *time*,
+/// not *memory*. At 4 gas per CALL, the ADR-0034 per-message cap of 10M gas
+/// admits ~2.5M frames (~340MB of heap clones) from a single paid message —
+/// an uncatchable host OOM, not a deterministic VM exception. The depth
+/// limit caps worst-case call-stack memory at 256 frames (~35KB) and is a
+/// consensus rule: a CALL that would exceed it raises
+/// `ExceptionKind::CallStackOverflow` fail-closed. `pub(crate)` for the same
+/// single-source-of-truth reason as `MAX_STACK_DEPTH`.
+pub(crate) const MAX_CALL_STACK_DEPTH: usize = 256;
+
 pub struct Interpreter {
     pub stack: Vec<StackValue>,
     pub call_stack: Vec<(Cell, usize)>, // (code_cell, bit_offset)
@@ -90,19 +101,47 @@ impl Interpreter {
         self.control_registers.set_c1(continuation);
     }
 
-    fn jump_to(&mut self, continuation: Continuation) {
-        self.current_code = continuation.code;
-        self.pc_bits = continuation.pc_bits;
+    fn jump_to(&mut self, continuation: Continuation) -> Result<(), ExceptionKind> {
+        self.set_code(continuation.code, continuation.pc_bits)
+    }
+
+    /// Switches execution to `code` at `pc_bits` and refreshes `code_refs`
+    /// from the new code cell's children (ADR-0039). Every code switch in
+    /// the interpreter routes through here so `code_refs` always mirrors
+    /// the *current* code cell — never a stale ancestor's children.
+    fn set_code(&mut self, code: Cell, pc_bits: usize) -> Result<(), ExceptionKind> {
+        self.current_code = code;
+        self.pc_bits = pc_bits;
+        self.refresh_code_refs()
+    }
+
+    /// Resolves the current code cell's child references through
+    /// `cell_store`, in index order, into `code_refs` (ADR-0039 — this is
+    /// what makes `JMPREF`/`CALLREF` and their conditional variants live).
+    /// A child hash absent from the store fails closed with `AbsentNode`:
+    /// the same rule as `LDREF`/`CTOS` — a missing child is never answered
+    /// with invented data. The STF seeds the full persisted code DAG
+    /// before `run()`, so in production a miss is a host bug, failed fast.
+    fn refresh_code_refs(&mut self) -> Result<(), ExceptionKind> {
+        let mut refs = Vec::with_capacity(self.current_code.cell_refs().len());
+        for hash in self.current_code.cell_refs() {
+            match self.cell_store.get(hash) {
+                Some(cell) => refs.push(cell.clone()),
+                None => return Err(ExceptionKind::AbsentNode),
+            }
+        }
+        self.code_refs = refs;
+        Ok(())
     }
 
     /// Transfers execution to c0 or c1.  This is used by embedding hosts that
     /// expose TVM's normal and alternative return paths.
-    pub fn return_to_control_register(&mut self, alternative: bool) -> bool {
+    pub fn return_to_control_register(&mut self, alternative: bool) -> Result<bool, ExceptionKind> {
         if let Some(continuation) = self.control_registers.take_return(alternative) {
-            self.jump_to(continuation);
-            true
+            self.jump_to(continuation)?;
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -214,8 +253,10 @@ impl Interpreter {
         let total_bits = self.current_code.data_bytes().len().saturating_mul(8);
         if self.pc_bits >= total_bits {
             if let Some((prev_code, prev_pc)) = self.call_stack.pop() {
-                self.current_code = prev_code;
-                self.pc_bits = prev_pc;
+                // Implicit return: the callee fell off its end. Restore the
+                // caller through the same choke point so `code_refs`
+                // mirrors the restored code cell (ADR-0039).
+                self.set_code(prev_code, prev_pc)?;
                 return Ok(true);
             } else {
                 return Ok(false); // Execution finished successfully
@@ -802,20 +843,29 @@ impl Interpreter {
                     }
                     let target_code = self.code_refs[ref_idx].clone();
                     if opcode == 0x71 || opcode == 0x75 || opcode == 0x76 {
-                        // CALL variants
+                        // CALL variants: fail closed on call-stack overflow
+                        // (ADR-0039) BEFORE cloning the return address onto
+                        // the heap, so a would-be overflow does no
+                        // unbounded allocation. The opcode's 4 gas was
+                        // already consumed above — the same ordering as
+                        // the ref_idx range check.
+                        if self.call_stack.len() >= MAX_CALL_STACK_DEPTH {
+                            return Err(ExceptionKind::CallStackOverflow);
+                        }
                         self.call_stack
                             .push((self.current_code.clone(), self.pc_bits));
                         self.control_registers
                             .set_c0(Continuation::new(self.current_code.clone(), self.pc_bits));
                     }
-                    self.current_code = target_code;
-                    self.pc_bits = 0;
+                    // Route through set_code so code_refs mirrors the jump
+                    // target's children (ADR-0039).
+                    self.set_code(target_code, 0)?;
                 }
             }
             0x72 => {
                 // RET
                 self.consume_gas(4)?;
-                if self.return_to_control_register(false) {
+                if self.return_to_control_register(false)? {
                     self.call_stack.pop();
                     self.control_registers.c0 = self
                         .call_stack
@@ -856,7 +906,7 @@ impl Interpreter {
             0x79 => {
                 self.consume_gas(4)?;
                 if !self.pop_integer()?.is_zero() {
-                    if self.return_to_control_register(false) {
+                    if self.return_to_control_register(false)? {
                         self.call_stack.pop();
                         self.control_registers.c0 = self
                             .call_stack
@@ -925,6 +975,15 @@ impl Interpreter {
     }
 
     pub fn run(&mut self) -> ExecutionResult {
+        // ADR-0039: populate code_refs from the root code cell's children
+        // before the first instruction — fail fast on an unseeded code DAG
+        // (AbsentNode) instead of mid-execution at the first JMPREF.
+        if let Err(kind) = self.refresh_code_refs() {
+            return ExecutionResult::Exception {
+                kind,
+                gas_used: self.gas_used,
+            };
+        }
         loop {
             match self.step() {
                 Ok(true) => continue,
@@ -945,13 +1004,28 @@ impl Interpreter {
                             ExceptionKind::AbsentNode => 2,
                             ExceptionKind::MalformedCell => 3,
                             ExceptionKind::TypeMismatch => 4,
+                            // Discriminators are append-only: a new kind
+                            // takes the next number, existing numbers never
+                            // move (ADR-0039).
+                            ExceptionKind::CallStackOverflow => 5,
                         };
                         if self
                             .push(StackValue::Integer(Int257::from_u64(code as u64)))
                             .is_ok()
                         {
-                            self.jump_to(handler);
-                            continue;
+                            // The handler jump refreshes code_refs like any
+                            // other code switch (ADR-0039). If the handler's
+                            // own children are unresolvable, that failure is
+                            // the operative one — the handler cannot run.
+                            match self.jump_to(handler) {
+                                Ok(()) => continue,
+                                Err(refresh_kind) => {
+                                    return ExecutionResult::Exception {
+                                        kind: refresh_kind,
+                                        gas_used: self.gas_used,
+                                    };
+                                }
+                            }
                         }
                     }
                     return ExecutionResult::Exception {

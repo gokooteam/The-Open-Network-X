@@ -818,14 +818,15 @@ enum ExecOutcome {
 /// closed `ExceptionKind` set. Only `OutOfGas` is fatal: the network spent
 /// the full paid budget, so returning the value would price griefing at
 /// the fee alone. Every other kind — whether raised by the VM or
-/// deliberately by the contract via `THROW` (0x77 maps onto these same
-/// kinds) — bounces: an early, cheap failure or a deliberate rejection,
-/// and the sender is refunded.
+/// deliberately by the contract via `THROW` (0x77 maps onto the original
+/// four kinds; `CallStackOverflow` is VM-raised only, ADR-0039) — bounces:
+/// an early, cheap failure or a deliberate rejection, and the sender is
+/// refunded.
 ///
 /// `reference/vectors/fatal_bounce.json` pins this table; the agreement
 /// test asserts it covers the closed set exhaustively.
 ///
-/// The match is explicit (no wildcard): adding a sixth `ExceptionKind`
+/// The match is explicit (no wildcard): adding a new `ExceptionKind`
 /// fails compilation here until its outcome is decided.
 pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
     match kind {
@@ -833,7 +834,8 @@ pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
         ExceptionKind::IntegerOverflow
         | ExceptionKind::AbsentNode
         | ExceptionKind::MalformedCell
-        | ExceptionKind::TypeMismatch => false,
+        | ExceptionKind::TypeMismatch
+        | ExceptionKind::CallStackOverflow => false,
     }
 }
 

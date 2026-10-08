@@ -1,11 +1,11 @@
 //! Fatal-vs-bounce agreement: the Rust taxonomy (`onx_stf::is_fatal_exception`,
-//! ADR-0037) must agree with the independent Python reference
-//! (`reference/gen_fatal_bounce_vectors.py`,
+//! ADR-0037, extended by ADR-0039) must agree with the independent Python
+//! reference (`reference/gen_fatal_bounce_vectors.py`,
 //! `reference/vectors/fatal_bounce.json`).
 //!
 //! The vectors were generated from the spec text, not from the Rust code.
 //! `kind_name` matches every `ExceptionKind` variant explicitly: adding a
-//! sixth kind breaks compilation here until the taxonomy (and the vectors)
+//! seventh kind breaks compilation here until the taxonomy (and the vectors)
 //! decide its fate.
 
 use onx_execution::ExceptionKind;
@@ -31,23 +31,25 @@ fn kind_name(kind: &ExceptionKind) -> &'static str {
         ExceptionKind::AbsentNode => "AbsentNode",
         ExceptionKind::MalformedCell => "MalformedCell",
         ExceptionKind::TypeMismatch => "TypeMismatch",
+        ExceptionKind::CallStackOverflow => "CallStackOverflow",
     }
 }
 
-fn all_kinds() -> [ExceptionKind; 5] {
+fn all_kinds() -> [ExceptionKind; 6] {
     [
         ExceptionKind::OutOfGas,
         ExceptionKind::IntegerOverflow,
         ExceptionKind::AbsentNode,
         ExceptionKind::MalformedCell,
         ExceptionKind::TypeMismatch,
+        ExceptionKind::CallStackOverflow,
     ]
 }
 
 #[test]
 fn taxonomy_agrees_with_python() {
     let v = vectors();
-    assert_eq!(v["adr"].as_str(), Some("ADR-0037"));
+    assert_eq!(v["adr"].as_str(), Some("ADR-0037 + ADR-0039"));
     let table: std::collections::BTreeMap<&str, &str> = v["exception_outcomes"]
         .as_array()
         .expect("exception_outcomes array")
