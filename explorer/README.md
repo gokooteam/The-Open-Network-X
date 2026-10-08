@@ -20,19 +20,24 @@ the file:
 
 ## Deploy
 
-The file is served from the repo so deploys need no uploads. On the web box,
-add once to `~/.bashrc`:
+Served at [on-x-scan.com](https://on-x-scan.com/). The file is deployed
+from this repository, never edited on the server:
+[`scripts/site-pull-deploy.sh`](../scripts/site-pull-deploy.sh) runs from
+cron on each server the domain resolves to, and installs
+`explorer/index.html` from the newest commit on `main` once that commit's
+`site-and-docs` check has passed. Setup, and the hosting problems found on
+2026-10-08 (two A records, certificate errors on about half of HTTPS
+connections, and an old explorer on one of the servers), are in [`site/README.md`](../site/README.md).
 
-```bash
-deploy-explorer() { deploy-html on-x-scan.com 'https://raw.githubusercontent.com/gokooteam/The-Open-Network-X/main/explorer/index.html'; }
-```
-
-Then `deploy-explorer` after every push that touches this directory.
-Note: GitHub caches raw files for a few minutes — if a deploy shows the old
-version, wait and re-run.
+`python3 scripts/site.py check` (run in CI) fails if this file's protocol
+constants (`FORMAT.BLOCK_MAGIC`, `HEADER_LEN`, cell and message limits,
+`GAS_PER_NANO`, every `TAG` domain tag) disagree with the Rust code, or if a
+link here points at a repository path that doesn't exist.
+`python3 scripts/site.py live` shows what each server is actually serving.
 
 ## Versioning
 
-The footer names the ONX commit the explorer was built against. Bump it in
-the same commit as any explorer change. For devnet-1, record the SHA-256 of
+The footer names the ONX commit the explorer was built against: the commit
+whose protocol formats it decodes. Bump it in the same commit as any
+explorer change. For devnet-1, record the SHA-256 of
 the deployed file before publishing.

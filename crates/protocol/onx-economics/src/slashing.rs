@@ -1,6 +1,6 @@
 //! Deterministic validator rewards and slashing debits.
 //!
-//! The percentages are explicitly fixed by ADR-0020.  All arithmetic is
+//! The percentages are explicitly fixed by ADR-0027.  All arithmetic is
 //! integer-only and reward remainders are assigned in validator-id order.
 
 use crate::{calculate_epoch_inflation_reward, EconomicsError};

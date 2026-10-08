@@ -12,15 +12,15 @@ open an issue so this document can be corrected.
 
 1. **Find the specification.** Every protocol layer is specified in
    `docs/specification/` before it is implemented, in the order set out in
-   `docs/specification/architecture.md`. Check `ROADMAP.md` for what's
-   already specified and what's next.
+   `docs/specification/architecture.md`. Check `MILESTONES.md` for what's
+   already done and what's next.
 2. **If the spec doesn't exist yet, write it first**, as its own PR:
    - State the reference sections (`WHITEPAPER.md`, `INSTRUCTIONS.md`) it draws from.
    - Separate what's explicitly required from what you're interpreting.
    - Record ambiguities and the interpretation chosen, with a permanent ID
      (`ONX-ARCH-NNN` or similar) if the architecture baseline already
      anticipates the question.
-   - Add an ADR in `docs/decisions/` if the interpretation is significant
+   - Add an ADR in `docs/adr/` if the interpretation is significant
      enough that a future contributor could reasonably have chosen
      differently (see [Decision records](#decision-records)).
 3. **If the spec already exists, implement against it — not against

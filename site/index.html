@@ -1,0 +1,1952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Open Network X (ONX): an independent open network implementation</title>
+<meta name="description" content="Open Network X (ONX) is an independent Rust implementation of the architecture described in the original TON white paper, built from the specification and tested for determinism. Pre-release; no public network is running.">
+<meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://on-x.live/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Open Network X (ONX)">
+<meta property="og:description" content="An independent implementation of an open network architecture. Built from the specification. Tested for determinism.">
+<meta property="og:url" content="https://on-x.live/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='16' fill='%23000'/%3E%3Cpath d='M16 9 9.5 21.5M16 9l6.5 12.5M9.5 21.5h13' stroke='%23e7e9ea' stroke-width='1.6' fill='none'/%3E%3Ccircle cx='16' cy='9' r='3.2' fill='%231d9bf0'/%3E%3Ccircle cx='9.5' cy='21.5' r='2.6' fill='%23e7e9ea'/%3E%3Ccircle cx='22.5' cy='21.5' r='2.6' fill='%23e7e9ea'/%3E%3C/svg%3E">
+<style>
+/* =========================================================================
+   Tokens: black canvas, one blue, system type, rounded geometry
+   ========================================================================= */
+:root {
+  --bg: #000;
+  --text: #e7e9ea;
+  --muted: #7d838a;        /* 5.3:1 on black */
+  --line: #2f3336;
+  --card: #16181c;
+  --hover: rgba(231, 233, 234, .03);
+  --hover-2: rgba(231, 233, 234, .1);
+  --blue: #1d9bf0;
+  --blue-hover: #1a8cd8;
+  --blue-soft: rgba(29, 155, 240, .1);
+  --blue-ring: rgba(29, 155, 240, .2);
+  --pill: #eff3f4;
+  --pill-text: #0f1419;
+  --paper: #f3f1ea;
+  --ink: #0f1419;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --header-h: 53px;
+  --tabbar-h: 53px;
+  --indent: 0;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html {
+  -webkit-text-size-adjust: 100%; text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--header-h) + env(safe-area-inset-top, 0px) + 4px);
+}
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font-family: var(--sans); font-size: 15px; line-height: 20px;
+  -webkit-font-smoothing: antialiased; overflow-x: hidden;
+}
+a { color: var(--blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+p { margin: 0; }
+h1, h2, h3 { margin: 0; }
+button { font: inherit; color: inherit; }
+code, .mono { font-family: var(--mono); font-size: .9em; }
+img, svg, canvas { display: block; max-width: 100%; }
+::selection { background: var(--blue); color: #fff; }
+:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; border-radius: 4px; }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+.skip { position: absolute; left: 12px; top: -60px; z-index: 100; background: var(--blue); color: #fff; padding: 10px 16px; border-radius: 999px; font-weight: 700; }
+.skip:focus { top: calc(env(safe-area-inset-top, 0px) + 8px); text-decoration: none; }
+.ico { width: 1.25em; height: 1.25em; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; flex: 0 0 auto; }
+
+/* =========================================================================
+   Shell: rail / feed / sidebar
+   ========================================================================= */
+.shell { display: flex; justify-content: center; min-height: 100vh; }
+.rail { flex: 0 0 275px; }
+.rail__inner {
+  position: sticky; top: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column;
+  padding: calc(env(safe-area-inset-top, 0px) + 4px) 12px 12px; overflow-y: auto;
+}
+.rail__logo { display: inline-flex; align-items: center; justify-content: center; width: 52px; height: 52px; border-radius: 50%; margin-bottom: 2px; }
+.rail__logo:hover { background: var(--hover-2); }
+.rail__nav { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.rail__link {
+  display: inline-flex; align-items: center; gap: 20px; padding: 12px; border-radius: 999px;
+  color: var(--text); font-size: 20px; line-height: 24px; transition: background .15s;
+}
+.rail__link:hover { background: var(--hover-2); text-decoration: none; }
+.rail__link .ico { width: 26px; height: 26px; }
+.rail__link[aria-current="true"] { font-weight: 700; }
+.rail__link[aria-current="true"] .ico { stroke-width: 2.6; }
+.rail__cta {
+  display: flex; align-items: center; justify-content: center; width: 90%; min-height: 52px; margin-top: 16px;
+  background: var(--blue); color: #fff; border-radius: 999px; font-size: 17px; font-weight: 700;
+  transition: background .15s;
+}
+.rail__cta:hover { background: var(--blue-hover); text-decoration: none; }
+.rail__cta .ico { display: none; width: 24px; height: 24px; }
+.rail__repo {
+  margin-top: auto; display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 999px; color: var(--text);
+}
+.rail__repo:hover { background: var(--hover-2); text-decoration: none; }
+.rail__repo .t { display: flex; flex-direction: column; min-width: 0; }
+.rail__repo .t b { font-weight: 700; font-size: 15px; }
+.rail__repo .t span { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.feed { flex: 0 1 600px; width: 600px; max-width: 100%; border-left: 1px solid var(--line); border-right: 1px solid var(--line); min-width: 0; }
+.side { flex: 0 0 350px; margin-left: 30px; }
+.side__inner { position: sticky; top: 0; padding: 12px 0 64px; display: grid; gap: 16px; }
+
+@media (max-width: 1279px) {
+  .rail { flex-basis: 88px; }
+  .rail__inner { align-items: center; padding-left: 4px; padding-right: 4px; }
+  .rail__link { padding: 12px; }
+  .rail__link span, .rail__repo .t { display: none; }
+  .rail__cta { width: 52px; min-height: 52px; }
+  .rail__cta span { display: none; }
+  .rail__cta .ico { display: block; }
+}
+@media (max-width: 999px) { .side { display: none; } }
+@media (max-width: 699px) {
+  .rail { display: none; }
+  .feed { border: 0; width: 100%; }
+}
+
+/* Sticky feed header */
+.fhead {
+  position: sticky; top: 0; z-index: 30; display: flex; align-items: center; gap: 16px;
+  min-height: calc(var(--header-h) + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) 16px 0;
+  background: rgba(0, 0, 0, .65); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+}
+.fhead__avatar { display: none; }
+.fhead__title { display: flex; flex-direction: column; min-width: 0; }
+.fhead__title b { font-size: 20px; line-height: 24px; font-weight: 700; }
+.fhead__title span { font-size: 13px; line-height: 16px; color: var(--muted); }
+.fhead__repo { display: none; margin-left: auto; width: 36px; height: 36px; border-radius: 50%; align-items: center; justify-content: center; color: var(--text); }
+.fhead__repo:hover { background: var(--hover-2); }
+@media (max-width: 699px) {
+  .fhead__avatar { display: block; width: 32px; height: 32px; }
+  .fhead__repo { display: inline-flex; }
+  .fhead__title b { font-size: 17px; }
+}
+
+/* =========================================================================
+   Profile header
+   ========================================================================= */
+.banner { position: relative; aspect-ratio: 5 / 2; background: #0b0f14; border-bottom: 1px solid var(--line); overflow: hidden; }
+.banner::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at 55% 10%, rgba(29, 155, 240, .14), transparent 60%); }
+#topology { position: relative; width: 100%; height: 100%; cursor: crosshair; touch-action: pan-y; }
+.banner__note {
+  position: absolute; top: 10px; right: 10px; z-index: 2; padding: 3px 9px; border-radius: 999px;
+  background: rgba(0, 0, 0, .7); color: var(--text); font-size: 12px; line-height: 16px; font-weight: 600;
+  border: 1px solid var(--line);
+}
+.profile { padding: 12px 16px 0; }
+.profile__top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; min-height: 72px; }
+.avatar-xl {
+  width: 134px; height: 134px; margin-top: -79px; border-radius: 50%;
+  border: 4px solid var(--bg); background: #000; position: relative; z-index: 3; flex: 0 0 auto;
+}
+.profile__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.pill {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 36px; padding: 0 16px; border-radius: 999px; font-weight: 700; font-size: 15px;
+  border: 1px solid transparent; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s;
+}
+.pill:hover { text-decoration: none; }
+.pill--light { background: var(--pill); color: var(--pill-text); }
+.pill--light:hover { background: #d7dbdc; }
+.pill--outline { background: transparent; color: var(--text); border-color: #536471; }
+.pill--outline:hover { background: var(--hover-2); }
+.pill--blue { background: var(--blue); color: #fff; }
+.pill--blue:hover { background: var(--blue-hover); }
+.pill--sm { min-height: 32px; padding: 0 14px; font-size: 14px; }
+.pill[disabled] { opacity: .5; cursor: default; }
+.profile__name { margin-top: 12px; }
+.profile__name h1 { font-size: 22px; line-height: 26px; font-weight: 800; }
+.profile__name p { color: var(--muted); margin-top: 1px; }
+.profile__bio { margin-top: 12px; }
+.profile__bio p + p { margin-top: 4px; }
+.profile__meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 12px 0 0; padding: 0; list-style: none; color: var(--muted); }
+.profile__meta li { display: inline-flex; align-items: center; gap: 4px; }
+.profile__meta .ico { width: 18px; height: 18px; }
+.profile__counts { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 12px 0 0; padding: 0; list-style: none; color: var(--muted); }
+.profile__counts a { color: var(--muted); }
+.profile__counts b { color: var(--text); font-weight: 700; }
+@media (max-width: 699px) {
+  .banner { aspect-ratio: 2 / 1; }
+  .avatar-xl { width: 84px; height: 84px; margin-top: -54px; border-width: 3px; }
+  .profile__top { min-height: 44px; }
+  .pill { min-height: 34px; padding: 0 14px; font-size: 14px; }
+}
+
+/* Tabs that filter the feed */
+.tabs { display: flex; border-bottom: 1px solid var(--line); margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab {
+  flex: 1 0 auto; min-height: 53px; padding: 0 16px; background: none; border: 0; cursor: pointer;
+  color: var(--muted); font-weight: 500; display: flex; justify-content: center; transition: background .15s;
+}
+.tab:hover { background: var(--hover-2); }
+.tab span { display: flex; align-items: center; position: relative; height: 53px; }
+.tab[aria-selected="true"] { color: var(--text); font-weight: 700; }
+.tab[aria-selected="true"] span::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 4px; border-radius: 999px; background: var(--blue);
+}
+
+/* =========================================================================
+   Posts
+   ========================================================================= */
+.post { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 0 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); transition: background .2s; }
+.post:hover { background: var(--hover); }
+.post[hidden] { display: none; }
+.post__social { grid-column: 1 / -1; display: grid; grid-template-columns: 40px 1fr; gap: 12px; color: var(--muted); font-size: 13px; font-weight: 700; margin-bottom: 4px; }
+.post__social .ico { justify-self: end; width: 16px; height: 16px; stroke-width: 2.2; }
+.avatar { width: 40px; height: 40px; border-radius: 50%; background: #000; }
+.post__body { min-width: 0; }
+.post__head { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; color: var(--muted); }
+.post__head b { color: var(--text); font-weight: 700; }
+.post__head a { color: var(--muted); }
+.post__head a:hover { text-decoration: underline; }
+.post__text { margin-top: 2px; overflow-wrap: anywhere; }
+.post__text p + p { margin-top: 12px; }
+.post__lead { font-size: 15px; line-height: 20px; font-weight: 700; }
+.post__big { font-size: 23px; line-height: 28px; font-weight: 800; letter-spacing: -.01em; margin: 4px 0 2px; }
+.post__xl { font-size: clamp(34px, 9vw, 52px); line-height: 1; font-weight: 800; letter-spacing: -.02em; text-transform: uppercase; margin: 6px 0 8px; }
+.post__text code { color: var(--text); background: var(--card); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+.post__text ul { margin: 10px 0 0; padding-left: 18px; }
+.post__text li + li { margin-top: 4px; }
+.post__actions { display: flex; flex-wrap: wrap; gap: 4px 24px; margin: 10px 0 0 -8px; color: var(--muted); font-size: 13px; }
+.act {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 34px; padding: 0 8px 0 0; border: 0; background: none;
+  color: var(--muted); cursor: pointer; font-size: 13px;
+}
+.act .ico { width: 34px; height: 34px; padding: 8px; border-radius: 50%; transition: background .15s, color .15s; }
+.act:hover { color: var(--blue); text-decoration: none; }
+.act:hover .ico { background: var(--blue-soft); }
+
+/* Embedded cards */
+.card { margin-top: 12px; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; background: var(--bg); }
+.card__row { padding: 12px 14px; border-top: 1px solid var(--line); }
+.card__row:first-child { border-top: 0; }
+.card__k { color: var(--muted); font-size: 13px; }
+.card__v { font-weight: 700; margin-top: 2px; }
+.card__d { color: var(--muted); font-size: 13px; line-height: 18px; margin-top: 2px; }
+.card__d a, .src a { color: var(--blue); }
+.src { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.src a { font-family: var(--mono); font-size: 12px; }
+.mute { color: var(--muted); }
+
+/* Status tags */
+.tag {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px;
+  font-size: 11px; line-height: 16px; font-weight: 700; letter-spacing: .02em; white-space: nowrap;
+  border: 1px solid var(--line); color: var(--muted);
+}
+.tag::before { content: ""; width: 6px; height: 6px; border-radius: 50%; border: 1px solid currentColor; }
+.tag--tested { color: var(--blue); background: var(--blue-soft); border-color: rgba(29, 155, 240, .35); }
+.tag--tested::before { background: currentColor; }
+.tag--spec { color: var(--text); }
+.tag--scaffold { border-style: dashed; }
+.tag--planned { border-style: dotted; }
+.tags { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* Fork vs ONX comparison */
+.cmp { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
+.cmp__col { padding: 14px; }
+.cmp__col + .cmp__col { border-left: 1px solid var(--line); }
+.cmp h3, .flowcard h3 { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 10px; display: flex; justify-content: space-between; gap: 8px; }
+.cmp h3 b, .flowcard h3 b { color: var(--text); }
+.flowcard { padding: 14px; }
+.flow-code { display: block; margin-top: 3px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.post__text ul + p { margin-top: 10px; }
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li { position: relative; padding: 0 0 14px 22px; }
+.steps li:last-child { padding-bottom: 0; }
+.steps li::before { content: ""; position: absolute; left: 3px; top: 5px; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--muted); background: var(--bg); z-index: 1; }
+.steps li::after { content: ""; position: absolute; left: 7.5px; top: 16px; bottom: 2px; width: 1px; background: var(--line); }
+.steps li:last-child::after { display: none; }
+.steps b { display: block; font-size: 14px; letter-spacing: .02em; text-transform: uppercase; }
+.steps span { display: block; color: var(--muted); font-size: 13px; line-height: 18px; margin-top: 2px; }
+.steps a { font-family: var(--mono); font-size: 12px; }
+.steps--fork b { color: var(--muted); }
+.steps--onx li::before { border-color: var(--blue); background: var(--blue); box-shadow: 0 0 0 3px var(--blue-ring); }
+.steps--onx li::after { background: linear-gradient(var(--blue), rgba(29, 155, 240, .25)); }
+@media (max-width: 520px) {
+  .cmp { grid-template-columns: 1fr; }
+  .cmp__col + .cmp__col { border-left: 0; border-top: 1px solid var(--line); }
+}
+
+/* Architecture accordion */
+.layer {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto 18px; align-items: center; gap: 10px;
+  width: 100%; padding: 12px 14px 12px calc(14px + var(--indent) * 10px); border: 0; border-top: 1px solid var(--line);
+  background: none; text-align: left; cursor: pointer; position: relative; transition: background .15s;
+}
+.layer:first-child { border-top: 0; }
+.layer:hover { background: var(--hover-2); }
+.layer::before { content: ""; position: absolute; left: 14px; top: 0; bottom: 0; width: calc(var(--indent) * 10px); background: repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 10px); }
+.layer .idx { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.layer .nm { font-weight: 700; }
+.layer .id { font-family: var(--mono); font-size: 11px; color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer .ico { width: 18px; height: 18px; color: var(--muted); transition: transform .2s; }
+.layer[aria-expanded="true"] { background: var(--blue-soft); }
+.layer[aria-expanded="true"] .idx, .layer[aria-expanded="true"] .id { color: var(--blue); }
+.layer[aria-expanded="true"] .ico { transform: rotate(180deg); color: var(--blue); }
+.layer-panel { padding: 4px 14px 14px calc(14px + var(--indent) * 10px); background: var(--blue-soft); }
+.layer-panel[hidden] { display: none; }
+.layer-panel p { color: var(--text); font-size: 14px; line-height: 19px; }
+.layer-panel p + p { margin-top: 8px; }
+.layer-panel .now { color: var(--muted); }
+.ids { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 10px 0; font-family: var(--mono); font-size: 12px; line-height: 17px; }
+.ids dt { color: var(--muted); }
+.ids dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+[data-depth="1"] { --indent: 1; } [data-depth="2"] { --indent: 2; } [data-depth="3"] { --indent: 3; }
+[data-depth="4"] { --indent: 4; } [data-depth="5"] { --indent: 5; } [data-depth="6"] { --indent: 6; }
+@media (max-width: 520px) {
+  .layer .id { display: none; }
+  .layer { grid-template-columns: auto minmax(0, 1fr) 18px; padding-left: calc(14px + var(--indent) * 6px); }
+  .layer::before { width: calc(var(--indent) * 6px); background: repeating-linear-gradient(to right, var(--line) 0 1px, transparent 1px 6px); }
+  .layer-panel { padding-left: 14px; }
+  .ids { grid-template-columns: 1fr; gap: 0; }
+  .ids dd { margin-bottom: 6px; }
+}
+
+/* Progress list */
+.prog { list-style: none; margin: 0; padding: 0; }
+.prog li { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 2px 10px; padding: 11px 14px; border-top: 1px solid var(--line); align-items: baseline; }
+.prog li:first-child { border-top: 0; }
+.prog .n { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.prog .done .n { color: var(--blue); }
+.prog .nm { font-weight: 700; }
+.prog .future .nm { color: var(--muted); }
+.prog .d { grid-column: 2 / -1; color: var(--muted); font-size: 13px; line-height: 18px; }
+.prog .d .src { margin-top: 3px; }
+.prog .tags { justify-content: flex-end; }
+@media (max-width: 520px) {
+  .prog li { grid-template-columns: 26px minmax(0, 1fr); }
+  .prog .tags { grid-column: 2; justify-content: flex-start; margin-top: 2px; }
+  .cell { padding: 4px; }
+  .cell .r { font-size: 9px; letter-spacing: -.02em; }
+}
+.prog li.frontier { display: block; padding: 6px 14px; color: var(--blue); font-size: 12px; font-weight: 700; background: var(--blue-soft); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+.legend > span { display: inline-flex; gap: 6px; align-items: center; }
+
+/* Determinism */
+.det { padding: 14px; display: grid; gap: 10px; }
+.det__box { border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: var(--card); }
+.det__label { font-weight: 700; margin-bottom: 6px; }
+.det__dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0; font-family: var(--mono); font-size: 11.5px; line-height: 16px; }
+.det__dl dt { color: var(--muted); }
+.det__dl dd { margin: 0; overflow-wrap: anywhere; }
+.det__final { transition: border-color .3s, box-shadow .3s; }
+.det__final.is-match { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-ring); }
+.det__verdict { color: var(--muted); font-family: var(--sans); font-weight: 800; font-size: 15px; }
+.det__final.is-match .det__verdict { color: var(--blue); }
+.lanes { display: grid; gap: 8px; }
+.lane { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.lane__who { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
+.lane__who strong { color: var(--text); margin-right: 6px; }
+.cell {
+  position: relative; min-height: 44px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 8px;
+  font-family: var(--mono); font-size: 10px; line-height: 14px; color: var(--muted);
+  display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;
+  transition: border-color .2s, background .2s;
+}
+.cell .r { font-size: 11px; color: transparent; overflow: hidden; text-overflow: clip; white-space: nowrap; }
+.cell.is-run { border-color: var(--text); }
+.cell.is-run::after { content: ""; position: absolute; left: 0; bottom: 0; height: 2px; width: 100%; background: var(--text); transform-origin: left; animation: fill .5s linear forwards; }
+@keyframes fill { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.cell.is-done { background: var(--card); }
+.cell.is-done .r { color: var(--text); }
+.cell.is-skip { border-style: dashed; }
+.cell.is-skip .r { color: var(--muted); }
+.cell.is-kill { border-color: var(--text); background: repeating-linear-gradient(135deg, rgba(231,233,234,.12) 0 4px, transparent 4px 8px); }
+.cell.is-kill .r { color: var(--text); }
+.cell.is-final.is-done { border-color: var(--blue); }
+.cell.is-final.is-done .r { color: var(--blue); }
+.det__controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+.det__status { color: var(--muted); font-size: 13px; flex: 1 1 14rem; }
+.terminal {
+  margin: 0; padding: 12px; background: #050607; border: 1px solid var(--line); border-radius: 12px;
+  font-family: var(--mono); font-size: 11px; line-height: 17px; color: var(--muted); overflow-x: auto; white-space: pre;
+}
+.terminal .p { color: var(--blue); }
+.terminal .k { color: var(--text); }
+details.more summary { cursor: pointer; color: var(--blue); font-size: 14px; list-style: none; padding: 2px 0; }
+details.more summary::-webkit-details-marker { display: none; }
+details.more summary:hover { text-decoration: underline; }
+details.more[open] summary { margin-bottom: 8px; }
+
+/* Adversarial console */
+.console { padding: 14px; border-bottom: 1px solid var(--line); background: var(--card); }
+.console__bar { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+.console__bar #console-test { font-family: var(--mono); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console__input h3 { font-size: 17px; line-height: 22px; font-weight: 800; }
+.console__input p { color: var(--muted); font-size: 14px; line-height: 19px; margin-top: 2px; }
+.pipe { display: grid; grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr); align-items: center; gap: 6px; margin: 12px 0; }
+.pipe__box { border: 1px solid var(--line); border-radius: 10px; padding: 7px 9px; font-size: 12px; line-height: 16px; color: var(--muted); min-height: 46px; display: flex; flex-direction: column; justify-content: center; }
+.pipe__box strong { color: var(--text); font-family: var(--mono); font-size: 11.5px; font-weight: 600; }
+.pipe__wire { position: relative; height: 1px; background: var(--line); }
+.pipe__pkt { position: absolute; top: -3px; left: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--text); opacity: 0; }
+.console.is-firing .pipe__pkt { animation: pkt .7s ease forwards; }
+@keyframes pkt { 0% { left: 0; opacity: 1; } 90% { opacity: 1; } 100% { left: calc(100% - 7px); opacity: 0; } }
+.console.is-checking .pipe__box--sys { border-color: var(--text); }
+.console.is-done .pipe__box--sys { border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-ring); }
+.verdict-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 10px; }
+.verdict { font-size: 28px; line-height: 32px; font-weight: 800; letter-spacing: .01em; color: var(--muted); }
+.console.is-done .verdict { color: var(--blue); }
+.console__check { color: var(--muted); font-size: 13px; }
+.console .terminal { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 52px; }
+.console .src { margin-top: 8px; }
+.attacks__group { padding: 10px 14px 6px; color: var(--muted); font-size: 13px; font-weight: 700; border-top: 1px solid var(--line); }
+.attacks__group:first-child { border-top: 0; }
+.attack {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%;
+  padding: 11px 14px; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; cursor: pointer; transition: background .15s;
+}
+.attack:hover { background: var(--hover-2); }
+.attack .out { font-size: 11px; font-weight: 700; color: var(--muted); letter-spacing: .03em; }
+.attack[aria-pressed="true"] { background: var(--blue-soft); }
+.attack[aria-pressed="true"] .out { color: var(--blue); }
+
+/* Link-preview card for the white paper */
+.lpc { display: block; color: var(--text); }
+.lpc:hover { text-decoration: none; background: var(--hover); }
+.lpc__media { background: var(--paper); color: var(--ink); padding: 22px 26px 18px; position: relative; min-height: 180px;
+  background-image: repeating-linear-gradient(to bottom, transparent 0 23px, rgba(15, 20, 25, .07) 23px 24px); }
+.lpc__media .f { font-family: var(--mono); font-size: 11px; color: #536471; }
+.lpc__media h3 { font-family: Georgia, "Times New Roman", serif; font-size: 30px; line-height: 34px; font-weight: 700; margin: 14px 0 6px; }
+.lpc__media .by { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 15px; }
+.lpc__media .dt { font-size: 12px; color: #536471; margin-top: 10px; }
+.lpc__meta { padding: 10px 14px; border-top: 1px solid var(--line); }
+.lpc__meta span { color: var(--muted); font-size: 13px; }
+.doclist { list-style: none; margin: 0; padding: 0; }
+.doclist li a { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line); color: var(--text); font-size: 14px; }
+.doclist li:first-child a { border-top: 0; }
+.doclist li a:hover { background: var(--hover-2); text-decoration: none; }
+.doclist .k { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.card > details.more { padding: 10px 14px; border-top: 1px solid var(--line); }
+.card > details.more:first-child { border-top: 0; }
+.card > details.more[open] { padding-bottom: 0; }
+.card > details.more .doclist { margin: 0 -14px; }
+
+/* Onyxi (currency) */
+.params .card__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; }
+.params .card__v { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.params .card__d { grid-column: 1 / -1; }
+.params .tags { justify-content: flex-end; align-self: start; }
+
+/* Live dots */
+.live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); margin-right: 6px; vertical-align: 1px; }
+.is-live .live-dot { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-ring); }
+.ci-badge { height: 20px; width: auto; margin-top: 6px; }
+
+/* End of feed */
+.endcap { padding: 40px 16px 48px; border-bottom: 1px solid var(--line); }
+.endcap h2 { font-size: clamp(30px, 7vw, 44px); line-height: 1.02; font-weight: 800; letter-spacing: -.02em; margin-bottom: 18px; }
+.endcap h2 span { display: block; }
+.endcap h2 span + span { color: var(--blue); }
+.endcap .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* Right sidebar */
+.panel { background: var(--card); border-radius: 16px; overflow: hidden; }
+.panel h2 { font-size: 20px; line-height: 24px; font-weight: 800; padding: 12px 16px; }
+.panel__row { display: block; padding: 12px 16px; color: var(--text); transition: background .15s; }
+a.panel__row:hover { background: var(--hover); text-decoration: none; }
+.panel__row .k { color: var(--muted); font-size: 13px; }
+.panel__row .v { font-weight: 700; margin-top: 1px; }
+.panel__row .d { color: var(--muted); font-size: 13px; margin-top: 1px; }
+.panel__more { display: block; padding: 16px; color: var(--blue); }
+.panel__more:hover { background: var(--hover); text-decoration: none; }
+.res { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 16px; }
+.res__ico { width: 40px; height: 40px; border-radius: 50%; background: #000; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--text); }
+.res__t { min-width: 0; }
+.res__t b { display: block; font-weight: 700; }
+.res__t span { display: block; color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.sfoot { padding: 0 16px; color: var(--muted); font-size: 13px; line-height: 18px; }
+.sfoot nav { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-bottom: 8px; }
+.sfoot nav a { color: var(--muted); }
+.sfoot p + p { margin-top: 8px; }
+.feedfoot { display: none; padding: 20px 16px calc(28px + var(--tabbar-h) + env(safe-area-inset-bottom, 0px)); }
+@media (max-width: 999px) { .feedfoot { display: block; } }
+@media (min-width: 700px) { .feedfoot { padding-bottom: 32px; } }
+
+/* Mobile bottom tab bar */
+.tabbar {
+  display: none; position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  background: rgba(0, 0, 0, .85); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line);
+}
+.tabbar ul { display: flex; justify-content: space-around; margin: 0; padding: 0; list-style: none; height: var(--tabbar-h); }
+.tabbar a { display: flex; align-items: center; justify-content: center; width: 56px; height: 100%; color: var(--text); }
+.tabbar a .ico { width: 26px; height: 26px; }
+.tabbar a[aria-current="true"] .ico { stroke-width: 2.6; color: var(--blue); }
+@media (max-width: 699px) { .tabbar { display: block; } }
+
+/* Toast */
+.toast {
+  position: fixed; left: 50%; bottom: 24px; z-index: 60; transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+  background: var(--blue); color: #fff; padding: 12px 16px; border-radius: 6px; font-weight: 500; box-shadow: 0 4px 18px rgba(0,0,0,.5);
+  transition: opacity .2s, transform .2s;
+}
+.toast.is-on { opacity: 1; transform: translate(-50%, 0); }
+@media (max-width: 699px) { .toast { bottom: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px) + 12px); } }
+@media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.note { margin-top: 10px; font-size: 13px; }
+.after { margin-top: 12px; }
+.small { font-size: 13px; }
+.sfoot .small { font-size: 12px; }
+.em { color: var(--text); }
+html:not(.js) .det__controls button, html:not(.js) .act--share, html:not(.js) .tabs { display: none; }
+</style>
+<script>document.documentElement.classList.add('js');</script>
+</head>
+<body>
+<svg class="sprite" aria-hidden="true" focusable="false">
+  <symbol id="mark" viewBox="0 0 40 40"><circle cx="20" cy="20" r="20" fill="#000"/><circle cx="20" cy="20" r="19.5" fill="none" stroke="#2f3336"/><path d="M20 11 11.5 27M20 11l8.5 16M11.5 27h17" stroke="#e7e9ea" stroke-width="1.8" fill="none"/><circle cx="20" cy="11" r="4" fill="#1d9bf0"/><circle cx="11.5" cy="27" r="3.2" fill="#e7e9ea"/><circle cx="28.5" cy="27" r="3.2" fill="#e7e9ea"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="M12 3 2.5 8 12 13l9.5-5z"/><path d="m2.5 12.5 9.5 5 9.5-5"/><path d="m2.5 17 9.5 5 9.5-5"/></symbol>
+  <symbol id="i-steps" viewBox="0 0 24 24"><path d="M3 21h18M6 21v-5M11 21v-9M16 21V8M21 21V4"/></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4.5 6v6c0 4.4 3.1 7.9 7.5 9 4.4-1.1 7.5-4.6 7.5-9V6z"/><path d="m9 12 2 2 4-4"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 2.5h8.5L19 7v14.5H6z"/><path d="M14 2.5V7h5M9 12h7M9 16h7"/></symbol>
+  <symbol id="i-coin" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5 15.5 12 12 16.5 8.5 12z"/></symbol>
+  <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></symbol>
+  <symbol id="i-code" viewBox="0 0 24 24"><path d="m8.5 7-5 5 5 5M15.5 7l5 5-5 5"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1"/><path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.5h17M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 3v18M7 21h10M5 7h14M5 7l-2.5 6a2.5 2.5 0 0 0 5 0zM19 7l-2.5 6a2.5 2.5 0 0 0 5 0z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2.5h8.5L19 7v14.5H6z"/><path d="M14 2.5V7h5"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 3v12M7.5 7.5 12 3l4.5 4.5"/><path d="M5 13v6.5h14V13"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24"><path d="M9 3h6l-1 6 3 3v2H7v-2l3-3z"/><path d="M12 14v7"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-pr" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M6 8.5v7M18 15.5V9a3 3 0 0 0-3-3h-4"/><path d="m13 3.5-2.5 2.5L13 8.5"/></symbol>
+  <symbol id="i-open" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+</svg>
+<a class="skip" href="#feed">Skip to posts</a>
+
+<div class="shell">
+  <header class="rail">
+    <div class="rail__inner">
+      <a class="rail__logo" href="#top" aria-label="Open Network X, back to top"><svg width="34" height="34" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg></a>
+      <nav aria-label="Sections">
+      <ul class="rail__nav">
+        <li><a class="rail__link" href="#top" data-spy="top" title="Overview"><svg class="ico" aria-hidden="true"><use href="#i-home"/></svg><span>Overview</span></a></li>
+        <li><a class="rail__link" href="#determinism" data-spy="determinism" title="Replay"><svg class="ico" aria-hidden="true"><use href="#i-replay"/></svg><span>Replay</span></a></li>
+        <li><a class="rail__link" href="#adversarial" data-spy="adversarial" title="Testing"><svg class="ico" aria-hidden="true"><use href="#i-shield"/></svg><span>Testing</span></a></li>
+        <li><a class="rail__link" href="#architecture" data-spy="architecture" title="Architecture"><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg><span>Architecture</span></a></li>
+        <li><a class="rail__link" href="#progress" data-spy="progress" title="Progress"><svg class="ico" aria-hidden="true"><use href="#i-steps"/></svg><span>Progress</span></a></li>
+        <li><a class="rail__link" href="#specification" data-spy="specification" title="Specification"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg><span>Specification</span></a></li>
+        <li><a class="rail__link" href="#onyx" data-spy="onyx" title="Onyxi"><svg class="ico" aria-hidden="true"><use href="#i-coin"/></svg><span>Onyxi</span></a></li>
+        <li><a class="rail__link" href="#status" data-spy="status" title="Status"><svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg><span>Status</span></a></li>
+      </ul>
+      </nav>
+      <a class="rail__cta" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification" title="Read the spec"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg><span>Read the spec</span></a>
+      <a class="rail__repo" href="https://github.com/gokooteam/The-Open-Network-X" title="Repository on GitHub">
+        <svg width="40" height="40" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+        <span class="t"><b>Repository</b><span>gokooteam/The-Open-Network-X</span></span>
+      </a>
+    </div>
+  </header>
+
+
+  <main class="feed" id="main">
+    <div class="fhead">
+      <svg class="fhead__avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+      <div class="fhead__title"><b>Open Network X</b><span><!--gen:post_count-->13<!--/gen:post_count--> posts</span></div>
+      <a class="fhead__repo" href="https://github.com/gokooteam/The-Open-Network-X" aria-label="Repository on GitHub"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg></a>
+    </div>
+
+    <section class="profile-wrap" id="top" aria-labelledby="profile-name">
+      <div class="banner">
+        <canvas id="topology" role="img" aria-label="Animated model of the specified ONX topology: a masterchain producing blocks along the top; below it workchain 0 as a binary tree of shards that split and merge; each shard producing its own chain of blocks; each new masterchain block committing the newest block of every shard; messages travelling between shards. Hover a node for its shard identifier."></canvas>
+        <span class="banner__note">Model, not a live network</span>
+      </div>
+      <div class="profile">
+        <div class="profile__top">
+          <svg class="avatar-xl" viewBox="0 0 40 40" role="img" aria-label="ONX mark"><use href="#mark"/></svg>
+          <div class="profile__actions">
+            <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates">View code</a>
+            <a class="pill pill--light" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification">Read the spec</a>
+          </div>
+        </div>
+        <div class="profile__name">
+          <h1 id="profile-name">Open Network X</h1>
+          <p>on-x.live</p>
+        </div>
+        <div class="profile__bio">
+          <p>An independent implementation of an open network architecture.</p>
+          <p>Built from the specification. Tested for determinism. Designed to stand on its own.</p>
+        </div>
+        <ul class="profile__meta">
+          <li><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg>Rust, v<!--gen:version-->0.2.0<!--/gen:version--></li>
+          <li><svg class="ico" aria-hidden="true"><use href="#i-scale"/></svg>Apache-2.0</li>
+          <li><svg class="ico" aria-hidden="true"><use href="#i-link"/></svg><a href="https://github.com/gokooteam/The-Open-Network-X">github.com/gokooteam/The-Open-Network-X</a></li>
+          <li><svg class="ico" aria-hidden="true"><use href="#i-cal"/></svg>History since September 2026</li>
+        </ul>
+        <ul class="profile__counts">
+          <li><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification"><b><!--gen:spec_count-->15<!--/gen:spec_count--></b> Specifications</a></li>
+          <li><a href="#specification"><b><!--gen:adr_count-->34<!--/gen:adr_count--></b> Decision records</a></li>
+          <li><a href="#status"><b><!--gen:tests_count-->449<!--/gen:tests_count--></b> Tests passing</a></li>
+        </ul>
+      </div>
+      <div class="tabs" role="tablist" aria-label="Filter posts">
+        <button class="tab" role="tab" aria-selected="true" aria-controls="feed" data-filter="all" type="button"><span>Posts</span></button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="feed" data-filter="update" type="button" tabindex="-1"><span>Updates</span></button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="feed" data-filter="demo" type="button" tabindex="-1"><span>Demos</span></button>
+        <button class="tab" role="tab" aria-selected="false" aria-controls="feed" data-filter="doc" type="button" tabindex="-1"><span>Docs</span></button>
+      </div>
+    </section>
+
+    <div id="feed" role="tabpanel" aria-label="Posts">
+
+<article class="post" id="why" data-kind="pinned doc" aria-labelledby="why-h">
+  <div class="post__social"><svg class="ico" aria-hidden="true"><use href="#i-pin"/></svg><span>Pinned</span></div><svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/README.md#project-philosophy">README.md</a></div>
+    <div class="post__text">
+      <h2 class="post__big" id="why-h">The goal is not to reproduce an existing implementation.</h2>
+      <p>Most networks that share an architecture begin as a fork: take working source code, change it, deploy it. ONX begins one step earlier, with the published design. Each requirement is restated as an ONX specification, every ambiguity or gap gets a recorded decision, and only then is code written, followed by tests that try to prove it wrong.</p>
+    </div>
+    <div class="card cmp">
+      <div class="cmp__col">
+        <h3><b>Existing implementation</b><span>fork</span></h3>
+        <ol class="steps steps--fork">
+          <li><b>Source code</b><span>Behaviour starts from what the code already does.</span></li>
+          <li><b>Modification</b><span>Changes are made against that behaviour.</span></li>
+          <li><b>Deployment</b></li>
+        </ol>
+      </div>
+      <div class="cmp__col">
+        <h3><b>ONX</b><span>independent</span></h3>
+        <ol class="steps steps--onx">
+          <li><b>Reference specification</b><span>The original white paper, kept unmodified.</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md">WHITEPAPER.md</a></li>
+          <li><b>Protocol requirement</b><span><!--gen:spec_count-->15<!--/gen:spec_count--> ONX specifications, separating what the paper requires from what ONX interprets.</span><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification">docs/specification/</a></li>
+          <li><b>Engineering decision</b><span>Gaps and ambiguities are written down: <!--gen:adr_count-->34<!--/gen:adr_count--> decision records.</span><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/adr">docs/adr/</a></li>
+          <li><b>Implementation</b><span>A Rust workspace; protocol, node and tooling crates kept apart.</span><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates">crates/</a></li>
+          <li><b>Test</b><span>Golden vectors, cross-process checks, crash and corruption probes in CI.</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/.github/workflows/ci.yml">ci.yml</a></li>
+        </ol>
+      </div>
+    </div>
+    <p class="mute note">Existing implementations may be studied for research and interoperability. ONX does not treat any of them as its specification.</p>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/README.md#project-philosophy"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>README.md</a><button class="act act--share" type="button" data-share="why"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="update-v0-2-0" data-kind="update" aria-labelledby="v020-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-08" title="Oct 8, 2026">Oct 8</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="v020-h">Blocks are signed, devnet-1 has its first block, and v0.2.0 is tagged.</h2>
+      <p>Until now nothing proved who produced a block. Block files are now <code>ONXBLK05</code>: the header grew to 160 bytes with a <code>protocol_version</code> and a producer-stamped <code>block_time</code>, and every block carries a signature section. <code>onxd</code> signs each block with a key that must belong to a genesis validator, and <code>onx replay</code> refuses a block unless enough genesis stake signed it and its <code>block_time</code> did not go backwards. The state transition itself still never reads a clock.</p>
+      <ul>
+        <li>devnet-1: one producer run by the project, with a faucet account in genesis. Its blocks are published for the explorer.</li>
+        <li><a href="https://on-x-scan.com/">on-x-scan.com</a> checks every block against the pinned genesis hash in your browser. It decodes signatures but does not verify them yet.</li>
+        <li>The currency is now called Onyxi, ticker ONXI (ADR-0033). No consensus bytes changed.</li>
+        <li>One version for the whole workspace, a changelog, and release automation. <code>v0.2.0</code> is the first tag.</li>
+      </ul>
+      <p class="mute">devnet-1 is not a public testnet: one producer, no peers, no consensus. A testnet other people can join is milestone M7.</p>
+    </div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CHANGELOG.md">
+      <div class="card__row"><div class="card__k">github.com</div><div class="card__v">Changelog: 0.2.0, 2026-10-08</div><div class="card__d">gokooteam/The-Open-Network-X</div></div>
+    </a>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0032-onxblk05-authenticated-headers.md"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>ADR-0032</a><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/MILESTONES.md"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>MILESTONES.md</a><button class="act act--share" type="button" data-share="update-v0-2-0"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="update-messages" data-kind="update demo" aria-labelledby="msg-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-05T17:55:40-04:00" title="5:55 PM, Oct 5, 2026">Oct 5</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="msg-h">The chain now runs on messages.</h2>
+      <p>Synchronous transfers are gone. Following the actor model in the specification, accounts only interact through messages: a signed external message enters a block, a built-in wallet handler authenticates it, and the value travels on as an internal message that the receiver processes as its own transaction.</p>
+      <ul>
+        <li>Signatures bind the chain ID, so a message signed for one chain fails on another</li>
+        <li>Addresses derive from keys (ONX_ADDR_V1): a new account can receive, then spend by revealing its key</li>
+        <li>Failed deliveries bounce the value back, minus fees</li>
+        <li>Delivery order is FIFO per sender and receiver, and an internal message is never delivered twice</li>
+      </ul>
+      <p>Single shard for now: delivery happens within the block. Cross-shard routing is still specified only. Seven new decision records cover the design.</p>
+    </div>
+    <div class="card flowcard"><h3><b>One transfer, end to end</b><span>single shard</span></h3><ol class="steps steps--onx"><li><b>External message</b><span>Signed off-chain, submitted to a block. The signature covers the chain ID.</span><code class="flow-code">ONX_MSG_EXT_SIGN_V1</code></li><li><b>Wallet handler</b><span>Built into the state transition: checks chain ID, key, nonce and signature, takes the fee, bumps the nonce.</span><code class="flow-code">apply_messages, phase 1</code></li><li><b>Internal message</b><span>Derived, never submitted. Queued in order, one per external message.</span><code class="flow-code">ONX_MSG_INT_V1</code></li><li><b>Delivery</b><span>Runs as the receiver's own transaction, FIFO per sender and receiver, in the same block. Contracts execute on the TVM here.</span><code class="flow-code">apply_messages, phase 2</code></li><li><b>Bounce</b><span>If delivery fails, the value goes back to the sender minus fees already taken. The block stays valid.</span><code class="flow-code">ADR-0004</code></li></ol></div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/pull/5">
+      <div class="card__row"><div class="card__k">github.com</div><div class="card__v">Message-based single-shard chain (actor model)</div><div class="card__d">gokooteam/The-Open-Network-X</div></div>
+    </a>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/adr"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>docs/adr</a><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/message_model.rs"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>message_model.rs</a><button class="act act--share" type="button" data-share="update-messages"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="update-tvm" data-kind="update" aria-labelledby="tvm-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-05T15:59:33-04:00" title="3:59 PM, Oct 5, 2026">Oct 5</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="tvm-h">TVM on the spine: contracts execute, and the node produces blocks.</h2>
+      <p>Contract calls now run on the TVM inside the state transition. A test counter contract goes from 0 to 3 through the real <code>onx replay</code> binary in two separate processes, with byte-identical roots. A contract that throws has its delivery bounced instead of breaking the block.</p>
+      <p><code>onxd</code> now runs a real single-node loop: messages dropped into a spool directory are checked at the door, then drained into blocks on demand, with no empty blocks and no wall-clock in block content. Its output replays through <code>onx replay</code> to identical roots. Networking stays off.</p>
+      <p>Also: 8 golden vectors derived by hand in Python straight from the spec documents, including an Ed25519 signature made with libsodium. All matched the Rust implementation.</p>
+      <p class="mute">Not yet: messages sent out by contracts, multi-cell code, gas refunds.</p>
+      <p class="mute">Since changed: headers now carry a <code>block_time</code> stamped by the producer (pull request #14). The state transition still never reads a clock; replay only checks that block times never go backwards.</p>
+    </div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/pull/4">
+      <div class="card__row"><div class="card__k">github.com</div><div class="card__v">TVM on the spine: real node loop, contract execution, hand vectors, spec debt</div><div class="card__d">gokooteam/The-Open-Network-X</div></div>
+    </a>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/pull/4"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Pull request #4</a><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/tooling/onx/tests/tvm_replay.rs"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>tvm_replay.rs</a><button class="act act--share" type="button" data-share="update-tvm"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="update-ci" data-kind="update" aria-labelledby="ci-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-05T15:30:03-04:00" title="3:30 PM, Oct 5, 2026">Oct 5</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="ci-h">CI green-up: crash-atomic database init, rustls audit fix.</h2>
+      <p>The red CI run was hiding a real bug. On slow runners, a kill -9 could land while the chain database was first being created, leaving a half-written file that refused to reopen. <code>ChainStore::open</code> now builds the database at a temporary path and renames it into place; a damaged database still fails closed instead of being silently reinitialized.</p>
+      <p>Also bumps rustls to 0.23.45 for RUSTSEC-2026-0285.</p>
+    </div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/pull/3">
+      <div class="card__row"><div class="card__k">github.com</div><div class="card__v">Merge pull request #3 from gokooteam/ci-greenup</div><div class="card__d">gokooteam/The-Open-Network-X</div></div>
+    </a>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/pull/3"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Pull request #3</a><button class="act act--share" type="button" data-share="update-ci"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="update-auth" data-kind="update" aria-labelledby="auth-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-05T07:45:09-04:00" title="7:45 AM, Oct 5, 2026">Oct 5</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="auth-h"><!--history-->Transactions are now signed (ONX_TX_V2).<!--/history--></h2>
+      <p>Every transfer carries an Ed25519 signature and the sender's next nonce, so a signed transfer can be applied exactly once. Accounts with no key can receive but never spend.</p>
+      <p>Same change: storage refuses blocks that don't chain off the stored head, and every resume checks the rebuilt state root against the stored one. Golden vectors were refrozen on the new format.</p>
+      <p class="mute">Since superseded: signing moved to external messages, and keyless addresses can now spend by revealing their key. See the message-model post above.</p>
+    </div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/pull/2">
+      <div class="card__row"><div class="card__k">github.com</div><div class="card__v">Merge pull request #2 from gokooteam/tx-auth-and-hardening</div><div class="card__d">gokooteam/The-Open-Network-X</div></div>
+    </a>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/pull/2"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Pull request #2</a><button class="act act--share" type="button" data-share="update-auth"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="determinism" data-kind="update demo" aria-labelledby="det-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><time datetime="2026-10-05T04:44:11-04:00" title="4:44 AM, Oct 5, 2026">Oct 5</time></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="det-h">Deterministic replay milestone: phases 0–5 complete.</h2>
+      <p class="post__big">Same input. Same state. Same result.</p>
+      <p><code>onx replay</code> loads a genesis document and applies each block through a pure state-transition function (no clocks, no randomness, no I/O), then persists the result in one atomic write. Run it twice, or kill it halfway and resume, and it has to land on the same state root.</p>
+      <ul>
+        <li>Canonical encodings, byte-identical across processes</li>
+        <li>A real binary genesis whose hash is the chain ID</li>
+        <li>A pure state transition with fees</li>
+        <li>Atomic storage on redb with crash recovery</li>
+        <li>The <code>onx replay</code> command and its acceptance suite</li>
+      </ul>
+      <p>The hashes below are real output from the repository's frozen test chain, run at commit <!--gen:replay_commit--><a href="https://github.com/gokooteam/The-Open-Network-X/commit/13f3f19be8d0017a4f39bc0bea88e752269f32bc">13f3f19</a><!--/gen:replay_commit-->. Since this post, the message model and then signed <code>ONXBLK05</code> headers changed the chain ID and every block hash. Not one state root changed: the same transfers still lead to the same state.</p>
+    </div>
+    <div class="card">
+      <div class="det" id="det">
+        <div class="det__box">
+          <p class="det__label">Genesis</p>
+          <dl class="det__dl">
+            <dt>chain_id</dt><dd><!--gen:replay_chain_id-->9b2a318c44b79422ebe707daa97980676e767ee0fb14d5e4dfec6c8d7342422e<!--/gen:replay_chain_id--></dd>
+            <dt>genesis_root</dt><dd><!--gen:replay_genesis_root-->079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d<!--/gen:replay_genesis_root--></dd>
+            <dt>input</dt><dd>4 accounts, 5 blocks × 4 signed messages (seed 0xC10C)</dd>
+          </dl>
+        </div>
+        <div class="lanes" role="group" aria-label="Three independent replays of the same chain">
+          <!--gen:replay_lanes--><div class="lane" data-lane="a"><div class="lane__who"><strong>Process A</strong>first run, fresh data directory</div><div class="cell is-done" data-seq="1"><span class="s">#1</span><span class="r">4b7def00</span></div><div class="cell is-done" data-seq="2"><span class="s">#2</span><span class="r">d6b5e7a8</span></div><div class="cell is-done" data-seq="3"><span class="s">#3</span><span class="r">3fbb03b2</span></div><div class="cell is-done" data-seq="4"><span class="s">#4</span><span class="r">49c137e2</span></div><div class="cell is-done is-final" data-seq="5"><span class="s">#5</span><span class="r">8b2f6aa6</span></div></div>
+          <div class="lane" data-lane="b"><div class="lane__who"><strong>Process B</strong>second run, separate process</div><div class="cell is-done" data-seq="1"><span class="s">#1</span><span class="r">4b7def00</span></div><div class="cell is-done" data-seq="2"><span class="s">#2</span><span class="r">d6b5e7a8</span></div><div class="cell is-done" data-seq="3"><span class="s">#3</span><span class="r">3fbb03b2</span></div><div class="cell is-done" data-seq="4"><span class="s">#4</span><span class="r">49c137e2</span></div><div class="cell is-done is-final" data-seq="5"><span class="s">#5</span><span class="r">8b2f6aa6</span></div></div>
+          <div class="lane" data-lane="c"><div class="lane__who"><strong>Process C</strong>kill -9 during a commit, then resume</div><div class="cell is-done" data-seq="1"><span class="s">#1</span><span class="r">4b7def00</span></div><div class="cell is-done" data-seq="2"><span class="s">#2</span><span class="r">d6b5e7a8</span></div><div class="cell is-done" data-seq="3"><span class="s">#3</span><span class="r">3fbb03b2</span></div><div class="cell is-done" data-seq="4"><span class="s">#4</span><span class="r">49c137e2</span></div><div class="cell is-done is-final" data-seq="5"><span class="s">#5</span><span class="r">8b2f6aa6</span></div></div><!--/gen:replay_lanes-->
+        </div>
+        <div class="det__box det__final" id="det-final">
+          <p class="det__label">Final state root</p>
+          <dl class="det__dl">
+            <dt>final_seqno</dt><dd><!--gen:replay_final_seqno-->5<!--/gen:replay_final_seqno--></dd>
+            <dt>final_block_hash</dt><dd><!--gen:replay_final_block-->e89450c189c647a76b7a8b25488b0a2a0d6b0f90ef65b7bb0caf80951e944c39<!--/gen:replay_final_block--></dd>
+            <dt>final_state_root</dt><dd><!--gen:replay_final_root-->8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098<!--/gen:replay_final_root--></dd>
+            <dt>comparison</dt><dd class="det__verdict" id="det-verdict">3 of 3 runs identical</dd>
+          </dl>
+        </div>
+        <div class="det__controls">
+          <p class="det__status" id="det-status" role="status" aria-live="polite">Recorded result: all three runs reach the golden root <!--gen:replay_final_short-->8b2f6aa6<!--/gen:replay_final_short-->….</p>
+          <button class="pill pill--outline pill--sm" type="button" id="det-run">Replay again</button>
+        </div>
+        <details class="more">
+          <summary>Show raw <code>onx replay</code> output</summary>
+<pre class="terminal" tabindex="0"><span class="p">$</span> <span class="k">onx replay --genesis genesis.toml --blocks ./blocks/ --data-dir ./data</span>
+<!--gen:replay_terminal-->chain_id=9b2a318c44b79422ebe707daa97980676e767ee0fb14d5e4dfec6c8d7342422e
+genesis_root=079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d
+seqno=1 block=fad677301246c4195535d863ebcbd5810555d512cce52c71a427d78f5c8b16a3 root=4b7def00ee570f70da6ebdcf724af6c9ef56612faf0a689b3824fc037b193abf
+seqno=2 block=1ddbff6b0316efb02f838dde211b16469bf9bea04d363d55652226793965cdcb root=d6b5e7a8b98fcc15697ed6226955d14b022502f6a8fd3eba2e6a0d676b5894c0
+seqno=3 block=b6e51cde93e83d68ec0daca47b55e24254791b19316e5dfadb887dcbd1506fab root=3fbb03b29519164464d470e1facbb62f96d0f1ea4fe2e4dce3df87661650af36
+seqno=4 block=d088803f2aa84a9d52373fd7bc8aa8f07feb7d71880ecc959dddf192e3438bab root=49c137e2ac8bcd8e72338c39edb01ca24a3c254f7a7dce547c54396f6c997e67
+seqno=5 block=e89450c189c647a76b7a8b25488b0a2a0d6b0f90ef65b7bb0caf80951e944c39 root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098
+final_seqno=5
+final_block_hash=e89450c189c647a76b7a8b25488b0a2a0d6b0f90ef65b7bb0caf80951e944c39
+final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098<!--/gen:replay_terminal--></pre>
+        </details>
+        <p class="mute small">The animation replays recorded output; nothing executes in your browser. The genesis root and the roots after blocks 3 and 5 are golden vectors CI checks on every change.</p>
+      </div>
+    </div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/tooling/onx/tests/phase5_replay.rs"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>phase5_replay.rs</a><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/pull/1"><svg class="ico" aria-hidden="true"><use href="#i-pr"/></svg>Pull request #1</a><button class="act act--share" type="button" data-share="determinism"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="adversarial" data-kind="demo" aria-labelledby="adv-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates/tooling/onx/tests">probe suites</a></div>
+    <div class="post__text">
+      <h2 class="post__xl" id="adv-h">Try to break it.</h2>
+      <p class="post__lead">A protocol isn't trustworthy because it looks correct. It becomes trustworthy by surviving attempts to make it fail.</p>
+      <p>Pick an attack. Each one is an existing test in the repository. The response is the implementation’s own error output, or for bounces, the resulting state the test checks.</p>
+    </div>
+    <div class="card">
+      <div class="console" id="console" aria-labelledby="console-title">
+        <div class="console__bar"><span>probe console</span><span id="console-test">select an attack</span></div>
+        <div class="console__input">
+          <h3 id="console-title">Choose an attack below.</h3>
+          <p id="console-desc">Block files, messages, deliveries and storage.</p>
+        </div>
+        <div class="pipe" aria-hidden="true">
+          <div class="pipe__box"><strong>input</strong><span id="console-in">waiting</span></div>
+          <div class="pipe__wire"><span class="pipe__pkt"></span></div>
+          <div class="pipe__box pipe__box--sys"><strong id="console-sys">onx</strong><span id="console-check">idle</span></div>
+        </div>
+        <div class="verdict-line"><span class="verdict" id="console-verdict">STANDBY</span><span class="console__check" id="console-rule"></span></div>
+        <pre class="terminal" id="console-out" aria-live="polite">—</pre>
+        <div class="src" id="console-src"><span>test: none selected</span></div>
+      </div>
+      <div role="group" aria-label="Attacks">
+        <p class="attacks__group">Block files</p>
+        <button class="attack" type="button" data-attack="flip" aria-pressed="false"><span>Flip one byte in a block body</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="root" aria-pressed="false"><span>Claim a false post-state root</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="trunc" aria-pressed="false"><span>Truncate a block file</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="gap" aria-pressed="false"><span>Skip a block</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="fork" aria-pressed="false"><span>Rewrite a committed block</span><span class="out">REJECTED</span></button>
+        <p class="attacks__group">Messages and signatures</p>
+        <button class="attack" type="button" data-attack="replay" aria-pressed="false"><span>Submit a signed message twice</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="amount" aria-pressed="false"><span>Change the amount after signing</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="chain" aria-pressed="false"><span>Replay a message signed for another chain</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="wrongkey" aria-pressed="false"><span>Reveal a key that doesn’t match the address</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="keyless" aria-pressed="false"><span>Spend from an address no key derives</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="redeliver" aria-pressed="false"><span>Deliver an internal message twice</span><span class="out">REJECTED</span></button>
+        <button class="attack" type="button" data-attack="proof" aria-pressed="false"><span>Present a fabricated Merkle proof</span><span class="out">REJECTED</span></button>
+        <p class="attacks__group">Failed deliveries</p>
+        <button class="attack" type="button" data-attack="frozen" aria-pressed="false"><span>Send value to a frozen account</span><span class="out">BOUNCED</span></button>
+        <button class="attack" type="button" data-attack="throw" aria-pressed="false"><span>Call a contract that throws</span><span class="out">BOUNCED</span></button>
+        <p class="attacks__group">Storage and process</p>
+        <button class="attack" type="button" data-attack="kill" aria-pressed="false"><span>kill -9 in the middle of a commit</span><span class="out">RECOVERED</span></button>
+        <button class="attack" type="button" data-attack="dbcorrupt" aria-pressed="false"><span>Corrupt the database header</span><span class="out">REFUSED</span></button>
+        <button class="attack" type="button" data-attack="storedroot" aria-pressed="false"><span>Tamper with a stored state root</span><span class="out">REFUSED</span></button>
+        <button class="attack" type="button" data-attack="rerun" aria-pressed="false"><span>Run the same replay again</span><span class="out">NO-OP</span></button>
+      </div>
+    </div>
+    <div class="post__text after">
+      <p class="mute">These results cover specific failure modes; every test named here passed at commit <!--gen:tested_commit--><a href="https://github.com/gokooteam/The-Open-Network-X/commit/13f3f19be8d0017a4f39bc0bea88e752269f32bc">13f3f19</a><!--/gen:tested_commit-->. They are evidence about those cases, not a security guarantee, and the repository records no external security audit. Concurrent writers, network partitions, Byzantine validators and denial-of-service are not covered yet; they can't be tested meaningfully until consensus and networking are integrated.</p>
+    </div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates/tooling/onx/tests"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Test suites</a><button class="act act--share" type="button" data-share="adversarial"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="architecture" data-kind="demo" aria-labelledby="arch-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/architecture.md">architecture.md</a></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="arch-h">From the whole network down to a single cell.</h2>
+      <p>Tap a layer to see what it is, the identifiers ONX uses for it, and how much of it exists in code today. Each layer is contained by the one above it.</p>
+    </div>
+    <div class="card" id="arch">
+        <button class="layer" type="button" id="L-network" data-depth="0" aria-expanded="true" aria-controls="P-network">
+          <span class="idx">L0</span><span class="nm">Network</span><span class="id">ADNL / DHT / overlay</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-network" aria-labelledby="L-network" data-depth="0">
+          <p>Everything together: one masterchain, the workchains it coordinates, the validators that produce blocks, and the peer-to-peer layer that carries traffic.</p>
+          <p class="now">In ONX today: the node daemon runs as a single-node block producer, but networking is a frozen scaffold and the daemon refuses to start with it enabled. There is no peer-to-peer network: devnet-1 is one producer publishing its blocks.</p>
+          <dl class="ids"><dt>transport</dt><dd>ADNL, plus RLDP for large transfers</dd><dt>discovery</dt><dd>Kademlia-style DHT, XOR distance, signed records</dd><dt>propagation</dt><dd>overlay networks</dd></dl>
+          <div class="tags"><span class="tag tag--spec">SPECIFIED</span><span class="tag tag--scaffold">SCAFFOLD</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/networking-adnl.md">networking-adnl.md</a><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates/node/onx-networking">onx-networking</a></div>
+        </section>
+        <button class="layer" type="button" id="L-master" data-depth="1" aria-expanded="false" aria-controls="P-master">
+          <span class="idx">L1</span><span class="nm">Masterchain</span><span class="id">workchain_id = -1</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-master" aria-labelledby="L-master" data-depth="1">
+          <p>The coordinating chain. It holds configuration, the validator set and the shard tree of every workchain. Masterchain blocks commit the latest shard block hashes, which makes those shard blocks canonical.</p>
+          <p class="now">In ONX today: genesis labels the masterchain −1 and the replay chain runs under that id. Coupling shard blocks into masterchain blocks is specified, not implemented.</p>
+          <dl class="ids"><dt>workchain_id</dt><dd>-1</dd><dt>reference</dt><dd>WHITEPAPER.md §2.1.13–§2.1.17, §2.6</dd><dt>merge blocks</dt><dd>second parent via prev_ref_hash_2 (ADR-0023)</dd></dl>
+          <div class="tags"><span class="tag tag--spec">SPECIFIED</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/blocks.md">blocks.md</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0013-blocks-and-masterchain-coupling.md">ADR-0013</a></div>
+        </section>
+        <button class="layer" type="button" id="L-work" data-depth="2" aria-expanded="false" aria-controls="P-work">
+          <span class="idx">L2</span><span class="nm">Workchains</span><span class="id">workchain_id = 0</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-work" aria-labelledby="L-work" data-depth="2">
+          <p>Chains that share one masterchain but can each define their own rules. Workchain 0 is the basic workchain, executed by the TVM.</p>
+          <p class="now">In ONX today: which other workchains exist, and which VM each uses, is still an open question (ONX-ARCH-006).</p>
+          <dl class="ids"><dt>basic workchain</dt><dd>0</dd><dt>open question</dt><dd>ONX-ARCH-006, partially resolved</dd></dl>
+          <div class="tags"><span class="tag tag--spec">SPECIFIED</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0008-preserve-multichain-architecture.md">ADR-0008</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/architecture.md">architecture.md</a></div>
+        </section>
+        <button class="layer" type="button" id="L-shard" data-depth="3" aria-expanded="false" aria-controls="P-shard">
+          <span class="idx">L3</span><span class="nm">Shardchains</span><span class="id">ShardIdent</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-shard" aria-labelledby="L-shard" data-depth="3">
+          <p>A workchain's account space is split into shards that form a binary tree. A busy shard splits in two; two quiet siblings merge back.</p>
+          <p class="now">In ONX today: split and merge rules are specified with thresholds ONX chose itself. Sharding is not integrated yet.</p>
+          <dl class="ids"><dt>identifier</dt><dd>(workchain_id, shard_prefix)</dd><dt>encoding</dt><dd>prefix then a marker bit; prefix 0 is 0x4000000000000000</dd><dt>split</dt><dd>both averages ≥ 75% of limits for 256 blocks</dd><dt>merge</dt><dd>both siblings ≤ 20% for 1,024 blocks</dd></dl>
+          <div class="tags"><span class="tag tag--spec">SPECIFIED</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/sharding.md">sharding.md</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0019-dynamic-sharding.md">ADR-0019</a></div>
+        </section>
+        <button class="layer" type="button" id="L-acct" data-depth="4" aria-expanded="false" aria-controls="P-acct">
+          <span class="idx">L4</span><span class="nm">Accounts</span><span class="id">AccountId, 256 bits</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-acct" aria-labelledby="L-acct" data-depth="4">
+          <p>Every balance lives in an account, and every account is in exactly one state: Uninitialized, Active, Frozen or Destroyed. Contract accounts also carry code and data cells.</p>
+          <p class="now">In ONX today: implemented and tested. An address is derived from its owner's public key, so a new account can receive first and spend later by revealing the key. Spending means signing an external message bound to this chain, with the account's next nonce.</p>
+          <dl class="ids"><dt>states</dt><dd>Uninitialized 0x00, Active 0x01, Frozen 0x02, Destroyed 0x03</dd><dt>address</dt><dd>domain_hash(ONX_ADDR_V1, pubkey)</dd><dt>signature</dt><dd>Ed25519 over ONX_MSG_EXT_SIGN_V1 ‖ body, chain ID in the body</dd><dt>replay guard</dt><dd>per-account nonce, exact match</dd></dl>
+          <div class="tags"><span class="tag tag--tested">TESTED</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0006-key-derived-addresses.md">adr/0006</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/message_auth.rs">message_auth.rs</a></div>
+        </section>
+        <button class="layer" type="button" id="L-cell" data-depth="5" aria-expanded="false" aria-controls="P-cell">
+          <span class="idx">L5</span><span class="nm">State / cells</span><span class="id">≤128 B, ≤4 refs</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-cell" aria-labelledby="L-cell" data-depth="5">
+          <p>State is stored as trees of cells. A cell holds up to 128 bytes of data and up to four references, and a tree is identified by the hash of its root.</p>
+          <p class="now">In ONX today: tested. Bag of Cells encoding is byte-identical across processes, the account trie yields the state root, Merkle proofs are checked against a trusted root, and storage is atomic.</p>
+          <dl class="ids"><dt>cell</dt><dd>≤ 128 data bytes, 0–4 refs (SHA-256 child hashes)</dd><dt>encoding</dt><dd>Bag of Cells, ascending hash order</dd><dt>commitment</dt><dd>ShardStateTree → 32-byte state root</dd><dt>storage</dt><dd>redb, one write transaction per block</dd></dl>
+          <div class="tags"><span class="tag tag--tested">TESTED</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates/protocol/onx-state-model">onx-state-model</a><a href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates/protocol/onx-storage">onx-storage</a></div>
+        </section>
+        <button class="layer" type="button" id="L-msg" data-depth="6" aria-expanded="false" aria-controls="P-msg">
+          <span class="idx">L6</span><span class="nm">Messages</span><span class="id">external / internal</span><svg class="ico" aria-hidden="true"><use href="#i-chev"/></svg>
+        </button>
+        <section class="layer-panel" id="P-msg" aria-labelledby="L-msg" data-depth="6">
+          <p>Accounts never write to each other directly. They exchange messages, and each delivery runs as the receiver's own transaction. Across shards, messages wait in output queues and travel by hypercube routing.</p>
+          <p class="now">In ONX today: implemented and tested on a single shard. Signed external messages pass through a built-in wallet handler, which emits internal messages delivered within the same block. Failed deliveries bounce. Cross-shard routing and messages emitted by contracts are not implemented yet.</p>
+          <dl class="ids"><dt>external</dt><dd>signed, submitted, carries the chain ID</dd><dt>internal</dt><dd>derived during execution, never submitted</dd><dt>ordering</dt><dd>FIFO per (sender, receiver); redelivery rejected</dd><dt>bounce</dt><dd>value returned minus fees; block stays valid</dd></dl>
+          <div class="tags"><span class="tag tag--tested">TESTED: SINGLE SHARD</span><span class="tag tag--spec">SPECIFIED: ROUTING</span></div>
+          <div class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/message_model.rs">message_model.rs</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0001-message-based-transaction-model.md">adr/0001</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/transactions.md">transactions.md</a></div>
+        </section>
+    </div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/architecture.md"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>architecture.md</a><button class="act act--share" type="button" data-share="architecture"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="progress" data-kind="doc" aria-labelledby="prog-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/README.md#project-status">README.md</a></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="prog-h">Built incrementally.</h2>
+      <p>Each layer is specified before it is implemented, and nothing is called done until a probe has tried to break it. Later layers stay frozen until the ones beneath them hold. Statuses follow the repository's own status table.</p>
+      <div class="legend" role="group" aria-label="Status key">
+        <span><span class="tag tag--tested">TESTED</span> probed</span><span><span class="tag tag--spec">SPECIFIED</span> written down</span><span><span class="tag tag--scaffold">SCAFFOLD</span> code, not integrated</span><span><span class="tag tag--planned">PLANNED</span> goal only</span>
+      </div>
+    </div>
+    <div class="card"><ol class="prog"><li class="done"><span class="n">01</span><span class="nm">Primitives</span><span class="tags"><span class="tag tag--tested">TESTED</span></span><span class="d">Domain-separated hashing, Ed25519, canonical integers, fixed test vectors.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-primitives/tests/vectors.rs">vectors.rs</a></span></span></li><li class="done"><span class="n">02</span><span class="nm">State</span><span class="tags"><span class="tag tag--tested">TESTED</span></span><span class="d">Canonical Bag of Cells, account trie and state root, Merkle proofs, atomic storage with crash recovery.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-state-model/tests/phase3_merkle.rs">phase3_merkle.rs</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-storage/tests/phase4_storage.rs">phase4_storage.rs</a></span></span></li><li class="done"><span class="n">03</span><span class="nm">Transactions</span><span class="tags"><span class="tag tag--tested">TESTED: MESSAGES</span><span class="tag tag--spec">SPECIFIED: ROUTING</span></span><span class="d">Signed external messages, derived internal messages, bounces and per-pair ordering, on a single shard. Cross-shard routing is specified only.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/message_model.rs">message_model.rs</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/message_auth.rs">message_auth.rs</a></span></span></li><li class="done"><span class="n">04</span><span class="nm">Blocks</span><span class="tags"><span class="tag tag--tested">TESTED</span></span><span class="d">Headers commit to the ordered messages and the claimed post-state root; blocks chain by hash and replay from genesis. The producer signs every block (<!--gen:block_magic-->ONXBLK05<!--/gen:block_magic-->) and replay checks the signatures against genesis stake. A single-node producer builds blocks on demand. Masterchain coupling is specified only.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/tooling/onx/tests/phase5_replay.rs">phase5_replay.rs</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/node/onxd/tests/producer_loop.rs">producer_loop.rs</a></span></span></li><li class="done"><span class="n">05</span><span class="nm">Execution</span><span class="tags"><span class="tag tag--tested">TESTED: CONTRACT CALLS</span></span><span class="d">Contract calls run on the TVM as the receiver's transaction and replay identically across processes; a throwing contract bounces. Not yet: messages from contracts, gas refunds, and <code>JMPREF</code>/<code>CALLREF</code> from real contracts (milestone M4).<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/protocol/onx-stf/tests/tvm_integration.rs">tvm_integration.rs</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/tooling/onx/tests/tvm_replay.rs">tvm_replay.rs</a></span></span></li><li class="frontier">Tested frontier at commit <!--gen:tested_commit--><a href="https://github.com/gokooteam/The-Open-Network-X/commit/13f3f19be8d0017a4f39bc0bea88e752269f32bc">13f3f19</a><!--/gen:tested_commit--></li><li class="future"><span class="n">06</span><span class="nm">Consensus</span><span class="tags"><span class="tag tag--spec">SPECIFIED</span><span class="tag tag--scaffold">SCAFFOLD</span></span><span class="d">BFT rules with a two-thirds stake quorum are specified; the engine is a frozen scaffold.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/consensus.md">consensus.md</a></span></span></li><li class="future"><span class="n">07</span><span class="nm">Networking</span><span class="tags"><span class="tag tag--spec">SPECIFIED</span><span class="tag tag--scaffold">SCAFFOLD</span></span><span class="d">ADNL, DHT and overlays specified; frozen scaffold. The node runs single-node only and won't start in network mode.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/crates/node/onxd/src/lib.rs">onxd/src/lib.rs</a></span></span></li><li class="future"><span class="n">08</span><span class="nm">Sharding</span><span class="tags"><span class="tag tag--spec">SPECIFIED</span></span><span class="d">Shard tree invariants and split and merge triggers specified; not integrated.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/sharding.md">sharding.md</a></span></span></li><li class="future"><span class="n">09</span><span class="nm">Validators</span><span class="tags"><span class="tag tag--spec">SPECIFIED</span></span><span class="d">Election, stake, rewards and slashing specified; nothing runs validators yet.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0027-validator-slashing-and-reward-distribution.md">ADR-0027</a></span></span></li><li class="future"><span class="n">10</span><span class="nm">Public network</span><span class="tags"><span class="tag tag--planned">PLANNED</span></span><span class="d">devnet-1 runs one producer. A public testnet other people can join is milestone M7. There is no launch date.<span class="src"><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/README.md#long-term-goal">README.md</a></span></span></li></ol></div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/README.md#project-status"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Status table</a><button class="act act--share" type="button" data-share="progress"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="specification" data-kind="doc" aria-labelledby="spec-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md">WHITEPAPER.md</a></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="spec-h">The specification is the starting point.</h2>
+      <p>The original white paper is the primary architectural reference, kept in the repository unmodified. ONX doesn't change the paper to make the code easier; the code adapts to the paper.</p>
+      <ul>
+        <li><b>Precise:</b> implemented faithfully.</li>
+        <li><b>Ambiguous:</b> the interpretation is documented.</li>
+        <li><b>Missing:</b> the gap is named and the decision that fills it is recorded.</li>
+      </ul>
+    </div>
+    <a class="card lpc" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md">
+      <div class="lpc__media" aria-hidden="true">
+        <div class="f">WHITEPAPER.md</div>
+        <h3>The Open Network</h3>
+        <div class="by">based on the work of Dr. Nikolai Durov</div>
+        <div class="dt">July 26, 2021</div>
+      </div>
+      <div class="lpc__meta"><span>github.com</span><div class="card__v">The Open Network white paper</div><div class="card__d">Reference document, included with its own source and attribution.</div></div>
+    </a>
+    <div class="card">
+      <details class="more"><summary>Show <!--gen:spec_count-->15<!--/gen:spec_count--> specifications</summary><ul class="doclist"><!--gen:spec_list--><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/architecture.md"><span>Architecture Baseline</span><span class="k">architecture.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/protocol-primitives.md"><span>Protocol Primitives</span><span class="k">protocol-primitives.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/data-structures.md"><span>Canonical Data Structures</span><span class="k">data-structures.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/state-model.md"><span>State Model and Account Lifecycle</span><span class="k">state-model.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/transactions.md"><span>Transactions and Messaging</span><span class="k">transactions.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/blocks.md"><span>Blocks and Masterchain Coupling</span><span class="k">blocks.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/execution.md"><span>Execution (Virtual Machine)</span><span class="k">execution.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/tvm-instruction-set.md"><span>TVM Instruction Set (Basic Workchain)</span><span class="k">tvm-instruction-set.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/consensus.md"><span>Consensus and Validator Operation</span><span class="k">consensus.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/networking-adnl.md"><span>Abstract Datagram Network Layer (ADNL) and RLDP</span><span class="k">networking-adnl.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/networking-dht.md"><span>Distributed Hash Table</span><span class="k">networking-dht.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/networking-overlay.md"><span>Overlay Networks and Propagation</span><span class="k">networking-overlay.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/sharding.md"><span>Dynamic Sharding</span><span class="k">sharding.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/economics.md"><span>Economics</span><span class="k">economics.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/specification/payment-channels.md"><span>Payment Channels</span><span class="k">payment-channels.md</span></a></li><!--/gen:spec_list--></ul></details>
+      <details class="more"><summary>Show <!--gen:adr_count-->34<!--/gen:adr_count--> decision records (docs/adr)</summary><ul class="doclist"><!--gen:adr_list--><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0001-message-based-transaction-model.md"><span>Replace synchronous transfers with the actor message model</span><span class="k">ADR-0001</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0002-message-encoding-and-domain-tags.md"><span>Message encodings and domain tags</span><span class="k">ADR-0002</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0003-same-block-delivery.md"><span>Same-block delivery with a transient queue</span><span class="k">ADR-0003</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0004-bounce-semantics.md"><span>Bounce semantics</span><span class="k">ADR-0004</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0005-chain-id-bound-signatures.md"><span>Chain-ID-bound signatures</span><span class="k">ADR-0005</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0006-key-derived-addresses.md"><span>Key-derived addresses</span><span class="k">ADR-0006</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0007-replay-protection.md"><span>Replay protection scheme</span><span class="k">ADR-0007</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0008-preserve-multichain-architecture.md"><span>Preserve Masterchain, Workchain, and Shardchain Boundaries</span><span class="k">ADR-0008</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0009-protocol-primitives-and-serialization.md"><span>Standardized Cryptographic Primitives and Canonical Binary Serialization</span><span class="k">ADR-0009</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0010-state-model-and-account-lifecycle.md"><span>State Model, Cell Trees, and Account Lifecycle</span><span class="k">ADR-0010</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0011-implementation-language.md"><span>Implementation Language and Toolchain</span><span class="k">ADR-0011</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0012-transactions-and-messaging.md"><span>Transactions, Messaging, Hypercube Routing, and Multi-Currency Model</span><span class="k">ADR-0012</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0013-blocks-and-masterchain-coupling.md"><span>Block Validity, Parent References, and Masterchain Coupling</span><span class="k">ADR-0013</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0014-execution-model-and-merkle-proof-reservation.md"><span>Execution Model, Resource Accounting, and Merkle-Proof VM Primitive Reservation</span><span class="k">ADR-0014</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0015-consensus-and-validator-operation.md"><span>Consensus, Validator Lifecycle, and Finality Rules</span><span class="k">ADR-0015</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0016-networking-adnl-and-rldp.md"><span>Abstract Datagram Network Layer (ADNL) and Reliable Datagram Transport (RLDP)</span><span class="k">ADR-0016</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0017-networking-dht.md"><span>Networking Dht</span><span class="k">ADR-0017</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0018-networking-overlay.md"><span>Networking Overlay</span><span class="k">ADR-0018</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0019-dynamic-sharding.md"><span>Dynamic Sharding</span><span class="k">ADR-0019</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0020-economics.md"><span>Economics</span><span class="k">ADR-0020</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0021-payment-channels.md"><span>Payment Channels</span><span class="k">ADR-0021</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0022-project-license.md"><span>Project License Proposal</span><span class="k">ADR-0022</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0023-merge-block-second-parent-reference.md"><span>Merge Block Second Parent Reference</span><span class="k">ADR-0023</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0024-tvm-instruction-set.md"><span>TVM Instruction Set (Basic Workchain)</span><span class="k">ADR-0024</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0025-hypercube-fast-path-and-cross-workchain-rules.md"><span>Hypercube Fast-Path Adoption and Cross-Workchain Rules</span><span class="k">ADR-0025</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0026-economics-parameters.md"><span>Economics Parameters and Fee Schedule</span><span class="k">ADR-0026</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0027-validator-slashing-and-reward-distribution.md"><span>Validator Slashing and Reward Distribution</span><span class="k">ADR-0027</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0028-vm-arithmetic-safety.md"><span>VM Arithmetic Safety (Wave 3: Chain Safety)</span><span class="k">ADR-0028</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0029-panic-containment-and-migration-invariant.md"><span>Panic Containment and the Migration Startup Invariant <em>(proposed)</em></span><span class="k">ADR-0029</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0030-divmod-floored-correction.md"><span>DIVMOD Floored-Division Correction</span><span class="k">ADR-0030</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0031-pr10-hotfix-arithmetic-and-labels.md"><span>PR #10 Hotfix: Arithmetic Fail-Closed Containment and Label Allowlist</span><span class="k">ADR-0031</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0032-onxblk05-authenticated-headers.md"><span>ONXBLK05: Authenticated Block Headers (Producer Signatures)</span><span class="k">ADR-0032</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0033-currency-rename-onyxi.md"><span>Currency rename — Onyx → Onyxi, ticker ONX → ONXI</span><span class="k">ADR-0033</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0034-versioning-standard.md"><span>Versioning standard — SemVer 2.0.0, one workspace version <em>(proposed)</em></span><span class="k">ADR-0034</span></a></li><!--/gen:adr_list--></ul></details>
+      <details class="more"><summary>Show other working documents</summary><ul class="doclist"><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/planning/research-logbook.md"><span>Research logbook</span><span class="k">research-logbook.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/MILESTONES.md"><span>Milestones and the maintenance gate</span><span class="k">MILESTONES.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CHANGELOG.md"><span>Release notes</span><span class="k">CHANGELOG.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/ROADMAP.md"><span>Per-PR history</span><span class="k">ROADMAP.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/INSTRUCTIONS.md"><span>Development principles</span><span class="k">INSTRUCTIONS.md</span></a></li><li><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md"><span>Contribution workflow</span><span class="k">CONTRIBUTING.md</span></a></li></ul></details>
+    </div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>docs/specification</a><button class="act act--share" type="button" data-share="specification"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="onyx" data-kind="doc" aria-labelledby="onyx-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0026-economics-parameters.md">ADR-0026</a></div>
+    <div class="post__text">
+      <h2 class="post__xl" id="onyx-h">Onyxi</h2>
+      <p class="post__lead">Native protocol currency.</p>
+      <p class="post__big">The currency is part of the protocol. It is not the reason the protocol exists.</p>
+      <p>Onyxi (ticker ONXI) is defined inside the ONX protocol rather than as an application-layer token. It pays fees and storage and secures validator stake. Parameters below are recorded in ADR-0026 (accepted 2026-09-10) and onx-economics; the name comes from ADR-0033.</p>
+    </div>
+    <div class="card params">
+      <div class="card__row"><div><div class="card__k">Denomination</div><div class="card__v">1 Onyxi = 10<sup>9</sup> nano-Onyxi</div></div><div class="tags"><span class="tag tag--tested">TESTED</span></div><div class="card__d">Every balance and amount in the state transition.</div></div>
+      <div class="card__row"><div><div class="card__k">Transaction fees</div><div class="card__v">50% burned, 50% to validators</div></div><div class="tags"><span class="tag tag--tested">TESTED</span></div><div class="card__d">The state transition burns half and credits half to the fee collector named in the block header.</div></div>
+      <div class="card__row"><div><div class="card__k">Initial supply</div><div class="card__v">5,000,000,000 Onyxi</div></div><div class="tags"><span class="tag tag--spec">SPECIFIED</span></div><div class="card__d">A constant in onx-economics; no network issues it.</div></div>
+      <div class="card__row"><div><div class="card__k">Validator rewards</div><div class="card__v">1.75% a year on active stake</div></div><div class="tags"><span class="tag tag--spec">SPECIFIED</span></div><div class="card__d">Not exercised; there are no running validators.</div></div>
+      <div class="card__row"><div><div class="card__k">Storage fees</div><div class="card__v">10 nano-Onyxi / byte / 10<sup>6</sup> lt</div></div><div class="tags"><span class="tag tag--spec">SPECIFIED</span></div><div class="card__d">Not yet charged by the state transition.</div></div>
+    </div>
+    <div class="post__text after"><p class="mute">No public network exists, so Onyxi exists only inside test chains such as devnet-1. This post lists protocol parameters and makes no statement about value.</p></div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0026-economics-parameters.md"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>ADR-0026</a><button class="act act--share" type="button" data-share="onyx"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+<article class="post" id="status" data-kind="doc" aria-labelledby="status-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://github.com/gokooteam/The-Open-Network-X/commits/main">main</a></div>
+    <div class="post__text">
+      <h2 class="post__lead" id="status-h">Project status</h2>
+    </div>
+    <div class="card">
+      <div class="card__row"><div class="card__k">Protocol status</div><div class="card__v">Pre-release, v<!--gen:version-->0.2.0<!--/gen:version--></div><div class="card__d">Before 1.0, no wire-format, storage or API compatibility is promised between minor versions (see the changelog). Current format: <!--gen:block_format--><code>ONXBLK05</code> blocks, 160-byte header, protocol version 1, storage schema 4<!--/gen:block_format-->.</div></div>
+      <div class="card__row"><div class="card__k">Milestone</div><div class="card__v"><!--gen:milestone-->M4: Pay down debt: a single node you&#x27;d trust<!--/gen:milestone--></div><div class="card__d"><!--gen:milestones_done-->M0–M3 done<!--/gen:milestones_done-->. Exit criteria and the maintenance gate are in <a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/MILESTONES.md">MILESTONES.md</a>.</div></div>
+      <div class="card__row"><div class="card__k">Implementation</div><div class="card__v">Signed blocks, message model and contract calls, single shard</div><div class="card__d">Signed messages, bounces and TVM contract calls replay deterministically; a single-node producer builds and signs blocks. Consensus, networking and sharding are not implemented.</div></div>
+      <div class="card__row"><div class="card__k">Tests</div><div class="card__v"><!--gen:tests_value-->449 passed, 0 failed<!--/gen:tests_value--></div><div class="card__d"><!--gen:tests_note-->Local run of <code>cargo test --workspace --all-targets</code> at <a href="https://github.com/gokooteam/The-Open-Network-X/commit/13f3f19be8d0017a4f39bc0bea88e752269f32bc">13f3f19</a> (2026-10-08, Rust 1.98.1): 74 test binaries, 7 ignored.<!--/gen:tests_note--> Live CI:<br><a href="https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml"><img class="ci-badge" src="https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI workflow status for main" width="96" height="20" loading="lazy"></a></div></div>
+      <div class="card__row"><div class="card__k">Documentation</div><div class="card__v"><!--gen:spec_count-->15<!--/gen:spec_count--> specifications, <!--gen:adr_count-->34<!--/gen:adr_count--> decision records</div><div class="card__d"><!--gen:adr_summary-->34 decision records, 32 accepted (ADR-0029 proposed, ADR-0034 proposed).<!--/gen:adr_summary--> One series in docs/adr.</div></div>
+      <div class="card__row"><div class="card__k">Network</div><div class="card__v">devnet-1, one producer</div><div class="card__d">A development chain run by the project. Chain ID <code class="mono"><!--gen:devnet_chain_id-->6b0e9781491d46bf168a87c518b3e2a30d702e68c1dacd9ef0865971201882fb<!--/gen:devnet_chain_id--></code>; blocks are published at <code><!--gen:devnet_source-->https://data.on-x-scan.com/devnet-1/<!--/gen:devnet_source--></code> and checked by <a href="https://on-x-scan.com/">on-x-scan.com</a>. <code>onxd</code> refuses to start with networking enabled, so there are no peers. There is no public testnet or mainnet.</div></div>
+      <div class="card__row live-row"><div class="card__k"><span class="live-dot" aria-hidden="true"></span>Current build</div><div class="card__v mono" data-live="sha"><!--gen:reviewed_sha-->13f3f19<!--/gen:reviewed_sha--></div><div class="card__d" data-live="note">Snapshot: the commit this page was last reviewed against.</div></div>
+      <div class="card__row live-row"><div class="card__k"><span class="live-dot" aria-hidden="true"></span>Last updated</div><div class="card__v" data-live="date"><!--gen:reviewed_date-->2026-10-08<!--/gen:reviewed_date--></div><div class="card__d" data-live="msg">Updated live from the GitHub API when it is reachable.</div></div>
+      <div class="card__row"><div class="card__k">Toolchain and license</div><div class="card__v">Rust <!--gen:rust-->1.98.1<!--/gen:rust-->, Apache-2.0</div><div class="card__d">Pinned in <code>rust-toolchain.toml</code>; <!--gen:crates-->20<!--/gen:crates--> workspace crates; license chosen in <!--gen:license_adr--><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/docs/adr/0022-project-license.md">ADR-0022</a><!--/gen:license_adr-->.</div></div>
+    </div>
+    <div class="post__text after"><p class="mute" data-live="foot"><!--gen:reviewed_foot-->Statuses on this page were reviewed against commit 13f3f19 (2026-10-08).<!--/gen:reviewed_foot--></p></div>
+    <div class="post__actions"><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/commits/main"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>Commit history</a><button class="act act--share" type="button" data-share="status"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
+    </div>
+
+    <section class="endcap" aria-labelledby="end-h">
+      <h2 id="end-h"><span>Build the protocol.</span> <span>Verify the network.</span></h2>
+      <div class="btns">
+        <a class="pill pill--blue" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification">Read the specification</a>
+        <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X">Explore the code</a>
+        <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md">Contribute</a>
+      </div>
+    </section>
+    <footer class="feedfoot sfoot">
+      <nav aria-label="Project links"><a href="https://github.com/gokooteam/The-Open-Network-X">Repository</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md">White paper</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/MILESTONES.md">Milestones</a><a href="https://on-x-scan.com/">Explorer</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/LICENSE">License</a></nav>
+      <p><b class="em">Independent project.</b> Open Network X builds on the architecture described in the original TON white paper. ONX, Open Network X, Onyxi and ONXI are not TON products, networks or services, and using that material as a reference implies no endorsement by, affiliation with, or control by the organizations or communities of the existing TON ecosystem.</p>
+      <p>Code is licensed under Apache-2.0. Reference materials such as <code>WHITEPAPER.md</code> carry their own source and attribution.</p>
+      <p class="mono small">SPECIFICATION → IMPLEMENTATION → NETWORK</p>
+    </footer>
+  </main>
+
+
+  <aside class="side" aria-label="At a glance">
+    <div class="side__inner">
+      <section class="panel" aria-labelledby="glance-h">
+        <h2 id="glance-h">Project status</h2>
+        <a class="panel__row" href="#status"><div class="k">Stage</div><div class="v">Pre-release</div></a>
+        <a class="panel__row" href="#status"><div class="k">Milestone</div><div class="v"><!--gen:milestone-->M4: Pay down debt: a single node you&#x27;d trust<!--/gen:milestone--></div><div class="d"><!--gen:milestones_done-->M0–M3 done<!--/gen:milestones_done--></div></a>
+        <a class="panel__row" href="#status"><div class="k">Network</div><div class="v">devnet-1, one producer</div><div class="d">No peers; no public testnet or mainnet</div></a>
+        <a class="panel__row live-row" href="#status"><div class="k"><span class="live-dot" aria-hidden="true"></span>Current build</div><div class="v mono" data-live="sha"><!--gen:reviewed_sha-->13f3f19<!--/gen:reviewed_sha--></div><div class="d" data-live="date"><!--gen:reviewed_date-->2026-10-08<!--/gen:reviewed_date--></div></a>
+        <a class="panel__more" href="#status">Show full status</a>
+      </section>
+      <section class="panel" aria-labelledby="res-h">
+        <h2 id="res-h">Read the source</h2>
+        <div class="res"><span class="res__ico"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg></span><span class="res__t"><b>White paper</b><span>WHITEPAPER.md</span></span><a class="pill pill--light pill--sm" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md" aria-label="Open White paper">Open</a></div><div class="res"><span class="res__ico"><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg></span><span class="res__t"><b>Specifications</b><span>docs/specification</span></span><a class="pill pill--light pill--sm" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification" aria-label="Open Specifications">Open</a></div><div class="res"><span class="res__ico"><svg class="ico" aria-hidden="true"><use href="#i-steps"/></svg></span><span class="res__t"><b>Decision records</b><span>docs/adr</span></span><a class="pill pill--light pill--sm" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/adr" aria-label="Open Decision records">Open</a></div><div class="res"><span class="res__ico"><svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg></span><span class="res__t"><b>Block explorer</b><span>on-x-scan.com</span></span><a class="pill pill--light pill--sm" href="https://on-x-scan.com/" aria-label="Open Block explorer">Open</a></div><div class="res"><span class="res__ico"><svg class="ico" aria-hidden="true"><use href="#i-pr"/></svg></span><span class="res__t"><b>Contributing</b><span>CONTRIBUTING.md</span></span><a class="pill pill--light pill--sm" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md" aria-label="Open Contributing">Open</a></div>
+      </section>
+      <footer class="sfoot">
+      <nav aria-label="Project links, sidebar"><a href="https://github.com/gokooteam/The-Open-Network-X">Repository</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/WHITEPAPER.md">White paper</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/MILESTONES.md">Milestones</a><a href="https://on-x-scan.com/">Explorer</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md">Contributing</a><a href="https://github.com/gokooteam/The-Open-Network-X/blob/main/LICENSE">License</a></nav>
+      <p><b class="em">Independent project.</b> Open Network X builds on the architecture described in the original TON white paper. ONX, Open Network X, Onyxi and ONXI are not TON products, networks or services, and using that material as a reference implies no endorsement by, affiliation with, or control by the organizations or communities of the existing TON ecosystem.</p>
+      <p>Code is licensed under Apache-2.0. Reference materials such as <code>WHITEPAPER.md</code> carry their own source and attribution.</p>
+      <p class="mono small">SPECIFICATION → IMPLEMENTATION → NETWORK</p>
+      </footer>
+    </div>
+  </aside>
+</div>
+
+<nav class="tabbar" aria-label="Quick sections">
+  <ul>
+    <li><a href="#top" data-spy="top" aria-label="Overview"><svg class="ico" aria-hidden="true"><use href="#i-home"/></svg></a></li>
+    <li><a href="#architecture" data-spy="architecture" aria-label="Architecture"><svg class="ico" aria-hidden="true"><use href="#i-layers"/></svg></a></li>
+    <li><a href="#determinism" data-spy="determinism" aria-label="Replay"><svg class="ico" aria-hidden="true"><use href="#i-replay"/></svg></a></li>
+    <li><a href="#adversarial" data-spy="adversarial" aria-label="Testing"><svg class="ico" aria-hidden="true"><use href="#i-shield"/></svg></a></li>
+    <li><a href="#specification" data-spy="specification" aria-label="Specification"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg></a></li>
+  </ul>
+</nav>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+(() => {
+  'use strict';
+
+  const motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+  let reduceMotion = motionQuery.matches;
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, reduceMotion ? 0 : ms));
+  const $ = (id) => document.getElementById(id);
+  const C = { volt: '#1d9bf0', bone: '#e7e9ea', dim: '#7d838a', faint: '#545a60', rule: '#2f3336', deck: '#0b0f14' };
+
+  /* -----------------------------------------------------------------------
+     HERO: topology model
+     A masterchain producing blocks; workchain 0 as a binary shard tree whose
+     leaves are shardchains, each producing its own blocks; each new
+     masterchain block commits the newest block of every active shard;
+     messages travel between shards; shards split and merge over time.
+     ----------------------------------------------------------------------- */
+  const canvas = document.getElementById('topology');
+  const ctx = canvas.getContext('2d');
+  const topo = {
+    W: 0, H: 0, dpr: 1, pad: 22, maxDepth: 3, maxLeaves: 8,
+    leaves: new Set(), nodes: new Map(), mc: [], mcSeq: 0, commits: [], msgs: [],
+    nextMc: 0, nextEvolve: 0, nextMsg: 0, last: 0, now: 0,
+    running: false, visible: true, hover: null, raf: 0
+  };
+  const BLOCK = 7, LINK = 12;
+
+  const shardIdent = (p) => {
+    const L = p.length;
+    let v = 1n << BigInt(63 - L);
+    if (L > 0) v |= BigInt('0b' + p) << BigInt(64 - L);
+    return '0:' + v.toString(16).padStart(16, '0').slice(0, 4) + '…';
+  };
+
+  function layout() {
+    const t = topo;
+    t.pad = t.W < 420 ? 14 : 22;
+    t.maxDepth = t.W < 480 ? 2 : 3;
+    t.maxLeaves = 2 ** t.maxDepth;
+    t.mcY = Math.max(32, t.H * 0.16);
+    t.treeTop = t.H * 0.34;
+    t.treeGap = (t.H * 0.58 - t.treeTop) / t.maxDepth;
+    t.spacing = t.W < 420 ? 20 : 26;
+    t.chainBottom = t.H - 12;
+  }
+
+  function slot(p) {
+    const t = topo, d = p.length, slots = 2 ** d;
+    const idx = d ? parseInt(p, 2) : 0;
+    return { x: t.pad + ((idx + 0.5) / slots) * (t.W - 2 * t.pad), y: t.treeTop + d * t.treeGap };
+  }
+
+  function visiblePrefixes() {
+    const set = new Set();
+    topo.leaves.forEach((leaf) => { for (let i = 0; i <= leaf.length; i++) set.add(leaf.slice(0, i)); });
+    return set;
+  }
+
+  function syncNodes(snap) {
+    const vis = visiblePrefixes();
+    vis.forEach((p) => {
+      let n = topo.nodes.get(p);
+      const s = slot(p);
+      if (!n) {
+        const parent = topo.nodes.get(p.slice(0, -1));
+        n = { p, x: parent ? parent.x : s.x, y: parent ? parent.y : s.y, a: 0, pulse: 0, flash: 0, next: 0, chain: 0, lastBlock: -1e9 };
+        topo.nodes.set(p, n);
+      }
+      if (n.dying) { n.chain = 0; }
+      n.tx = s.x; n.ty = s.y; n.ta = 1; n.dying = false;
+      if (snap) { n.x = s.x; n.y = s.y; n.a = 1; }
+    });
+    topo.nodes.forEach((n, p) => {
+      if (!vis.has(p) && !n.dying) {
+        const parent = topo.nodes.get(p.slice(0, -1));
+        n.dying = true; n.ta = 0;
+        if (parent) { n.tx = parent.tx; n.ty = parent.ty; }
+      }
+    });
+  }
+
+  function evolve() {
+    const t = topo;
+    const leaves = [...t.leaves];
+    const splittable = leaves.filter((p) => p.length < t.maxDepth);
+    const mergeable = [...new Set(leaves.filter((p) => p.length > 0).map((p) => p.slice(0, -1)))]
+      .filter((q) => t.leaves.has(q + '0') && t.leaves.has(q + '1'));
+    const wantSplit = leaves.length <= 2 || (leaves.length < t.maxLeaves - 1 && Math.random() < 0.55);
+    if (wantSplit && splittable.length) {
+      const p = splittable[Math.floor(Math.random() * splittable.length)];
+      t.leaves.delete(p); t.leaves.add(p + '0'); t.leaves.add(p + '1');
+    } else if (mergeable.length && leaves.length > 2) {
+      const q = mergeable[Math.floor(Math.random() * mergeable.length)];
+      t.leaves.delete(q + '0'); t.leaves.delete(q + '1'); t.leaves.add(q);
+      const parent = t.nodes.get(q);
+      if (parent) { parent.chain = 0; parent.lastBlock = -1e9; }
+    }
+    syncNodes(false);
+  }
+
+  function initTopology() {
+    const t = topo;
+    const rect = canvas.getBoundingClientRect();
+    t.W = Math.max(1, rect.width); t.H = Math.max(1, rect.height);
+    t.dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.round(t.W * t.dpr); canvas.height = Math.round(t.H * t.dpr);
+    ctx.setTransform(t.dpr, 0, 0, t.dpr, 0, 0);
+    layout();
+    if (!t.leaves.size) {
+      t.leaves = new Set(['0', '10', '11']);
+      const n = Math.max(3, Math.floor((t.W - 2 * t.pad) / t.spacing));
+      t.mc = [];
+      for (let i = 0; i < n; i++) t.mc.push({ seq: ++t.mcSeq, x: 0, tx: 0, a: 1, glow: 0 });
+    }
+    [...t.leaves].forEach((p) => {
+      if (p.length > t.maxDepth) { t.leaves.delete(p); t.leaves.add(p.slice(0, t.maxDepth)); }
+    });
+    placeMc(true);
+    syncNodes(true);
+    t.nodes.forEach((n, p) => {
+      if (n.dying) { t.nodes.delete(p); return; }
+      if (t.leaves.has(p) && n.chain === 0) { n.chain = 7 + Math.floor(Math.random() * 10); n.lastBlock = -1e9; }
+    });
+    t.msgs = []; t.commits = [];
+  }
+
+  function placeMc(snap) {
+    const t = topo;
+    const right = t.W - t.pad - 6;
+    for (let i = t.mc.length - 1, k = 0; i >= 0; i--, k++) {
+      t.mc[i].tx = right - k * t.spacing;
+      if (snap) t.mc[i].x = t.mc[i].tx;
+    }
+  }
+
+  function produceMc() {
+    const t = topo;
+    const b = { seq: ++t.mcSeq, x: t.W - t.pad + 20, tx: 0, a: 0, glow: 1 };
+    t.mc.push(b);
+    placeMc(false);
+    t.mc = t.mc.filter((m) => m.tx > t.pad - t.spacing);
+    // The new masterchain block commits the newest block of every active shard.
+    t.leaves.forEach((p) => { const n = t.nodes.get(p); if (n && n.chain > 0) t.commits.push({ p, b, life: 1 }); });
+  }
+
+  function spawnMsg() {
+    const leaves = [...topo.leaves];
+    if (leaves.length < 2) return;
+    const a = leaves[Math.floor(Math.random() * leaves.length)];
+    // Prefer hypercube neighbours: same-depth shards whose prefixes differ in one bit.
+    const near = leaves.filter((b) => b !== a && b.length === a.length && [...b].filter((c, i) => c !== a[i]).length === 1);
+    const pool = near.length && Math.random() < 0.7 ? near : leaves.filter((b) => b !== a);
+    const b = pool[Math.floor(Math.random() * pool.length)];
+    topo.msgs.push({ a, b, t: 0, dur: 1400 + Math.random() * 900 });
+  }
+
+  const chainTop = (n) => n.y + 16;
+  function msgPoint(m, u) {
+    const A = topo.nodes.get(m.a), B = topo.nodes.get(m.b);
+    if (!A || !B) return null;
+    const ay = chainTop(A), by = chainTop(B);
+    const cx = (A.x + B.x) / 2, cy = Math.max(ay, by) + 30 + Math.abs(A.x - B.x) * 0.16;
+    const v = 1 - u;
+    return { x: v * v * A.x + 2 * v * u * cx + u * u * B.x, y: v * v * ay + 2 * v * u * cy + u * u * by };
+  }
+
+  function update(now, dt) {
+    const t = topo;
+    const k = 1 - Math.pow(0.0025, dt / 1000);
+    if (now > t.nextMc) { produceMc(); t.nextMc = now + 3000; }
+    if (now > t.nextEvolve) { evolve(); t.nextEvolve = now + 5600 + Math.random() * 2400; }
+    if (now > t.nextMsg) { spawnMsg(); t.nextMsg = now + 700 + Math.random() * 800; }
+    t.mc.forEach((m) => { m.x += (m.tx - m.x) * k; m.a += (1 - m.a) * k; m.glow = Math.max(0, m.glow - dt / 1600); });
+    t.nodes.forEach((n, p) => {
+      n.x += (n.tx - n.x) * k; n.y += (n.ty - n.y) * k; n.a += (n.ta - n.a) * k;
+      n.pulse = Math.max(0, n.pulse - dt / 900);
+      n.flash = Math.max(0, n.flash - dt / 500);
+      if (t.leaves.has(p) && !n.dying && now > n.next) {
+        n.pulse = 1; n.chain += 1; n.lastBlock = now;
+        n.next = now + 1300 + Math.random() * 1700;
+      }
+      if (n.dying && n.a < 0.03) t.nodes.delete(p);
+    });
+    t.commits.forEach((c) => { c.life -= dt / 1500; });
+    t.commits = t.commits.filter((c) => c.life > 0);
+    t.msgs.forEach((m) => { m.t += dt; });
+    t.msgs = t.msgs.filter((m) => {
+      if (!t.leaves.has(m.a) || !t.leaves.has(m.b)) return false;
+      if (m.t >= m.dur) { const B = t.nodes.get(m.b); if (B) B.flash = 1; return false; }
+      return true;
+    });
+  }
+
+  function draw() {
+    const t = topo, now = t.now;
+    ctx.clearRect(0, 0, t.W, t.H);
+    ctx.lineCap = 'round'; ctx.lineWidth = 1; ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+    const mono = (px) => `${px}px "Martian Mono", ui-monospace, monospace`;
+
+    // Masterchain spine and label
+    ctx.font = mono(9); ctx.fillStyle = C.dim;
+    ctx.fillText('masterchain  wc -1', t.pad, t.mcY - 15);
+    ctx.strokeStyle = C.rule;
+    ctx.beginPath(); ctx.moveTo(t.pad, t.mcY); ctx.lineTo(t.W - t.pad, t.mcY); ctx.stroke();
+
+    // Workchain 0 hangs from the masterchain
+    const root = t.nodes.get('');
+    if (root) {
+      ctx.setLineDash([2, 4]); ctx.strokeStyle = C.rule;
+      ctx.beginPath(); ctx.moveTo(root.x, t.mcY + 8); ctx.lineTo(root.x, root.y - 8); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = C.dim; ctx.font = mono(9);
+      ctx.fillText('workchain 0', root.x + 10, root.y - 9);
+    }
+
+    // Shardchains: each active shard's own chain of blocks, newest on top
+    t.nodes.forEach((n, p) => {
+      if (!t.leaves.has(p) || n.dying || n.chain <= 0) return;
+      const base = chainTop(n);
+      const fit = Math.max(0, Math.floor((t.chainBottom - base) / LINK) + 1);
+      const count = Math.min(n.chain, fit);
+      const prog = Math.min(1, Math.max(0, (now - n.lastBlock) / 380));
+      const e = 1 - Math.pow(1 - prog, 3);
+      ctx.strokeStyle = C.rule; ctx.globalAlpha = n.a * 0.8;
+      ctx.beginPath(); ctx.moveTo(n.x, n.y + 6); ctx.lineTo(n.x, base + (count - 1) * LINK); ctx.stroke();
+      for (let i = 0; i < count; i++) {
+        const y = i === 0 ? base : base + (i - 1 + e) * LINK;
+        const fade = 1 - i / Math.max(fit, 1);
+        ctx.globalAlpha = n.a * (i === 0 ? e : 1) * (0.25 + 0.75 * fade);
+        ctx.fillStyle = C.deck; ctx.strokeStyle = C.bone;
+        ctx.fillRect(n.x - BLOCK / 2, y - BLOCK / 2, BLOCK, BLOCK);
+        ctx.strokeRect(n.x - BLOCK / 2 + 0.5, y - BLOCK / 2 + 0.5, BLOCK - 1, BLOCK - 1);
+      }
+    });
+    ctx.globalAlpha = 1;
+
+    // Commit lines: newest shard block into the newest masterchain block
+    ctx.setLineDash([3, 4]); ctx.strokeStyle = C.volt;
+    t.commits.forEach((c) => {
+      const n = t.nodes.get(c.p);
+      if (!n || n.dying) return;
+      ctx.globalAlpha = Math.max(0, c.life) * 0.6;
+      ctx.beginPath(); ctx.moveTo(n.x, chainTop(n) - 4); ctx.lineTo(c.b.x, t.mcY + 6); ctx.stroke();
+    });
+    ctx.setLineDash([]); ctx.globalAlpha = 1;
+
+    // Masterchain blocks
+    t.mc.forEach((m) => {
+      if (m.x < t.pad - 8 || m.x > t.W - t.pad + 8) return;
+      const s = 8 + m.glow * 3;
+      ctx.globalAlpha = Math.min(1, m.a);
+      if (m.glow > 0) { ctx.shadowColor = C.volt; ctx.shadowBlur = 14 * m.glow; }
+      ctx.fillStyle = C.volt;
+      ctx.fillRect(m.x - s / 2, t.mcY - s / 2, s, s);
+      ctx.shadowBlur = 0;
+    });
+    ctx.globalAlpha = 1;
+
+    // Shard tree edges
+    t.nodes.forEach((n, p) => {
+      if (!p.length) return;
+      const parent = t.nodes.get(p.slice(0, -1));
+      if (!parent) return;
+      ctx.globalAlpha = Math.min(n.a, parent.a) * 0.45;
+      ctx.strokeStyle = C.bone;
+      ctx.beginPath(); ctx.moveTo(parent.x, parent.y); ctx.lineTo(n.x, n.y); ctx.stroke();
+    });
+    ctx.globalAlpha = 1;
+
+    // Messages between shards
+    t.msgs.forEach((m) => {
+      const u = Math.min(1, m.t / m.dur);
+      const ease = u < 0.5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+      const pts = [];
+      for (let i = 0; i <= 10; i++) {
+        const q = msgPoint(m, Math.max(0, ease - 0.12 + i * 0.012));
+        if (!q) return;
+        pts.push(q);
+      }
+      for (let i = 1; i < pts.length; i++) {
+        ctx.globalAlpha = (i / pts.length) * 0.7;
+        ctx.strokeStyle = C.bone; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(pts[i - 1].x, pts[i - 1].y); ctx.lineTo(pts[i].x, pts[i].y); ctx.stroke();
+      }
+      const head = pts[pts.length - 1];
+      ctx.globalAlpha = 1; ctx.fillStyle = C.bone;
+      ctx.beginPath(); ctx.arc(head.x, head.y, 2.2, 0, Math.PI * 2); ctx.fill();
+    });
+    ctx.globalAlpha = 1; ctx.lineWidth = 1;
+
+    // Shard nodes
+    const deepest = Math.max(0, ...[...t.leaves].map((p) => p.length));
+    const slotW = (t.W - 2 * t.pad) / 2 ** deepest;
+    t.nodes.forEach((n, p) => {
+      const leaf = t.leaves.has(p) && !n.dying;
+      ctx.globalAlpha = n.a;
+      if (leaf) {
+        if (n.pulse > 0) {
+          ctx.strokeStyle = C.bone; ctx.globalAlpha = n.a * n.pulse * 0.5;
+          ctx.beginPath(); ctx.arc(n.x, n.y, 6 + (1 - n.pulse) * 11, 0, Math.PI * 2); ctx.stroke();
+          ctx.globalAlpha = n.a;
+        }
+        ctx.fillStyle = n.flash > 0 ? C.bone : C.deck;
+        ctx.strokeStyle = C.bone; ctx.lineWidth = 1.3;
+        ctx.beginPath(); ctx.arc(n.x, n.y, 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.lineWidth = 1;
+        if (slotW > 92) {
+          ctx.fillStyle = C.dim; ctx.font = mono(8.5);
+          ctx.fillText(shardIdent(p), n.x + 11, n.y + 3);
+        }
+      } else {
+        ctx.fillStyle = C.faint;
+        ctx.beginPath(); ctx.arc(n.x, n.y, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+    });
+    ctx.globalAlpha = 1;
+
+    // Corner readout
+    ctx.fillStyle = C.faint; ctx.font = mono(8.5); ctx.textAlign = 'right';
+    ctx.fillText(`active shards ${t.leaves.size}`, t.W - t.pad, t.H - 10);
+    ctx.textAlign = 'left';
+
+    // Hover tooltip
+    if (t.hover) {
+      const h = t.hover;
+      ctx.font = mono(9.5);
+      const w = ctx.measureText(h.text).width + 16;
+      let x = h.x + 12, y = h.y - 30;
+      if (x + w > t.W - 4) x = Math.max(4, h.x - w - 12);
+      if (y < 4) y = h.y + 14;
+      ctx.fillStyle = 'rgba(5,7,11,.94)'; ctx.strokeStyle = C.volt;
+      ctx.fillRect(x, y, w, 22); ctx.strokeRect(x + 0.5, y + 0.5, w - 1, 21);
+      ctx.fillStyle = C.bone; ctx.fillText(h.text, x + 8, y + 15);
+      ctx.beginPath(); ctx.arc(h.nx, h.ny, 9, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function staticScene() {
+    const t = topo;
+    t.leaves = new Set(t.maxDepth >= 3 ? ['0', '10', '110', '111'] : ['0', '10', '11']);
+    t.nodes.clear();
+    syncNodes(true);
+    const lengths = [16, 11, 8, 8];
+    [...t.leaves].forEach((p, i) => { const n = t.nodes.get(p); n.chain = lengths[i] || 4; n.lastBlock = -1e9; });
+    t.mc.forEach((m) => { m.x = m.tx; m.a = 1; m.glow = 0; });
+    const newest = t.mc[t.mc.length - 1];
+    newest.glow = 0.6;
+    t.commits = [...t.leaves].map((p) => ({ p, b: newest, life: 0.75 }));
+    const l = [...t.leaves];
+    t.msgs = l.length > 2 ? [{ a: l[2], b: l[3] || l[1], t: 700, dur: 1400 }, { a: l[0], b: l[1], t: 1000, dur: 1700 }] : [];
+    t.now = 1e9;
+    draw();
+  }
+
+  function frame(now) {
+    const t = topo;
+    if (!t.running) return;
+    const dt = Math.min(64, now - (t.last || now));
+    t.last = now; t.now = now;
+    update(now, dt);
+    draw();
+    t.raf = requestAnimationFrame(frame);
+  }
+
+  function start() {
+    const t = topo;
+    if (reduceMotion) { t.running = false; staticScene(); return; }
+    if (t.running || !t.visible || document.hidden) return;
+    t.running = true; t.last = 0;
+    const now = performance.now();
+    t.nextMc = Math.max(t.nextMc, now + 1200); t.nextEvolve = Math.max(t.nextEvolve, now + 3000); t.nextMsg = now + 400;
+    t.raf = requestAnimationFrame(frame);
+  }
+  function stop() { topo.running = false; cancelAnimationFrame(topo.raf); }
+
+  initTopology();
+  if (reduceMotion) staticScene(); else { topo.now = performance.now(); draw(); start(); }
+
+  let resizeTimer = 0;
+  new ResizeObserver(() => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      initTopology();
+      if (reduceMotion) staticScene(); else draw();
+    }, 80);
+  }).observe(canvas);
+
+  new IntersectionObserver((entries) => {
+    topo.visible = entries[0].isIntersecting;
+    if (topo.visible) start(); else stop();
+  }).observe(canvas);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); else start(); });
+  motionQuery.addEventListener('change', (e) => {
+    reduceMotion = e.matches;
+    stop(); initTopology();
+    if (reduceMotion) staticScene(); else start();
+  });
+
+  function pick(ev) {
+    const r = canvas.getBoundingClientRect();
+    const x = ev.clientX - r.left, y = ev.clientY - r.top;
+    let best = null, bestD = 22;
+    topo.nodes.forEach((n, p) => {
+      if (n.a < 0.5 || n.dying) return;
+      const d = Math.hypot(n.x - x, n.y - y);
+      if (d < bestD) {
+        bestD = d;
+        best = {
+          nx: n.x, ny: n.y,
+          text: topo.leaves.has(p)
+            ? `shard ${shardIdent(p)}  prefix ${p || '(root)'}`
+            : (p ? `split parent ${shardIdent(p)}` : 'workchain 0 root')
+        };
+      }
+    });
+    topo.mc.forEach((m) => {
+      const d = Math.hypot(m.x - x, topo.mcY - y);
+      if (d < Math.min(bestD, 14)) { bestD = d; best = { nx: m.x, ny: topo.mcY, text: `masterchain block ${m.seq} (model)` }; }
+    });
+    topo.hover = best ? Object.assign(best, { x, y }) : null;
+    if (!topo.running) draw();
+  }
+  canvas.addEventListener('pointermove', pick);
+  canvas.addEventListener('pointerleave', () => { topo.hover = null; if (!topo.running) draw(); });
+
+  /* -----------------------------------------------------------------------
+     ARCHITECTURE: accordion, one layer open at a time
+     ----------------------------------------------------------------------- */
+  const layers = [...document.querySelectorAll('.layer')];
+  const panelOf = (b) => document.getElementById(b.getAttribute('aria-controls'));
+  layers.forEach((b, i) => {
+    panelOf(b).hidden = b.getAttribute('aria-expanded') !== 'true';
+    b.addEventListener('click', () => {
+      const wasOpen = b.getAttribute('aria-expanded') === 'true';
+      layers.forEach((o) => {
+        const on = o === b && !wasOpen;
+        o.setAttribute('aria-expanded', String(on));
+        panelOf(o).hidden = !on;
+      });
+    });
+    b.addEventListener('keydown', (e) => {
+      let j = null;
+      if (e.key === 'ArrowDown') j = Math.min(layers.length - 1, i + 1);
+      if (e.key === 'ArrowUp') j = Math.max(0, i - 1);
+      if (e.key === 'Home') j = 0;
+      if (e.key === 'End') j = layers.length - 1;
+      if (j !== null) { e.preventDefault(); layers[j].focus(); }
+    });
+  });
+
+  /* -----------------------------------------------------------------------
+     DETERMINISM: replay of recorded output, three processes converge
+     ----------------------------------------------------------------------- */
+  // Generated from site/state.json (the recorded onx replay output).
+  const ROOTS = /*gen:replay_roots_js*/['4b7def00', 'd6b5e7a8', '3fbb03b2', '49c137e2', '8b2f6aa6']/*/gen:replay_roots_js*/;
+  const FINAL_ROOT = /*gen:replay_final_js*/'8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098'/*/gen:replay_final_js*/;
+  const detRun = document.getElementById('det-run');
+  const detStatus = document.getElementById('det-status');
+  const detFinal = document.getElementById('det-final');
+  const detVerdict = document.getElementById('det-verdict');
+  const lanes = [...document.querySelectorAll('.lane')];
+  const cellsOf = (lane) => [...lane.querySelectorAll('.cell')];
+  let detBusy = false;
+
+  function setCell(cell, state, text) {
+    cell.classList.remove('is-run', 'is-done', 'is-skip', 'is-kill');
+    if (state) cell.classList.add(state);
+    cell.querySelector('.r').textContent = text;
+  }
+
+  async function runLane(lane, crash) {
+    const cells = cellsOf(lane);
+    const step = () => 380 + Math.random() * 420;
+    for (let i = 0; i < cells.length; i++) {
+      setCell(cells[i], 'is-run', '········');
+      if (crash && i === 2) {
+        await sleep(240);
+        setCell(cells[i], 'is-kill', 'SIGKILL');
+        detStatus.textContent = 'Process C killed while committing block 3. Nothing from that block was written.';
+        await sleep(1100);
+        setCell(cells[i], null, '········');
+        detStatus.textContent = 'Process C restarted on the same data directory.';
+        for (let j = 0; j < i; j++) { setCell(cells[j], 'is-skip', 'skipped'); await sleep(160); }
+        setCell(cells[i], 'is-run', '········');
+      }
+      await sleep(step());
+      setCell(cells[i], 'is-done', ROOTS[i]);
+    }
+    return cells[cells.length - 1].querySelector('.r').textContent;
+  }
+
+  async function replay() {
+    if (detBusy) return;
+    detBusy = true;
+    detRun.disabled = true;
+    detFinal.classList.remove('is-match');
+    detVerdict.textContent = 'running';
+    detStatus.textContent = 'Replaying 5 blocks in three independent processes.';
+    lanes.forEach((lane) => cellsOf(lane).forEach((c) => setCell(c, null, '········')));
+    await sleep(350);
+    const results = await Promise.all(lanes.map((lane) => runLane(lane, lane.dataset.lane === 'c')));
+    const same = results.every((r) => r === results[0]);
+    detVerdict.textContent = same ? '3 of 3 runs identical' : 'mismatch';
+    detFinal.classList.toggle('is-match', same);
+    detStatus.textContent = same
+      ? `All three runs reached final_state_root ${FINAL_ROOT.slice(0, 8)}…, the frozen golden vector.`
+      : 'Runs disagree.';
+    detRun.disabled = false;
+    detBusy = false;
+  }
+  detRun.addEventListener('click', replay);
+  detFinal.classList.add('is-match');
+  if (!reduceMotion && 'IntersectionObserver' in window) {
+    const once = new IntersectionObserver((entries, obs) => {
+      if (entries[0].isIntersecting) { obs.disconnect(); replay(); }
+    }, { threshold: 0.35 });
+    once.observe(document.getElementById('det'));
+  }
+
+  /* -----------------------------------------------------------------------
+     ADVERSARIAL: each attack maps to a test in the repository
+     ----------------------------------------------------------------------- */
+  const REPO = 'https://github.com/gokooteam/The-Open-Network-X/blob/main/';
+  const T = {
+    p5: 'crates/tooling/onx/tests/phase5_replay.rs',
+    p3: 'crates/protocol/onx-stf/tests/phase3_stf.rs',
+    auth: 'crates/protocol/onx-stf/tests/message_auth.rs',
+    model: 'crates/protocol/onx-stf/tests/message_model.rs',
+    stf: 'crates/protocol/onx-stf/src/stf.rs',
+    tvm: 'crates/protocol/onx-stf/tests/tvm_integration.rs',
+    p4: 'crates/protocol/onx-storage/tests/phase4_storage.rs',
+    mk: 'crates/protocol/onx-state-model/tests/phase3_merkle.rs'
+  };
+  const ATTACKS = {
+    flip: {
+      title: 'Flip one byte in a block body',
+      desc: 'One byte inside the first message of block 3 is inverted on disk. The header is left untouched.',
+      input: 'block 3, byte 200 inverted', sys: 'apply_block', check: 'recompute msgs_root',
+      verdict: 'REJECTED', rule: 'the header commits to the exact ordered message set',
+      out: 'onx replay failed: block-00000003.blk: rejected: block rejected by STF: msgs_root mismatch: header does not commit to this body',
+      test: ['replay_rejects_tampered_block_file', T.p5]
+    },
+    root: {
+      title: 'Claim a false post-state root',
+      desc: 'Block 4 carries valid messages, but its header states a different resulting state root.',
+      input: 'block 4 header, state_root altered', sys: 'apply_block', check: 'recompute state root',
+      verdict: 'REJECTED', rule: 'a block cannot lie about its result',
+      out: 'onx replay failed: block-00000004.blk: rejected: block rejected by STF: state root mismatch: header claims a different post-state',
+      test: ['stf_rejects_tampered_body_and_header', T.p3]
+    },
+    trunc: {
+      title: 'Truncate a block file',
+      desc: 'The last seven bytes of block 2 are cut off, as if a copy had been interrupted.',
+      input: 'block 2, 7 bytes short', sys: 'block file decoder', check: 'strict length parse',
+      verdict: 'REJECTED', rule: 'no partial parses and no trailing bytes',
+      out: 'onx replay failed: block-00000002.blk: malformed block body: corrupt persisted state: truncated block body: message 3 needs 237 bytes, 230 remain',
+      test: ['replay_rejects_truncated_block_file', T.p5]
+    },
+    gap: {
+      title: 'Skip a block',
+      desc: 'Block 3 is removed, so block 4 arrives directly after block 2.',
+      input: 'blocks 1, 2, 4, 5', sys: 'apply_block', check: 'sequence number',
+      verdict: 'REJECTED', rule: 'each block must be exactly the next seqno',
+      out: 'onx replay failed: block-00000004.blk: rejected: block rejected by STF: bad seqno: expected 3, got 4',
+      test: ['stf_rejects_bad_seqno', T.p3]
+    },
+    fork: {
+      title: 'Rewrite a committed block',
+      desc: 'Block 2 is already committed. A different block 2 is offered against the same database.',
+      input: 'alternate block 2, same data dir', sys: 'ChainStore', check: 'hash committed at seqno 2',
+      verdict: 'REJECTED', rule: 'committed history is never overwritten',
+      out: 'onx replay failed: block-00000002.blk: fork detected at seqno 2: committed hash differs',
+      test: ['storage_fork_detected', T.p4]
+    },
+    replay: {
+      title: 'Submit a signed message twice',
+      desc: 'A valid, correctly signed external message is applied. Then the identical bytes are submitted again.',
+      input: 'same message, nonce 0', sys: 'wallet handler', check: 'account nonce',
+      verdict: 'REJECTED', rule: 'every nonce can be used exactly once',
+      out: 'StfError::NonceMismatch\nnonce mismatch: account expects 1, tx carries 0',
+      test: ['replayed_msg_rejected', T.auth]
+    },
+    amount: {
+      title: 'Change the amount after signing',
+      desc: 'A message moving 1,000,000 nanocoins is signed, then edited to 2,000,000 without re-signing.',
+      input: 'amount_nanos edited after signing', sys: 'wallet handler', check: 'Ed25519 signature',
+      verdict: 'REJECTED', rule: 'the signature covers every field of the body',
+      out: 'StfError::InvalidSignature\ninvalid transaction signature',
+      test: ['tampered_amount_rejected', T.auth]
+    },
+    chain: {
+      title: 'Replay a message signed for another chain',
+      desc: 'A correctly signed message whose body names a different chain ID is submitted to this one.',
+      input: 'chain_id = 0xEE…EE', sys: 'wallet handler', check: 'chain ID, before the signature',
+      verdict: 'REJECTED', rule: 'signatures are bound to one chain',
+      out: 'StfError::WrongChainId\nmessage chain ID does not match this chain',
+      test: ['wrong_chain_id_rejected', T.auth]
+    },
+    wrongkey: {
+      title: 'Reveal a key that doesn\u2019t match the address',
+      desc: 'A key-derived account tries to spend by revealing a public key that hashes to a different address.',
+      input: 'revealed pubkey for another address', sys: 'wallet handler', check: 'ONX_ADDR_V1 derivation',
+      verdict: 'REJECTED', rule: 'an address is the hash of its key, checked before the signature',
+      out: 'StfError::AddressKeyMismatch\nrevealed pubkey does not derive to account …',
+      test: ['key_reveal_with_wrong_derivation_rejected', T.auth]
+    },
+    keyless: {
+      title: 'Spend from an address no key derives',
+      desc: 'The sender\u2019s address was not derived from any key and no key is revealed. A signature from some other key is offered.',
+      input: 'no key on record, none revealed', sys: 'wallet handler', check: 'sender key present',
+      verdict: 'REJECTED', rule: 'such accounts can receive but never spend',
+      out: 'StfError::SenderHasNoKey\nsender … has no public key and cannot spend',
+      test: ['keyless_sender_with_no_reveal_rejected', T.auth]
+    },
+    redeliver: {
+      title: 'Deliver an internal message twice',
+      desc: 'The same internal message is pushed through delivery a second time within one block.',
+      input: 'duplicate message ID', sys: 'delivery loop', check: 'per-block processed set',
+      verdict: 'REJECTED', rule: 'no double delivery, so no double spend',
+      out: 'StfError::DoubleDelivery\ninternal message delivered twice: …',
+      test: ['redelivered_internal_message_is_rejected', T.stf]
+    },
+    proof: {
+      title: 'Present a fabricated Merkle proof',
+      desc: 'An attacker builds a different tree and a proof that is valid for that tree, then presents it against the honest state root.',
+      input: 'proof from an attacker-built tree', sys: 'MerkleProof::verify', check: 'path to trusted root',
+      verdict: 'REJECTED', rule: 'proofs verify against a trusted root, never their own',
+      out: 'StateModelError::InvalidMerkleProof\nInvalid Merkle proof: …',
+      test: ['fabricated_tree_proof_fails_against_trusted_root', T.mk]
+    },
+    frozen: {
+      title: 'Send value to a frozen account',
+      desc: '1,000 nanocoins with a 100-nanocoin fee are sent to an account that is Frozen and cannot receive.',
+      input: 'transfer to a Frozen account', sys: 'delivery', check: 'receiver can receive',
+      verdict: 'BOUNCED', rule: 'value returns to the sender minus fees; the block stays valid',
+      out: 'delivery 1: sender \u2192 frozen, 1,000, bounced\ndelivery 2: frozen \u2192 sender, 1,000\nsender ends at initial balance \u2212 100 fee; frozen account untouched',
+      test: ['bounce_to_frozen_refunds_sender_minus_fees', T.model]
+    },
+    throw: {
+      title: 'Call a contract that throws',
+      desc: 'The contract\u2019s code immediately throws an integer-overflow exception on the TVM.',
+      input: 'code: THROW IntegerOverflow', sys: 'TVM', check: 'VM exit code',
+      verdict: 'BOUNCED', rule: 'revert by construction: nothing the contract did is written',
+      out: 'delivery bounced, gas used 0\nsender: value refunded, fee kept\ncontract: balance and data unchanged; block stays valid',
+      test: ['tvm_vm_exception_bounces', T.tvm]
+    },
+    kill: {
+      title: 'kill -9 in the middle of a commit',
+      desc: 'The process receives SIGKILL while writing a block, 100 times over. Each time it is restarted on the same database.',
+      input: 'SIGKILL during commit, \u00d7100', sys: 'ChainStore (redb)', check: 'one write transaction per block',
+      verdict: 'RECOVERED', rule: 'each block is written fully or not at all',
+      out: '100 of 100 kills: the database holds the previous block or the next one, never a mixture\nresumed replay: final_state_root=' + FINAL_ROOT,
+      test: ['storage_crash_kill9_recovery', T.p4]
+    },
+    dbcorrupt: {
+      title: 'Corrupt the database header',
+      desc: 'The first byte of an existing chain database is flipped, as a torn write or foreign data would.',
+      input: 'chain.redb, byte 0 inverted', sys: 'ChainStore::open', check: 'database magic',
+      verdict: 'REFUSED', rule: 'fail closed; committed state is never silently reinitialized',
+      out: "onx replay failed: storage: corrupt persisted state: database file './data/chain.redb' has an invalid header (torn write or foreign data); refusing to open rather than reinitializing",
+      test: ['storage_open_rejects_bad_magic_fail_closed', T.p4]
+    },
+    storedroot: {
+      title: 'Tamper with a stored state root',
+      desc: 'Behind the store\u2019s back, the persisted root for block 1 is overwritten with 0xBB bytes.',
+      input: 'state_roots[1] = 0xbb\u2026', sys: 'ChainStore::load_state', check: 'rebuild and compare root',
+      verdict: 'REFUSED', rule: 'every resume path verifies the rebuilt state',
+      out: 'StorageError::StateRootMismatch\nrebuilt state root \u2026 != stored root bbbbbbbbbbbbbbbb at seqno 1: persisted state is corrupt',
+      test: ['storage_load_state_rejects_tampered_root', T.p4]
+    },
+    rerun: {
+      title: 'Run the same replay again',
+      desc: 'The full chain is replayed a second time over a database that already holds it.',
+      input: 'blocks 1\u20135, already committed', sys: 'onx replay', check: 'committed hash per seqno',
+      verdict: 'NO-OP', rule: 'replay is idempotent',
+      out: 'seqno=1 status=skipped\nseqno=2 status=skipped\nseqno=3 status=skipped\nseqno=4 status=skipped\nseqno=5 status=skipped\nfinal_state_root=' + FINAL_ROOT,
+      test: ['replay_rerun_is_idempotent_noop', T.p5]
+    }
+  };
+
+  const consoleEl = document.getElementById('console');
+  const attackButtons = [...document.querySelectorAll('.attack')];
+  let fireToken = 0;
+
+  async function fire(btn) {
+    const a = ATTACKS[btn.dataset.attack];
+    if (!a) return;
+    const token = ++fireToken;
+    attackButtons.forEach((b) => b.setAttribute('aria-pressed', String(b === btn)));
+    consoleEl.classList.remove('is-firing', 'is-checking', 'is-done');
+    void consoleEl.offsetWidth;
+    $('console-title').textContent = a.title;
+    $('console-desc').textContent = a.desc;
+    $('console-in').textContent = a.input;
+    $('console-sys').textContent = a.sys;
+    $('console-check').textContent = 'waiting';
+    $('console-verdict').textContent = 'PROBING';
+    $('console-rule').textContent = '';
+    $('console-out').textContent = '…';
+    $('console-test').textContent = a.test[0];
+    const src = $('console-src');
+    src.innerHTML = '';
+    const b = document.createElement('b'); b.textContent = 'test';
+    const link = document.createElement('a');
+    link.href = REPO + a.test[1]; link.textContent = a.test[1] + ', ' + a.test[0];
+    src.append(b, ' ', link);
+
+    const box = consoleEl.getBoundingClientRect();
+    if (box.top < 0 || box.top > window.innerHeight * 0.6) {
+      consoleEl.scrollIntoView({ block: 'start', behavior: reduceMotion ? 'auto' : 'smooth' });
+    }
+    consoleEl.classList.add('is-firing');
+    await sleep(700); if (token !== fireToken) return;
+    consoleEl.classList.add('is-checking');
+    $('console-check').textContent = a.check;
+    await sleep(550); if (token !== fireToken) return;
+    consoleEl.classList.remove('is-firing', 'is-checking');
+    consoleEl.classList.add('is-done');
+    $('console-verdict').textContent = a.verdict;
+    $('console-rule').textContent = a.rule;
+    $('console-out').textContent = a.out;
+  }
+  attackButtons.forEach((btn) => btn.addEventListener('click', () => fire(btn)));
+
+  /* -----------------------------------------------------------------------
+     FEED: filter tabs, share, scroll position in the rail and tab bar
+     ----------------------------------------------------------------------- */
+  const tabs = [...document.querySelectorAll('.tab')];
+  const posts = [...document.querySelectorAll('#feed .post')];
+  function selectTab(tab, focus) {
+    tabs.forEach((t) => {
+      const on = t === tab;
+      t.setAttribute('aria-selected', String(on));
+      t.tabIndex = on ? 0 : -1;
+    });
+    const f = tab.dataset.filter;
+    posts.forEach((p) => { p.hidden = f !== 'all' && !p.dataset.kind.split(' ').includes(f); });
+    if (focus) tab.focus();
+  }
+  tabs.forEach((t, i) => {
+    t.addEventListener('click', () => selectTab(t));
+    t.addEventListener('keydown', (e) => {
+      let j = null;
+      if (e.key === 'ArrowRight') j = (i + 1) % tabs.length;
+      if (e.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+      if (e.key === 'Home') j = 0;
+      if (e.key === 'End') j = tabs.length - 1;
+      if (j !== null) { e.preventDefault(); selectTab(tabs[j], true); }
+    });
+  });
+  // A jump to a post hidden by the current filter clears the filter first.
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a[href^="#"]');
+    if (!a) return;
+    const target = document.getElementById(a.getAttribute('href').slice(1));
+    if (target && target.hidden) selectTab(tabs[0]);
+  }, true);
+
+  const toast = $('toast');
+  let toastTimer = 0;
+  const say = (msg) => {
+    toast.textContent = msg;
+    toast.classList.add('is-on');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('is-on'), 2600);
+  };
+  document.querySelectorAll('[data-share]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.dataset.share;
+      const url = location.href.split('#')[0] + '#' + id;
+      const h = document.querySelector('#' + id + ' h2');
+      const title = h ? h.textContent.trim() : 'Open Network X';
+      if (navigator.share && window.matchMedia('(pointer: coarse)').matches) {
+        try { await navigator.share({ title, url }); return; } catch (err) { if (err && err.name === 'AbortError') return; }
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        say('Link copied to clipboard');
+      } catch (_) {
+        say('Couldn\u2019t copy automatically. Link: ' + url);
+      }
+    });
+  });
+
+  const spyLinks = [...document.querySelectorAll('[data-spy]')];
+  if ('IntersectionObserver' in window) {
+    const spy = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const id = entry.target.id;
+        spyLinks.forEach((a) => {
+          if (a.dataset.spy === id) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current');
+        });
+      });
+    }, { rootMargin: '-40% 0px -55% 0px' });
+    new Set(spyLinks.map((a) => a.dataset.spy)).forEach((id) => { const el = $(id); if (el) spy.observe(el); });
+  }
+
+  /* -----------------------------------------------------------------------
+     STATUS: latest commit on main from the GitHub API, snapshot as fallback
+     ----------------------------------------------------------------------- */
+  const SNAPSHOT = /*gen:snapshot*/'13f3f19be8d0017a4f39bc0bea88e752269f32bc'/*/gen:snapshot*/;
+  (async () => {
+    if (!('fetch' in window)) return;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 6000);
+    try {
+      const res = await fetch('https://api.github.com/repos/gokooteam/The-Open-Network-X/commits/main', {
+        headers: { Accept: 'application/vnd.github+json' }, signal: ctrl.signal
+      });
+      if (!res.ok) return;
+      const c = await res.json();
+      if (!c || typeof c.sha !== 'string') return;
+      const sha = c.sha.slice(0, 7);
+      const date = String((c.commit && c.commit.committer && c.commit.committer.date) || '').slice(0, 10);
+      const msg = String((c.commit && c.commit.message) || '').split('\n')[0];
+      const all = (k) => document.querySelectorAll('[data-live="' + k + '"]');
+      all('sha').forEach((el) => { el.textContent = sha; });
+      if (date) all('date').forEach((el) => { el.textContent = date; });
+      if (msg) all('msg').forEach((el) => { el.textContent = msg; });
+      all('note').forEach((el) => {
+        el.textContent = 'Live from the GitHub API. ';
+        const a = document.createElement('a');
+        a.href = 'https://github.com/gokooteam/The-Open-Network-X/commit/' + c.sha;
+        a.textContent = 'View commit';
+        el.append(a);
+      });
+      document.querySelectorAll('.live-row').forEach((el) => el.classList.add('is-live'));
+      if (c.sha !== SNAPSHOT) {
+        // How does main relate to the reviewed snapshot?
+        let note = ' main has changed since then, so some details may differ.';
+        try {
+          const cr = await fetch('https://api.github.com/repos/gokooteam/The-Open-Network-X/compare/' + SNAPSHOT + '...main', {
+            headers: { Accept: 'application/vnd.github+json' }, signal: ctrl.signal
+          });
+          if (cr.ok) {
+            const cmp = await cr.json();
+            if (cmp.status === 'behind') {
+              note = ' That snapshot is not on main; main may have been rewritten since.';
+            } else if (cmp.status === 'ahead' && Number.isFinite(cmp.ahead_by)) {
+              note = ' main is ' + cmp.ahead_by + (cmp.ahead_by === 1 ? ' commit' : ' commits') + ' ahead of that snapshot, so newer work may not be reflected here.';
+            }
+          }
+        } catch (_) { /* keep the generic note */ }
+        all('foot').forEach((el) => { el.textContent += note; });
+      }
+    } catch (_) {
+      /* Offline or rate-limited: the snapshot values stay in place. */
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+})();
+</script>
+</body>
+</html>

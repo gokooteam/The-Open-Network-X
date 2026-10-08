@@ -1,0 +1,31 @@
+{
+  "replay": {
+    "commit": "13f3f19be8d0017a4f39bc0bea88e752269f32bc",
+    "date": "2026-10-08",
+    "lines": [
+      "chain_id=9b2a318c44b79422ebe707daa97980676e767ee0fb14d5e4dfec6c8d7342422e",
+      "genesis_root=079404cb2379be4802d27f77101e92c232cb94af2f93b3c8274995e85b99c04d",
+      "seqno=1 block=fad677301246c4195535d863ebcbd5810555d512cce52c71a427d78f5c8b16a3 root=4b7def00ee570f70da6ebdcf724af6c9ef56612faf0a689b3824fc037b193abf",
+      "seqno=2 block=1ddbff6b0316efb02f838dde211b16469bf9bea04d363d55652226793965cdcb root=d6b5e7a8b98fcc15697ed6226955d14b022502f6a8fd3eba2e6a0d676b5894c0",
+      "seqno=3 block=b6e51cde93e83d68ec0daca47b55e24254791b19316e5dfadb887dcbd1506fab root=3fbb03b29519164464d470e1facbb62f96d0f1ea4fe2e4dce3df87661650af36",
+      "seqno=4 block=d088803f2aa84a9d52373fd7bc8aa8f07feb7d71880ecc959dddf192e3438bab root=49c137e2ac8bcd8e72338c39edb01ca24a3c254f7a7dce547c54396f6c997e67",
+      "seqno=5 block=e89450c189c647a76b7a8b25488b0a2a0d6b0f90ef65b7bb0caf80951e944c39 root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098",
+      "final_seqno=5",
+      "final_block_hash=e89450c189c647a76b7a8b25488b0a2a0d6b0f90ef65b7bb0caf80951e944c39",
+      "final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa6098"
+    ]
+  },
+  "reviewed": {
+    "commit": "13f3f19be8d0017a4f39bc0bea88e752269f32bc",
+    "date": "2026-10-08"
+  },
+  "tests": {
+    "binaries": 74,
+    "commit": "13f3f19be8d0017a4f39bc0bea88e752269f32bc",
+    "date": "2026-10-08",
+    "failed": 0,
+    "ignored": 7,
+    "passed": 449,
+    "toolchain": "1.98.1"
+  }
+}

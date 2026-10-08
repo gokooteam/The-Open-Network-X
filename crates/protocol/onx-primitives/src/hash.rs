@@ -1,7 +1,7 @@
 //! SHA-256 hashing with mandatory domain separation.
 //!
 //! Spec: `docs/specification/protocol-primitives.md`, §3.3 and §4.5;
-//! `docs/decisions/ADR-0002-protocol-primitives-and-serialization.md`.
+//! `docs/adr/0009-protocol-primitives-and-serialization.md`.
 //! Every protocol hash context must prepend a 32-byte domain separation
 //! tag before hashing, so identical bytes hashed in two different protocol
 //! contexts never collide. There is deliberately no way to compute a

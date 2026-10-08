@@ -9,10 +9,10 @@ use onx_primitives::{
 /// Block Header fixed magic constructor (`0x1F2E3D4C`).
 pub const BLOCK_HEADER_MAGIC: u32 = 0x1F2E3D4C;
 
-/// Flag bit indicating a merge-result block (ADR-0016, data-structures.md §4.4).
+/// Flag bit indicating a merge-result block (ADR-0023, data-structures.md §4.4).
 pub const MERGE_RESULT_FLAG: u16 = 0x0010;
 
-/// Fixed binary block header layout (`BlockHeader`, 242 bytes total, amended by ADR-0016).
+/// Fixed binary block header layout (`BlockHeader`, 242 bytes total, amended by ADR-0023).
 ///
 /// Layout:
 /// 1. `magic_constructor` : uint32  (4 bytes: 0x1F2E3D4C)

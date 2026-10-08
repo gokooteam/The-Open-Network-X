@@ -2,6 +2,12 @@
 
 This logbook maintains a running chain of research and development questions for Open Network X (ONX).
 
+> **ADR numbers in older entries.** Entries written before PR #6 cite ADRs by
+> the retired `docs/decisions/ADR-0001…0020` numbering, which is now
+> `docs/adr/0008…0027` (add 7). The entries are left as written; see
+> [`docs/decisions/README.md`](../decisions/README.md) for the mapping.
+> Whether this convention continues is an open M4 item in `MILESTONES.md`.
+
 ## Rules for Contributors
 
 Every contributor making a pull request to ONX must participate in the Research Question Logbook:

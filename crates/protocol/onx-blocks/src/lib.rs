@@ -3,7 +3,7 @@
 //! ONX block structural validity, masterchain coupling, and split/merge
 //! announcement flags.
 //!
-//! Implements `docs/specification/blocks.md` (ADR-0006) and ADR-0016:
+//! Implements `docs/specification/blocks.md` (ADR-0013) and ADR-0023:
 //! structural validity of ordinary and merge successor blocks (§3.1, §3.2),
 //! masterchain coupling and canonicality via the `Masterchain Block Extra`
 //! shard-configuration commitment (§3.3, §4.1), and the split/merge

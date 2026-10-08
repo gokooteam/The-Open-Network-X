@@ -1,5 +1,14 @@
 # ONX Repository Architecture — Cleanup Proposal
 
+> **Archived, implemented.** This proposal was carried out in commit
+> `faac5a1` ("chore: reorganize repository architecture", merged in PR
+> #134 of the earlier repository, 2026-09-10). It is kept as a record of
+> why the tree looks the way it does. Paths and workflow names below are
+> the ones that existed *before* the move; several workflows it mentions
+> (`docs-lint.yml`, `research-logbook.yml`, `spec-tracker.yml`) have since
+> been removed, and `docs/decisions/` was later folded into `docs/adr/`
+> (see `docs/decisions/README.md`).
+
 This is based on a full inspection of `quickerup/The-Open-Network-X`: every
 file's contents, every `Cargo.toml`'s dependency graph, every CI workflow,
 and every cross-reference between docs, scripts, and code. It's organized as:

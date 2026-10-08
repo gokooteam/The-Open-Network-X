@@ -12,7 +12,7 @@
 //! Per `INSTRUCTIONS.md` §11 and §12, cryptographic and serialization
 //! choices here are binding for all consensus-critical code and are
 //! recorded in
-//! `docs/decisions/ADR-0002-protocol-primitives-and-serialization.md`.
+//! `docs/adr/0009-protocol-primitives-and-serialization.md`.
 
 pub mod bytes;
 pub mod error;

@@ -2,7 +2,7 @@
 // Phase 1 replay plan: HashMap/HashSet banned in protocol crates (see workspace clippy.toml); use BTreeMap/BTreeSet.
 //! ONX transaction and messaging semantics.
 //!
-//! Implements `docs/specification/transactions.md` (ADR-0005): external and
+//! Implements `docs/specification/transactions.md` (ADR-0012): external and
 //! internal message admission rules including tentative execution of
 //! External Inbound messages, `extra_currencies` value-model validation,
 //! the output-queue-only delivery architecture with per-account FIFO

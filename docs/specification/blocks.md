@@ -13,7 +13,7 @@
 - `WHITEPAPER.md`, §2.7.1–§2.7.9: Shard configuration as masterchain state, split/merge announcement (§2.7.3), validator task-group inheritance, split/merge trigger conditions, and the split/merge header flags themselves.
 - `INSTRUCTIONS.md`, §10, §14, §15: Consensus-critical determinism, dynamic-sharding invariants, and the masterchain/workchain/shardchain boundary.
 - `docs/specification/architecture.md`: Open questions ONX-ARCH-005 (finality/invalid-block correction) and ONX-ARCH-007 (split/merge thresholds and timing), both explicitly **not** resolved by this document.
-- `docs/specification/data-structures.md`, §4.4: The `BlockHeader` binary layout (242 bytes, amended by ADR-0016 to add `prev_ref_hash_2`), including its `flags: uint16` field and `prev_ref_hash`/`prev_ref_hash_2`/`master_ref_hash` fields, which this specification builds on rather than redefines.
+- `docs/specification/data-structures.md`, §4.4: The `BlockHeader` binary layout (242 bytes, amended by ADR-0023 to add `prev_ref_hash_2`), including its `flags: uint16` field and `prev_ref_hash`/`prev_ref_hash_2`/`master_ref_hash` fields, which this specification builds on rather than redefines.
 - `docs/specification/transactions.md`: Output-queue delivery and hypercube routing, whose per-block admission this specification's validity rules assume.
 
 ---
@@ -22,7 +22,7 @@
 
 The protocol specification requires explicit, deterministic rules for:
 1. What makes a shardchain or masterchain block **structurally valid**, independent of the Byzantine-fault-tolerant signature-quorum mechanics that make it *accepted* (those belong to the future Consensus specification, ONX-ARCH-005).
-2. How a block references its **parent(s)** — including the split case (each child has one parent) and the merge case (one child has two parents), which `data-structures.md`'s `BlockHeader` accommodates via its `prev_ref_hash_2` field and `MERGE_RESULT` flag (ADR-0016).
+2. How a block references its **parent(s)** — including the split case (each child has one parent) and the merge case (one child has two parents), which `data-structures.md`'s `BlockHeader` accommodates via its `prev_ref_hash_2` field and `MERGE_RESULT` flag (ADR-0023).
 3. How a shardchain block becomes **canonical** via masterchain coupling, and what a masterchain block must itself commit to.
 4. The **binary layout of the split/merge announcement flags** inside `BlockHeader.flags`, without specifying the load thresholds, timing counts, or state-migration mechanics that trigger them — those belong to the future Dynamic Sharding specification (ONX-ARCH-007).
 
@@ -47,7 +47,7 @@ Per §2.6.22, a validator's signature — and, at the specification level below 
 ### 3.2 Parent references
 
 - An ordinary (non-split, non-merge) block has exactly one parent, referenced by `BlockHeader.prev_ref_hash`, per the existing `data-structures.md` layout. This covers the common case and the split case: each of the two new shardchains produced by a split has exactly one parent — the pre-split block (§2.7.7) — so a single `prev_ref_hash` field suffices for split children.
-- A **merge** block has two parents (§2.7.9: "referring to both of its preceding blocks in its header"). `data-structures.md` §4.4 amends `BlockHeader` with a second fixed field, `prev_ref_hash_2`, to represent this — **ONX-ARCH-013**, resolved by **ADR-0016**. A merge block sets bit 4 (`MERGE_RESULT`) of `flags` (§3.4, §4.2) and populates both `prev_ref_hash` and `prev_ref_hash_2` with its two parents' hashes; every other block leaves `MERGE_RESULT` clear and `prev_ref_hash_2` all-zero. A merge block's structural validity check (§3.1, rule 3) is "its two parents" — `prev_ref_hash` and `prev_ref_hash_2` — exactly as `data-structures.md` §4.4 now defines them.
+- A **merge** block has two parents (§2.7.9: "referring to both of its preceding blocks in its header"). `data-structures.md` §4.4 amends `BlockHeader` with a second fixed field, `prev_ref_hash_2`, to represent this — **ONX-ARCH-013**, resolved by **ADR-0023**. A merge block sets bit 4 (`MERGE_RESULT`) of `flags` (§3.4, §4.2) and populates both `prev_ref_hash` and `prev_ref_hash_2` with its two parents' hashes; every other block leaves `MERGE_RESULT` clear and `prev_ref_hash_2` all-zero. A merge block's structural validity check (§3.1, rule 3) is "its two parents" — `prev_ref_hash` and `prev_ref_hash_2` — exactly as `data-structures.md` §4.4 now defines them.
 - `seq_no` continuity across split/merge is likewise not fully specified here: whether split children each start a fresh `seq_no` (e.g. 0) or continue their parent's sequence, and how a merge block's `seq_no` relates to its two parents' (WHITEPAPER.md does not state this explicitly in §2.7), is left for the Dynamic Sharding specification (ONX-ARCH-007) to decide, since it is inseparable from the split/merge state-migration mechanics that specification owns. This specification requires only that whatever rule is chosen be a strictly-increasing, deterministic function of the parent(s)' `seq_no`.
 
 ### 3.3 Masterchain coupling and canonicality
@@ -68,7 +68,7 @@ Per §2.7.3, §2.7.6, §2.7.7, §2.7.8, and §2.7.9, changes to the shard config
 | `MERGE_PREPARE` | §2.7.8 | This sibling shard intends to merge with its sibling; announced with a two-thirds-stake signature from the sibling's task group. |
 | `MERGE_COMMIT` | §2.7.9 | This is the last block of the pre-merge sibling shards; the next block belongs to the merged shard. |
 
-ONX allocates these as four distinct bits within the existing `BlockHeader.flags: uint16` field (§4.2), rather than introducing a new header field, since `flags` already exists in `data-structures.md` §4.4 for exactly this kind of forward-compatible signaling and no other use of it had been specified at the time. A fifth bit, `MERGE_RESULT`, was subsequently assigned from the same reserved range by **ADR-0016**; unlike the four announcement flags above, `MERGE_RESULT` is not an advance announcement but a marker on the merge-result block itself, and its meaning and the `prev_ref_hash_2` field it gates are defined in `data-structures.md` §4.4, which owns that field — this document only records its bit position (§4.2) for the same reason it records the four announcement flags' positions.
+ONX allocates these as four distinct bits within the existing `BlockHeader.flags: uint16` field (§4.2), rather than introducing a new header field, since `flags` already exists in `data-structures.md` §4.4 for exactly this kind of forward-compatible signaling and no other use of it had been specified at the time. A fifth bit, `MERGE_RESULT`, was subsequently assigned from the same reserved range by **ADR-0023**; unlike the four announcement flags above, `MERGE_RESULT` is not an advance announcement but a marker on the merge-result block itself, and its meaning and the `prev_ref_hash_2` field it gates are defined in `data-structures.md` §4.4, which owns that field — this document only records its bit position (§4.2) for the same reason it records the four announcement flags' positions.
 
 This specification defines **only the flag bit positions and their structural meaning** (a `SPLIT_COMMIT` block has no valid non-split successor per §2.7.7; a `MERGE_COMMIT` block has no valid separate-shard successor per §2.7.9). It explicitly does **not** define:
 - the load-based trigger conditions that cause a task group to set `SPLIT_PREPARE` or `MERGE_PREPARE` (§2.7.6, §2.7.8 give illustrative thresholds — e.g. "90% full for 64 consecutive blocks" — that `WHITEPAPER.md` itself calls configurable; per `INSTRUCTIONS.md` §7, no illustrative number here becomes an ONX rule without its own decision);
@@ -105,7 +105,7 @@ bit 0 (0x0001): SPLIT_PREPARE
 bit 1 (0x0002): SPLIT_COMMIT
 bit 2 (0x0004): MERGE_PREPARE
 bit 3 (0x0008): MERGE_COMMIT
-bit 4 (0x0010): MERGE_RESULT (ADR-0016; gates prev_ref_hash_2, data-structures.md §4.4)
+bit 4 (0x0010): MERGE_RESULT (ADR-0023; gates prev_ref_hash_2, data-structures.md §4.4)
 bits 5-15     : reserved, must be zero until a future specification assigns them
 ```
 

@@ -6,7 +6,7 @@ use onx_primitives::{Uint128, Uint32};
 use onx_state_model::AccountType;
 
 /// Maximum gas an External Inbound message's tentative execution may
-/// consume before block inclusion, per §3.1 rule 2 and ADR-0005.
+/// consume before block inclusion, per §3.1 rule 2 and ADR-0012.
 pub const MAX_TENTATIVE_GAS: u64 = 10_000;
 
 /// Result of tentatively executing an External Inbound message candidate
