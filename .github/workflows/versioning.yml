@@ -1,6 +1,6 @@
 name: Versioning
 
-# Keeps the workspace version organised (policy: docs/adr/0034-versioning-standard.md):
+# Keeps the workspace version organised (policy: docs/adr/0040-versioning-standard.md):
 #  - PRs and pushes: every crate inherits [workspace.package] version, Cargo.lock
 #    agrees, CHANGELOG.md has Unreleased + the current version, and a PR moves the
 #    version at most one SemVer step forward.

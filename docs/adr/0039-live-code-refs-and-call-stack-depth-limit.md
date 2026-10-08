@@ -1,6 +1,15 @@
 # ADR-0039 — Live code_refs + call-stack depth limit (Wave 4, step 7)
 
-**Status:** Proposed (2026-10-08)
+**Status:** Accepted (2026-10-08). Implemented in #32.
+Evidence: `stf_contract_callref_returns_right_result` in
+`crates/protocol/onx-stf/tests/callref_stf.rs`. Two known M4 bugs in
+`MILESTONES.md` sit on this ADR. (1) An implicit return leaves `c0` stale, so
+nested calls return to the wrong place; that is an implementation bug. (2) A
+genesis contract with code children can't be called, because §1 resolves the
+children at `run()` entry and genesis never seeds them. One fix for (2) is
+to resolve a child only when `JMPREF`/`CALLREF` uses it. That fix would
+amend §1's "at the start of `run()`" refresh point, and it needs its own
+amendment when it lands.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Amends:** `docs/specification/tvm-instruction-set.md` §4.5; `docs/specification/execution.md` §3.4
 

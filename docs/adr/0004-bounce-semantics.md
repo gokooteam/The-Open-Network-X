@@ -4,7 +4,10 @@
 exceptions bounce (including out-of-gas)" rule below no longer holds for
 `ExceptionKind::OutOfGas`, which is now **fatal** (value credited to the
 destination, no bounce). All other exception kinds still bounce as
-described here. See ADR-0037 for the taxonomy and rationale.
+described here. See ADR-0037 for the taxonomy and rationale. The fatal
+`OutOfGas` part of that amendment was **rejected** on 2026-10-08 (see
+ADR-0037's status). The code still implements it. Until the M4 fix in
+`MILESTONES.md` lands, out-of-gas deliveries are fatal in practice.
 **Date:** 2026-10-05
 **Milestone:** message-based single-shard chain
 

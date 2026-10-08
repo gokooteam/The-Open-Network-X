@@ -3,7 +3,7 @@ name: Release
 # Builds, tests, and drafts a GitHub Release for a vX.Y.Z tag. Runs on a
 # manually pushed tag, or is called by versioning.yml after it tags a new
 # workspace version on main (tags created with GITHUB_TOKEN do not trigger
-# `push: tags` themselves). Policy: docs/adr/0034-versioning-standard.md.
+# `push: tags` themselves). Policy: docs/adr/0040-versioning-standard.md.
 
 on:
   push:
