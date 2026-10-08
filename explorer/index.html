@@ -1,3 +1,8 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ONX Explorer</title>
 <style>
 /* Layout: one reading column. Instrument bar, network band, data controls,
@@ -40,6 +45,7 @@
   --r: 8px;
   --net: var(--testnet);
   --net-wash: var(--testnet-wash);
+  color-scheme: light;
 }
 :root[data-net="mainnet"] { --net: var(--mainnet); --net-wash: var(--mainnet-wash); }
 @media (prefers-color-scheme: dark) {
@@ -62,13 +68,17 @@
 }
 
 * { box-sizing: border-box; }
+/* Anything marked hidden stays hidden, whatever display a class sets.
+   This page must not depend on a host stylesheet for that. */
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body {
+  margin: 0;
   background: var(--bg);
   color: var(--ink);
   font: 400 var(--fs-body)/1.5 var(--font-ui);
   padding-inline: 16px;
   padding-block: 0 56px;
-  -webkit-text-size-adjust: 100%;
 }
 .app { max-width: 1080px; margin-inline: auto; }
 h1, h2, h3 { text-wrap: balance; margin: 0; }
@@ -128,6 +138,7 @@ code, .mono { font-family: var(--font-mono); font-size: var(--fs-data); }
 }
 .band-hint, .band .attrib { font-size: 13.5px; color: var(--ink-2); }
 .band .attrib .chip { margin-right: 4px; }
+.band .fix { font-size: 13px; color: var(--ink-2); padding: 8px 10px; border-radius: 6px; background: var(--panel); border: 1px solid var(--rule); }
 
 .main { display: flex; flex-direction: column; gap: 16px; margin-top: 16px; }
 .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: var(--r); }
@@ -146,10 +157,8 @@ code, .mono { font-family: var(--font-mono); font-size: var(--fs-data); }
 .btn.quiet { background: transparent; border-color: transparent; color: var(--ink-2); }
 .btn.quiet:hover { border-color: var(--rule-2); }
 .btn[disabled] { opacity: .5; cursor: default; }
-.btn[hidden] { display: none; }
 input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .replay-box { display: flex; flex-direction: column; gap: 6px; }
-.replay-box[hidden] { display: none; }
 .replay-box label { font-size: 13px; color: var(--ink-2); }
 textarea {
   width: 100%; min-height: 96px; resize: vertical; padding: 10px;
@@ -288,25 +297,28 @@ details > summary { cursor: pointer; padding: 12px 14px; font-weight: 600; font-
 details > .inner { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 10px; }
 footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex; flex-wrap: wrap; gap: 6px 16px; }
 
+/* Shown only while files are dragged over the page. It never takes clicks
+   or taps, so even if a browser misreports a drag it cannot block the page. */
 .dropmask {
   position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   border: 3px dashed var(--net); font: 600 18px/1.3 var(--font-ui); color: var(--ink);
+  pointer-events: none;
 }
-.dropmask[hidden] { display: none; }
 .busy { color: var(--ink-3); font-size: 13px; }
 @media (prefers-reduced-motion: no-preference) {
   tr.row td, .btn, .netswitch button { transition: background-color .12s ease, border-color .12s ease, color .12s ease; }
 }
 </style>
-
+</head>
+<body>
 <div class="app">
   <header class="top">
     <div class="brand">
       <span class="mark" aria-hidden="true"></span>
       <div>
         <h1>ONX <span>Explorer</span></h1>
-        <small>Open Network X · native currency Onyx</small>
+        <small>Open Network X · native currency Onyxi</small>
       </div>
     </div>
     <div class="netswitch" role="group" aria-label="Network">
@@ -411,7 +423,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
           <p>Testnet and Mainnet start unwired: nothing is read and nothing is shown. To connect one, edit <code>window.ONX_CONFIG</code>, the first script in this file:</p>
           <ul>
             <li><code>chainId</code>: the network's genesis hash, 64 hex characters. <code>onx-genesis</code> prints it, and it is block 1's <code>prev_hash</code>. Data from any other chain is flagged.</li>
-            <li><code>source</code>: <code>{ files: 'https://host/path/' }</code> for a URL serving what <code>onxd</code> writes (<code>genesis.boc</code>, <code>block-00000001.blk</code>, …), or your own adapter with <code>genesis()</code>, <code>block(seqno)</code> and, optionally, <code>latest()</code>, each returning raw bytes. The contract is written out in the <code>onx-sources</code> script. A URL on another host must allow this page's origin (CORS).</li>
+            <li><code>source</code>: <code>{ files: 'https://host/path/' }</code> for a URL serving what <code>onxd</code> writes (<code>genesis.boc</code>, <code>block-00000001.blk</code>, …), or your own adapter with <code>genesis()</code>, <code>block(seqno)</code> and, optionally, <code>latest()</code>, each returning raw bytes. The contract is written out in the <code>onx-sources</code> script. A URL on another host must send CORS headers (<code>Access-Control-Allow-Origin</code>) on every response, 404 included: reading stops at the first block that doesn't exist yet, and the browser can only see that 404 if it carries the header.</li>
             <li><code>pollSeconds</code>: optional. How often to look for new blocks.</li>
             <li><code>labels</code>: optional names for known accounts, shown as off-chain names.</li>
           </ul>
@@ -423,7 +435,7 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
 
   <footer>
     <span>Reads <code>ONXBLK05</code> block files and <code>ONXG</code> v1 genesis documents.</span>
-    <span>Built against ONX commit <code>8acfcc8</code>.</span>
+    <span>Built against ONX commit <code>ed88123</code>.</span>
   </footer>
 </div>
 <div class="dropmask" id="dropmask" hidden>Drop block files, genesis.boc or a replay log</div>
@@ -469,7 +481,7 @@ window.ONX_CONFIG = {
      describe        string shown in the interface (optional)
      genesis()       -> Promise<Uint8Array | ArrayBuffer | null>  genesis.boc
      block(seqno)    -> Promise<Uint8Array | ArrayBuffer | null>  block file
-                        (ONXBLK04); null when there is no such block yet
+                        (ONXBLK05); null when there is no such block yet
      latest()        -> Promise<number | null>  highest seqno (optional;
                         without it, reading stops at the first missing block)
    =========================================================================== */
@@ -483,42 +495,62 @@ window.ONX_CONFIG = {
     throw new Error(`${what} did not return bytes (expected Uint8Array or ArrayBuffer)`);
   }
 
+  // A browser hides the reason when a cross-origin request fails. A real
+  // network failure looks the same as a response the server sent without
+  // CORS headers, which is what most servers do for a missing file (404).
+  // Reading always ends at a missing file (the next block that doesn't
+  // exist yet), so the server has to send CORS headers on 404s too.
+  const CORS_HINT = 'A missing file shows up as this error when the server sends its 404 response ' +
+    'without CORS headers. The server must add Access-Control-Allow-Origin to every response, ' +
+    '404 included (in nginx, add_header … always). Otherwise the server could not be reached.';
+
   // The layout onxd writes, served under one URL:
   // genesis.boc, block-00000001.blk, block-00000002.blk, ...
   function files(baseUrl) {
     const base = String(baseUrl).replace(/\/+$/, '') + '/';
     const get = async (name) => {
-      const r = await fetch(base + name, { cache: 'no-store' });
+      let r;
+      try {
+        r = await fetch(base + name, { cache: 'no-store' });
+      } catch (e) {
+        throw Object.assign(new Error(`network or CORS error while fetching ${name}`), { hint: CORS_HINT });
+      }
       if (r.status === 404) return null;
-      if (!r.ok) throw new Error(`${name}: HTTP ${r.status}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status} for ${name}`);
       return new Uint8Array(await r.arrayBuffer());
     };
     return { describe: base, genesis: () => get('genesis.boc'), block: (seqno) => get(blockName(seqno)) };
   }
 
   // Read genesis (unless skipped) and consecutive blocks from fromSeqno on.
+  // Stops at the first block the source doesn't have. Keeps the first error.
   async function readAll(src, opts) {
     const o = opts || {};
     const max = o.maxBlocks || 5000;
     const start = o.fromSeqno || 1;
-    const out = { genesis: null, blocks: [], error: null, stoppedAtLimit: false };
+    const out = { genesis: null, blocks: [], error: null, hint: '', stoppedAtLimit: false };
+    const fail = (what, e) => {
+      if (out.error) return;
+      out.error = `${what}: ${e.message}`;
+      out.hint = e.hint || '';
+    };
     if (!o.skipGenesis && typeof src.genesis === 'function') {
       try { out.genesis = asBytes(await src.genesis(), 'genesis()'); }
-      catch (e) { out.error = `genesis: ${e.message}`; }
+      catch (e) { fail('Genesis', e); }
     }
     let latest = null;
     if (typeof src.latest === 'function') {
       try {
         const v = Number(await src.latest());
         latest = Number.isFinite(v) ? v : null;
-      } catch (e) { out.error = out.error || `latest: ${e.message}`; }
+      } catch (e) { fail('Latest block number', e); }
     }
     for (let s = start; ; s++) {
       if (latest !== null && s > latest) break;
       if (s - start >= max) { out.stoppedAtLimit = true; break; }
       let bytes;
       try { bytes = asBytes(await src.block(s), `block(${s})`); }
-      catch (e) { out.error = `block ${s}: ${e.message}`; break; }
+      catch (e) { fail(`Block ${s}`, e); break; }
       if (!bytes) break;
       out.blocks.push({ name: blockName(s), seqno: s, bytes });
     }
@@ -1251,8 +1283,8 @@ window.ONX_CONFIG = {
     msgWire: 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd11111111111111111111111111111111111111111111111111111111111111110000000000000007002222222222222222222222222222222222222222222222222222222222222222000000000000000000000000000003e80000000000000000000000000000000a00000000444444444444444444444444444444444444444444444444444444444444444433333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333333',
     msgHash: 'bef51624d10e0bcd1f93e7edee27f832621d4aa59d91c611435898d92ddd3b9d',
     msgsRoot: '2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515e',
-    header: '0000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515ebbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00000000000f4240ffffffffcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc00000001',
-    headerHash: 'cda94f160317f6bd0666d328c565084f782e880150ae054b7c370f8632b110f9',
+    header: '0000002aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2e63c6aa14a2b13de273f57ae0e8071fcad84badcdbf0f1e0a7e597c7c49515ebbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb00000000000f4240ffffffffcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc0000000100000001000000006553f100',
+    headerHash: '384ff6dd999455d3516c2a1cb76cf5f762188ebb317308de71a5eff1fe153f8a',
     pubG: '2152f8d19b791d24453242e15f2eab6cb7cffa7b6a5ed30097960e069881db12',
     sigG: '7d6851faa2de6347f59853c7410339664eaf111ba5e65a2417eeabfdfc0322087d66a04e55be8081afc8d78affa751c5f2b45c1c411839fc6d08b1d671ffa305',
     msgHashG: 'f9b035272494a9d7ecf577f0fb3a8b6ca3d97b1753c73dbeec90ac2859cde160',
@@ -1288,7 +1320,8 @@ window.ONX_CONFIG = {
     await run('Header decoding and hash', handVec, async () => {
       const hb = unhex(V.header);
       const { header } = decodeHeader(hb, 0);
-      const ok = header.seqno === 42 && header.lt === 1000000n && header.workchain === -1 && header.msgCount === 1 && hex(header.msgsRoot) === V.msgsRoot;
+      const ok = header.seqno === 42 && header.lt === 1000000n && header.workchain === -1 && header.msgCount === 1 && hex(header.msgsRoot) === V.msgsRoot &&
+        header.protocolVersion === 1 && header.blockTime === 1700000000n;
       return ok && hex(await domainHash(TAG.BLOCK_HDR, hb)) === V.headerHash;
     });
     const signedG = () => { const w = unhex(V.msgWire); w.set(unhex(V.sigG), w.length - 64); return w; };
@@ -1340,7 +1373,7 @@ window.ONX_CONFIG = {
     net: CFG.networks[CFG.defaultNetwork] ? CFG.defaultNetwork : Object.keys(CFG.networks)[0],
     blockFiles: [], genesisFile: null, replayText: '',
     origin: null,            // null | 'source' | 'files'
-    reading: false, readError: '',
+    reading: false, busy: false, readToken: 0, readError: '', readHint: '', lastRead: null,
     A: null, tests: null, ed25519: true,
     tab: 'blocks', view: null, back: [], runId: 0, note: '', pollTimer: 0,
   };
@@ -1410,8 +1443,21 @@ window.ONX_CONFIG = {
     const srcText = !src ? null : src.invalid ? 'invalid' : (src.describe || 'custom adapter');
     const lines = [];
     if (src && src.invalid) lines.push(`${chip('fail', 'Source')} <code>source</code> must be <code>{ files: '&lt;url&gt;' }</code> or an object with a <code>block(seqno)</code> method.`);
-    if (S.reading) lines.push(`Reading from ${esc(srcText)}…`);
-    else if (S.readError) lines.push(`${chip('fail', 'Source error')} ${esc(S.readError)}`);
+    if (S.reading) {
+      lines.push(`Reading from ${esc(srcText)}…`);
+    } else if (S.lastRead && S.origin === 'source') {
+      const n = S.lastRead.blocks;
+      const what = [S.lastRead.genesis ? 'genesis.boc' : '', n ? `${n} block${n === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+      const when = S.lastRead.at.toLocaleTimeString();
+      if (S.readError) {
+        lines.push(`${chip('fail', 'Read failed')} ${esc(S.readError)}.${what ? ` Read ${what} before that.` : ''}`);
+        if (S.readHint) lines.push({ fix: S.readHint });
+      } else if (what) {
+        lines.push(`Read ${what} at ${esc(when)}.${n ? '' : ' No blocks yet.'}`);
+      } else {
+        lines.push(`Nothing at this source yet (checked at ${esc(when)}).`);
+      }
+    }
     const A = S.A;
     if (A && A.chain.id) {
       if (!pinned) lines.push(`Loaded data is from chain <span class="mono">${esc(short(A.chain.id))}</span>. It can't be attributed to ${esc(net.name)} until a chain ID is pinned.`);
@@ -1425,7 +1471,7 @@ window.ONX_CONFIG = {
         ${slot('source', srcText, 'where blocks are read from')}
       </div>
       ${pinned && src ? '' : `<p class="band-hint">Wire ${esc(net.name)} up in <code>ONX_CONFIG</code>, the first script in this file.</p>`}
-      ${lines.map((l) => `<p class="attrib">${l}</p>`).join('')}`;
+      ${lines.map((l) => (l.fix ? `<p class="fix">${esc(l.fix)}</p>` : `<p class="attrib">${l}</p>`)).join('')}`;
     $('btn-reload').hidden = !src || !!src.invalid;
   }
 
@@ -1544,7 +1590,12 @@ window.ONX_CONFIG = {
   function isOn(kind, key) { return S.view && S.view.kind === kind && S.view.key === key; }
 
   function blocksTable(A) {
-    if (!A.blocks.length) return `<div class="empty"><b>No blocks decoded.</b><span>The Source panel lists anything that was rejected.</span></div>`;
+    if (!A.blocks.length) {
+      if (A.rejected.length) return `<div class="empty"><b>No blocks could be read.</b><span>The Source panel lists the files that were rejected.</span></div>`;
+      if (S.origin === 'source' && S.readError) return `<div class="empty"><b>No blocks loaded.</b><span>Reading stopped at an error. The network status above has the details.</span></div>`;
+      if (S.origin === 'source') return `<div class="empty"><b>No blocks yet.</b><span>The source has ${A.genesis ? 'genesis.boc and ' : ''}no block files so far.</span></div>`;
+      return `<div class="empty"><b>No blocks yet.</b></div>`;
+    }
     const rows = A.blocks.slice().reverse().map((d) => {
       const s = d.header.seqno;
       const key = d.shadowed ? `${s}~${C.hex(d.hash)}` : String(s);
@@ -1796,26 +1847,39 @@ window.ONX_CONFIG = {
   function clearLoaded() {
     S.blockFiles = []; S.genesisFile = null; S.replayText = ''; S.origin = null;
     S.view = null; S.back = []; S.note = '';
+    S.lastRead = null; S.readError = ''; S.readHint = '';
     $('replay-text').value = '';
   }
 
-  // Read from the wired source (HOOK 2). fresh = start over from block 1.
+  // Read from the wired source (HOOK 2). fresh = start over from block 1;
+  // otherwise (polling) only look for blocks after the ones already loaded.
   async function readFromSource(fresh) {
     const src = sourceOf(S.net);
     if (!src || src.invalid) { renderNet(); return; }
-    S.reading = true;
-    S.readError = '';
-    renderNet();
-    const known = S.origin === 'source' && !fresh ? S.blockFiles.reduce((mx, f) => Math.max(mx, f.seqno || 0), 0) : 0;
-    const r = await SRC.readAll(src, { fromSeqno: known + 1, maxBlocks: CFG.maxBlocks, skipGenesis: known > 0 });
+    if (!fresh && S.busy) return; // a poll never overlaps another read
+    const token = ++S.readToken;
+    S.busy = true;
+    if (fresh) { S.reading = true; renderNet(); }
+    const incremental = !fresh && S.origin === 'source';
+    const known = incremental ? S.blockFiles.reduce((mx, f) => Math.max(mx, f.seqno || 0), 0) : 0;
+    let r;
+    try {
+      r = await SRC.readAll(src, { fromSeqno: known + 1, maxBlocks: CFG.maxBlocks, skipGenesis: known > 0 && !!S.genesisFile });
+    } catch (e) {
+      r = { genesis: null, blocks: [], error: `Reading stopped: ${e.message}`, hint: '', stoppedAtLimit: false };
+    }
+    if (token !== S.readToken) return; // superseded by a newer read or a network switch
+    S.busy = false;
     S.reading = false;
-    S.readError = r.error || '';
-    if (fresh || S.origin !== 'source') clearLoaded();
+    if (!incremental) clearLoaded();
     if (r.genesis) S.genesisFile = { name: 'genesis.boc', bytes: r.genesis };
-    if (!r.blocks.length && !fresh && known > 0) { renderNet(); return; }
     S.blockFiles = S.blockFiles.concat(r.blocks);
     S.origin = 'source';
+    S.readError = r.error || '';
+    S.readHint = r.hint || '';
+    S.lastRead = { at: new Date(), genesis: !!S.genesisFile, blocks: S.blockFiles.length };
     S.note = r.stoppedAtLimit ? `Stopped after ${CFG.maxBlocks} blocks (maxBlocks in ONX_CONFIG).` : '';
+    if (incremental && !r.blocks.length && !r.genesis) { renderNet(); renderData(); return; }
     await refresh();
   }
 
@@ -1824,7 +1888,7 @@ window.ONX_CONFIG = {
     clearInterval(S.pollTimer);
     const secs = Number(CFG.networks[S.net].pollSeconds || 0);
     if (secs > 0 && sourceOf(S.net)) {
-      S.pollTimer = setInterval(() => { if (!S.reading && S.origin === 'source') readFromSource(false); }, secs * 1000);
+      S.pollTimer = setInterval(() => { if (!S.busy && S.origin === 'source') readFromSource(false); }, secs * 1000);
     }
   }
 
@@ -1918,8 +1982,11 @@ window.ONX_CONFIG = {
     if (!CFG.networks[net] || net === S.net) return;
     S.net = net;
     try { history.replaceState(null, '', '#' + net); } catch (e) { /* the frame may not allow it */ }
+    S.readToken++; // drop any read still running for the previous network
+    S.busy = false;
+    S.reading = false;
     if (S.origin === 'source') clearLoaded();
-    S.readError = '';
+    S.readError = ''; S.readHint = ''; S.lastRead = null;
     schedulePoll();
     renderNet();
     if (sourceOf(net)) await readFromSource(true);
@@ -1979,15 +2046,33 @@ window.ONX_CONFIG = {
   $('btn-clear').addEventListener('click', () => { clearLoaded(); refresh(); });
   $('search').addEventListener('submit', (e) => { e.preventDefault(); search($('q').value); });
 
-  let dragDepth = 0;
-  window.addEventListener('dragenter', (e) => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) { dragDepth++; $('dropmask').hidden = false; } });
-  window.addEventListener('dragleave', () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $('dropmask').hidden = true; });
-  window.addEventListener('dragover', (e) => { e.preventDefault(); });
+  // Drop overlay: visible only while files are being dragged over the page.
+  // Browsers keep sending dragover during a drag, so if they stop for a
+  // second the drag is over (dropped elsewhere, cancelled, or left the
+  // window) and the overlay hides itself. It cannot stay stuck.
+  const mask = $('dropmask');
+  let dragTimer = 0;
+  const hideMask = () => { clearTimeout(dragTimer); mask.hidden = true; };
+  const carriesFiles = (e) => !!(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+  const showMask = () => {
+    mask.hidden = false;
+    clearTimeout(dragTimer);
+    dragTimer = setTimeout(hideMask, 1000);
+  };
+  window.addEventListener('dragenter', (e) => { if (carriesFiles(e)) showMask(); });
+  window.addEventListener('dragover', (e) => { if (carriesFiles(e)) { e.preventDefault(); showMask(); } });
+  window.addEventListener('dragleave', (e) => {
+    const outside = e.clientX <= 0 || e.clientY <= 0 || e.clientX >= innerWidth || e.clientY >= innerHeight;
+    if (!e.relatedTarget && outside) hideMask();
+  });
+  window.addEventListener('dragend', hideMask);
+  window.addEventListener('blur', hideMask);
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideMask(); });
   window.addEventListener('drop', (e) => {
+    hideMask();
+    if (!carriesFiles(e)) return;
     e.preventDefault();
-    dragDepth = 0;
-    $('dropmask').hidden = true;
-    if (e.dataTransfer && e.dataTransfer.files.length) loadDropped(e.dataTransfer.files);
+    if (e.dataTransfer.files.length) loadDropped(e.dataTransfer.files);
   });
 
   // ------------------------------------------------------------------ boot
@@ -2009,3 +2094,5 @@ window.ONX_CONFIG = {
   boot();
 })();
 </script>
+</body>
+</html>
