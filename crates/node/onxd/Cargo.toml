@@ -14,7 +14,12 @@ path = "src/main.rs"
 tokio = { version = "1.38", features = ["full"] }
 hex = "0.4"
 libc = "0.2"
-sentry = "0.49"
+# Sentry, slimmed per audit: no default features (drops native-tls/OpenSSL,
+# logs, metrics, release-health, debug-images, contexts). rustls for TLS.
+sentry = { version = "0.49", default-features = false, features = ["backtrace", "panic", "reqwest", "rustls"] }
+# Direct so main.rs can build a timeout-configured client for Sentry's
+# transport (same 0.13 line sentry uses; unified by cargo).
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 onx-telemetry = { path = "../onx-telemetry" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-execution = { path = "../../protocol/onx-execution" }

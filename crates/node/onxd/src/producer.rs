@@ -84,12 +84,33 @@ use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
 use std::any::Any;
+use std::cell::Cell;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+thread_local! {
+    /// While set, Sentry must not capture (or stall on) panics on this thread.
+    ///
+    /// `propose_block_caught` sets it for the dry-run containment boundary:
+    /// panics there are deliberate probes for hostile-message isolation
+    /// (ADR-0029), not crashes. Sentry's panic hook flushes synchronously
+    /// (up to `shutdown_timeout` per panic), so reporting each probe would
+    /// stall block production ~2s per panic — about 20s per hostile message
+    /// at a 1,000-message mempool — and flood Sentry until rate-limited.
+    /// One summary event is sent for the isolated message instead
+    /// (`drop_panicking_message`).
+    static SUPPRESS_SENTRY_PANIC: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether Sentry panic reporting is currently suppressed on this thread.
+/// Read by the `before_send` hook installed in `main.rs`.
+pub fn suppress_sentry_panic() -> bool {
+    SUPPRESS_SENTRY_PANIC.with(|f| f.get())
+}
 
 /// Canonical (pubkey-sorted) genesis validator refs, for `validator_index`
 /// assignment and self-verification (ADR-0032).
@@ -250,6 +271,17 @@ fn propose_block_caught(
     fee_collector: AccountId,
     parent_block_time: u64,
 ) -> Result<Result<Block, StfError>, Box<dyn Any + Send>> {
+    // Suppress Sentry panic reports for the containment boundary (see
+    // SUPPRESS_SENTRY_PANIC). The guard resets the flag even when the
+    // dry-run panics, because it drops after `catch_unwind` returns.
+    struct SuppressGuard;
+    impl Drop for SuppressGuard {
+        fn drop(&mut self) {
+            SUPPRESS_SENTRY_PANIC.with(|f| f.set(false));
+        }
+    }
+    SUPPRESS_SENTRY_PANIC.with(|f| f.set(true));
+    let _guard = SuppressGuard;
     catch_unwind(AssertUnwindSafe(|| {
         // TEST-ONLY: simulates an interpreter/STF panic DURING the
         // dry-run, i.e. inside the containment boundary.
@@ -646,6 +678,18 @@ fn drop_panicking_message(
         hex::encode(culprit.hash()),
         hex::encode(culprit.from.to_bytes()),
         culprit.nonce,
+    );
+    // One Sentry event for the isolated message. The individual probe panics
+    // were suppressed (see SUPPRESS_SENTRY_PANIC); without this, a hostile
+    // message would be invisible in Sentry. No-op when Sentry is not initialized.
+    sentry::capture_message(
+        &format!(
+            "producer: contained dry-run panic; dropped message {} from {} nonce {} (local fault, not a bounce)",
+            hex::encode(culprit.hash()),
+            hex::encode(culprit.from.to_bytes()),
+            culprit.nonce,
+        ),
+        sentry::Level::Warning,
     );
     mempool.reject_candidate(
         &culprit.hash(),
