@@ -1,0 +1,176 @@
+name: Codex PR Review
+
+# Independent second-pass review alongside Claude.
+# Requires the repository secret OPENAI_API_KEY.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+
+concurrency:
+  group: codex-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  codex:
+    name: Codex review
+    # Never expose OPENAI_API_KEY to fork-controlled PRs.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      contents: read
+
+    outputs:
+      final_message: ${{ steps.run_codex.outputs.final-message }}
+
+    steps:
+      - name: Check out PR merge commit
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          persist-credentials: false
+
+      - name: Fetch PR base and head refs
+        env:
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          git fetch --no-tags origin \
+            "$PR_BASE_REF" \
+            "+refs/pull/$PR_NUMBER/head"
+
+      - name: Run Codex
+        id: run_codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+          prompt: |
+            You are the independent second reviewer for The Open Network X,
+            a Rust blockchain implementation.
+
+            Claude already performs a separate automated review. Do NOT assume
+            Claude's conclusions are correct. Your purpose is to provide an
+            independent second pass and catch things another reviewer missed.
+
+            Review PR #${{ github.event.pull_request.number }} in
+            ${{ github.repository }}.
+
+            Review ONLY behavior introduced by this PR, while reading surrounding
+            code whenever necessary to establish whether a finding is real.
+
+            First inspect:
+            - the complete PR diff
+            - relevant call sites and surrounding implementation
+            - existing tests
+            - CONTRIBUTING.md and INSTRUCTIONS.md if present
+
+            Prioritize:
+
+            1. CONSENSUS CORRECTNESS
+               - fork risks
+               - divergent state transitions
+               - nondeterminism
+               - invalid block/transaction acceptance
+               - consensus-critical edge cases
+
+            2. SECURITY
+               - authentication and authorization
+               - signature verification
+               - cryptographic misuse
+               - malformed/untrusted network input
+               - transaction validation
+               - denial of service
+               - key material
+               - unsafe Rust
+
+            3. DETERMINISM
+               - unordered iteration
+               - serialization differences
+               - platform-dependent behavior
+               - time dependence
+               - floating point
+               - randomness
+               - environment-dependent behavior
+
+            4. STATE AND ACCOUNTING CORRECTNESS
+               - integer overflow/underflow
+               - incorrect balances
+               - state corruption
+               - panics/unwraps on untrusted input
+               - incorrect error handling
+               - resource exhaustion
+
+            5. COMPATIBILITY
+               - serialization changes
+               - genesis changes
+               - chain ID changes
+               - RPC/API changes
+               - persistent state changes
+               - missing migrations
+
+            6. CONCURRENCY
+               - races
+               - deadlocks
+               - lock ordering
+               - inconsistent shared state
+
+            7. TEST COVERAGE
+               - missing tests for important changed behavior
+               - tests that fail to exercise the dangerous edge cases
+
+            Be deliberately skeptical.
+
+            Do not report something merely because it "could theoretically"
+            be a problem. Trace a concrete input, execution path, or state
+            transition and establish that the issue is actually reachable.
+
+            Report ONLY actionable, verified findings introduced by this PR.
+
+            For every finding provide:
+
+            [critical|high|medium|low]
+            - exact file and line
+            - concise explanation of the bug
+            - concrete failure scenario
+            - why the existing implementation does not prevent it
+
+            Do not report:
+            - style preferences
+            - harmless refactors
+            - speculative concerns
+            - duplicate findings
+            - issues that existed before this PR
+
+            Pay particular attention to subtle cross-module interactions that
+            a superficial diff review would miss.
+
+            Do not modify files.
+            Do not attempt to fix the PR.
+
+            Finish with:
+
+            1. A concise overall assessment.
+            2. Whether you found any verified blocking issues.
+            3. A short statement of the major areas you inspected.
+
+      - name: Post Codex review
+        if: steps.run_codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        env:
+          CODEX_FINAL_MESSAGE: ${{ steps.run_codex.outputs.final-message }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: "## 🤖 Codex Independent Review\n\n" +
+                    process.env.CODEX_FINAL_MESSAGE
+            });
