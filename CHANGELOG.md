@@ -20,6 +20,29 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 - `MILESTONES.md`: completed milestones M0–M3, exit criteria for M4–M7,
   and the maintenance gate that defines `1.0.0`.
+- `onx-cli wallet address --wallet <file>`: print a wallet's public key and
+  key-derived address (`ONX_ADDR_V1`).
+
+### Changed
+
+- `onx-cli transfer` now builds a real, signed `ONX_MSG_EXT_V1` external
+  message that `onxd` accepts. It takes the chain ID from `--genesis` or
+  `--chain-id`, the key from `--wallet` or `--seed-file` (never from argv),
+  and an explicit `--nonce`; `--reveal-key` covers the first spend from a
+  key-derived account. With `--out <pool dir>` it writes `<hash>.msg`
+  atomically (temp file + rename); otherwise it prints the wire bytes as hex.
+  Amounts and fees are in nano-Onyxi.
+- `onx-cli wallet create` takes `--out`, prints the key-derived address,
+  writes `wallet.json` with mode 0600 on Unix, and refuses to overwrite an
+  existing wallet.
+- `onx-cli --version` reports the workspace version instead of a hardcoded
+  `0.1.0`.
+
+### Removed
+
+- `onx-cli wallet balance` and `onx-cli deploy-contract`. Both printed
+  placeholder output that looked like a result; there is no RPC to answer a
+  balance query and no deploy message type yet.
 
 ## [0.2.0] - 2026-10-08
 

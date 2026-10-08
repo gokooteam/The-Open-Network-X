@@ -1420,10 +1420,13 @@ dependencies = [
  "bip39",
  "clap",
  "hex",
+ "onx-data-structures",
+ "onx-economics",
+ "onx-genesis",
  "onx-primitives",
+ "onx-stf",
  "serde",
  "serde_json",
- "tokio",
 ]
 
 [[package]]

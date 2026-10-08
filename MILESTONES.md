@@ -149,7 +149,7 @@ same roots, and look at them in the explorer.
 - Query the chain over RPC.
 - Create a signed transfer with a shipped tool. `onx-cli transfer` emits a
   placeholder byte string with no signature, nonce, or chain ID, so `onxd`
-  can't accept it.
+  can't accept it. _(Since resolved: see the `onx-cli` criterion under M4.)_
 
 ### Where each development task stands (`docs/planning/development-tasks.md`)
 
@@ -203,9 +203,17 @@ ticked.
 - [ ] `CONTRIBUTING.md` and the research logbook: the logbook's last entry is
       #12 (2026-09-10), and none of PRs #1–#23 added one. Revive the
       convention or retire it.
-- [ ] `onx-cli`: make `transfer` produce a real `ONX_MSG_EXT_V1` message, or
+- [x] `onx-cli`: make `transfer` produce a real `ONX_MSG_EXT_V1` message, or
       remove the placeholder commands. A command that looks like it works and
-      doesn't is worse than no command.
+      doesn't is worse than no command. **Done (both):** `transfer` signs a
+      real external message (chain ID from `--genesis`/`--chain-id`, explicit
+      `--nonce`, `--reveal-key` for a first spend) and writes `<hash>.msg`
+      into an `onxd` pool dir; `wallet balance` and `deploy-contract` were
+      removed. Evidence: `crates/tooling/onx-cli/tests/transfer_e2e.rs` —
+      `faucet_to_new_wallet_and_back` runs the real binary against
+      `config/genesis.toml` and applies its output through `propose_block` /
+      `apply_block`; the negative cases assert `SenderHasNoKey` and
+      `WrongChainId`.
 
 *CI you can rely on*
 - [ ] Require CI to pass before merging (branch protection). CI runs only on
