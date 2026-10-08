@@ -1,0 +1,63 @@
+name: Workflow Security
+
+# Audits the repo's own CI configuration:
+#  - zizmor: static analysis for workflow supply-chain attacks
+#    (expression injection, unpinned actions, pull_request_target misuse,
+#    excess permissions). Nothing else in the stack audits the workflows.
+#  - actionlint: correctness linter for workflow files (syntax, shell,
+#    expressions). Complements zizmor (security) with correctness.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        uses: taiki-e/install-action@v2
+        with:
+          tool: zizmor
+
+      - name: Run zizmor
+        run: zizmor .github/workflows/
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint
+        run: |
+          curl -sSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz"
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          sudo mv /tmp/actionlint /usr/local/bin/actionlint
+
+      - name: Run actionlint
+        run: actionlint .github/workflows/*.yml

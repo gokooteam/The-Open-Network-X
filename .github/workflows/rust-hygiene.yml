@@ -1,4 +1,9 @@
-name: Cargo Deny
+name: Rust Hygiene
+
+# Fast static hygiene gates for the Rust workspace:
+#  - cargo-machete: fails on unused dependencies (nothing else catches these)
+#  - taplo: lints/validates every Cargo.toml (catches what rustfmt can't see)
+#  - typos: spell-checks source and docs
 
 on:
   pull_request:
@@ -15,8 +20,8 @@ permissions:
   contents: read
 
 jobs:
-  deny:
-    name: Cargo Deny
+  hygiene:
+    name: Rust hygiene
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -27,10 +32,16 @@ jobs:
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@1.98.1
 
-      - name: Install cargo-deny
+      - name: Install hygiene tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-machete,taplo,typos
 
-      - name: Run cargo deny
-        run: cargo deny check
+      - name: Check for unused dependencies
+        run: cargo machete
+
+      - name: Lint TOML files
+        run: taplo lint
+
+      - name: Check spelling
+        run: typos

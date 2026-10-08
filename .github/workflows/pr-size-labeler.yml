@@ -1,0 +1,36 @@
+name: PR Size Labeler
+
+# Labels PRs by diff size (xs/s/m/l/xl). Nudges PRs toward reviewable sizes,
+# which also reduces noise from the AI reviewers.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  size:
+    name: Size label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label PR size
+        uses: codelytv/pr-size-labeler@v1
+        with:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          xs_label: 'size/xs'
+          xs_max_lines: 10
+          s_label: 'size/s'
+          s_max_lines: 100
+          m_label: 'size/m'
+          m_max_lines: 500
+          l_label: 'size/l'
+          l_max_lines: 1000
+          xl_label: 'size/xl'
+          fail_if_xl: 'false'

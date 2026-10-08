@@ -1,4 +1,8 @@
-name: Cargo Deny
+name: TruffleHog Secret Scan
+
+# Scans the PR diff (and pushes to main) for leaked credentials.
+# --only-verified means it only reports secrets that actually authenticate
+# against their issuer: near-zero false positives.
 
 on:
   pull_request:
@@ -15,22 +19,17 @@ permissions:
   contents: read
 
 jobs:
-  deny:
-    name: Cargo Deny
+  trufflehog:
+    name: TruffleHog
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Install stable Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.1
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+      - name: Scan for verified secrets
+        uses: trufflesecurity/trufflehog@main
         with:
-          tool: cargo-deny
-
-      - name: Run cargo deny
-        run: cargo deny check
+          extra_args: --only-verified

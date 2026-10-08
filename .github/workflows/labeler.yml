@@ -1,0 +1,25 @@
+name: PR Labeler
+
+# Path-based auto-labels on PRs. Zero-cost triage.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  labeler:
+    name: Labeler
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply labels
+        uses: actions/labeler@v6
+        with:
+          configuration-path: .github/labeler.yml

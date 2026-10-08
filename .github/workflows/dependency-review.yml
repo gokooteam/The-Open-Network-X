@@ -1,0 +1,29 @@
+name: Dependency Review
+
+# Native GitHub check: blocks PRs that introduce dependencies with known
+# vulnerabilities, and surfaces license changes in the dependency diff.
+# No vendor, no token, no config.
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Review dependencies
+        uses: actions/dependency-review-action@v5
