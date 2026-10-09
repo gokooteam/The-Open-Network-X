@@ -550,6 +550,7 @@ html:not(.js) .det__controls button, html:not(.js) .act--share, html:not(.js) .t
         <li><a class="rail__link" href="#progress" data-spy="progress" title="Progress"><svg class="ico" aria-hidden="true"><use href="#i-steps"/></svg><span>Progress</span></a></li>
         <li><a class="rail__link" href="#specification" data-spy="specification" title="Specification"><svg class="ico" aria-hidden="true"><use href="#i-doc"/></svg><span>Specification</span></a></li>
         <li><a class="rail__link" href="#onyx" data-spy="onyx" title="Onyxi"><svg class="ico" aria-hidden="true"><use href="#i-coin"/></svg><span>Onyxi</span></a></li>
+        <li><a class="rail__link" href="#explorer" data-spy="explorer" title="Explorer"><svg class="ico" aria-hidden="true"><use href="#i-open"/></svg><span>Explorer</span></a></li>
         <li><a class="rail__link" href="#status" data-spy="status" title="Status"><svg class="ico" aria-hidden="true"><use href="#i-pulse"/></svg><span>Status</span></a></li>
       </ul>
       </nav>
@@ -565,7 +566,7 @@ html:not(.js) .det__controls button, html:not(.js) .act--share, html:not(.js) .t
   <main class="feed" id="main">
     <div class="fhead">
       <svg class="fhead__avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
-      <div class="fhead__title"><b>Open Network X</b><span><!--gen:post_count-->13<!--/gen:post_count--> posts</span></div>
+      <div class="fhead__title"><b>Open Network X</b><span><!--gen:post_count-->14<!--/gen:post_count--> posts</span></div>
       <a class="fhead__repo" href="https://github.com/gokooteam/The-Open-Network-X" aria-label="Repository on GitHub"><svg class="ico" aria-hidden="true"><use href="#i-code"/></svg></a>
     </div>
 
@@ -580,6 +581,7 @@ html:not(.js) .det__controls button, html:not(.js) .act--share, html:not(.js) .t
           <div class="profile__actions">
             <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/crates">View code</a>
             <a class="pill pill--light" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification">Read the spec</a>
+            <a class="pill pill--blue" href="https://on-x-scan.com/">Open the explorer</a>
           </div>
         </div>
         <div class="profile__name">
@@ -1018,6 +1020,27 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
   </div>
 </article>
 
+<article class="post" id="explorer" data-kind="doc" aria-labelledby="explorer-h">
+  <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
+  <div class="post__body">
+    <div class="post__head"><b>Open Network X</b><span>on-x.live</span><span aria-hidden="true">·</span><a href="https://on-x-scan.com/">on-x-scan.com</a></div>
+    <div class="post__text">
+      <h2 class="post__xl" id="explorer-h">Block explorer</h2>
+      <p class="post__lead">on-x-scan.com shows the blocks of devnet-1.</p>
+      <p class="post__big">It checks every block in your browser before showing it.</p>
+      <p>The explorer reads the block files that devnet-1's producer publishes and verifies them in your browser against the pinned genesis hash. The server the files come from is not trusted: a changed byte or a broken link between blocks shows up as a failed check instead of being displayed as chain data. The page is one HTML file with no external scripts, fonts or trackers.</p>
+    </div>
+    <div class="card">
+      <div class="card__row"><div class="card__k">What you can see</div><div class="card__v">Blocks, messages, accounts, genesis</div><div class="card__d">Browse each list, or search by block number, block or message hash, or account. Selecting a block or message shows every check and every field with its byte offset.</div></div>
+      <div class="card__row"><div class="card__k">Checked in your browser</div><div class="card__v">Structure, hashes, chain links, signatures</div><div class="card__d">Block file structure, block and message hashes, each block's link to the one before it, the chain ID, Ed25519 signatures on messages, and each sender's nonces.</div></div>
+      <div class="card__row"><div class="card__k">Not checked yet</div><div class="card__v">Producer signatures, balances, state roots</div><div class="card__d">Block producer signatures are decoded and shown but not verified. Balances and state roots need execution: run <code>onx replay</code> yourself and paste its output into the explorer to compare.</div></div>
+      <div class="card__row"><div class="card__k">Networks</div><div class="card__v">Testnet shows devnet-1</div><div class="card__d">devnet-1 is a development chain with one producer run by the project; there is no public testnet. The Mainnet switch shows nothing because there is no mainnet.</div></div>
+      <div class="card__row"><div class="card__k">Your own node</div><div class="card__v">Open or drop block files</div><div class="card__d">The explorer can also check the files your own <code>onxd</code> writes (<code>genesis.boc</code> and the block files). They stay in your browser.</div></div>
+    </div>
+    <div class="post__actions"><a class="act" href="https://on-x-scan.com/"><svg class="ico" aria-hidden="true"><use href="#i-open"/></svg>Open on-x-scan.com</a><a class="act" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/explorer/README.md"><svg class="ico" aria-hidden="true"><use href="#i-file"/></svg>explorer/README.md</a><button class="act act--share" type="button" data-share="explorer"><svg class="ico" aria-hidden="true"><use href="#i-share"/></svg>Share</button></div>
+  </div>
+</article>
+
 <article class="post" id="status" data-kind="doc" aria-labelledby="status-h">
   <svg class="avatar" viewBox="0 0 40 40" aria-hidden="true"><use href="#mark"/></svg>
   <div class="post__body">
@@ -1047,6 +1070,7 @@ final_state_root=8b2f6aa6de16db8b22ac3f8fdde779ae0e292b6912a21dbf1915f98747aa609
       <h2 id="end-h"><span>Build the protocol.</span> <span>Verify the network.</span></h2>
       <div class="btns">
         <a class="pill pill--blue" href="https://github.com/gokooteam/The-Open-Network-X/tree/main/docs/specification">Read the specification</a>
+        <a class="pill pill--outline" href="https://on-x-scan.com/">Open the block explorer</a>
         <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X">Explore the code</a>
         <a class="pill pill--outline" href="https://github.com/gokooteam/The-Open-Network-X/blob/main/CONTRIBUTING.md">Contribute</a>
       </div>
