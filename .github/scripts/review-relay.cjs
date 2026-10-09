@@ -32,8 +32,8 @@ const CONSENSUS_CONTEXT = 'Review consensus';
 const OVERRIDE_LABEL = 'consensus-override';
 const VERDICTS = ['GO', 'NO-GO', 'NONE'];
 // The reviewers whose verdicts can count, besides turn 2. A verdict counts
-// only if its reviewer is one of these and reviewed the head commit (a
-// review on it, a comment or thread reply since it, or its finished status).
+// only if its reviewer is one of these and reviewed the head commit itself
+// (see collect: evidence is bound to the SHA, never to a timestamp).
 const REVIEWERS = [
   { name: 'Claude audit', login: 'claude', status: null },
   { name: 'CodeRabbit', login: 'coderabbitai', status: 'CodeRabbit' },
@@ -160,6 +160,7 @@ async function fetchThreads(github, owner, repo, pr) {
       databaseId
       body
       createdAt
+      commit { oid }
       author { login __typename }
     }`;
   const threads = [];
@@ -178,6 +179,23 @@ async function fetchThreads(github, owner, repo, pr) {
     cursor = page.pageInfo.endCursor;
   }
   return threads;
+}
+
+// IDs of the successful "Claude audit" runs on a commit, from its check
+// runs. The audit's summary comment links its run, which ties that comment
+// to this commit.
+async function auditRunIds(github, owner, repo, sha) {
+  const runs = await github.paginate(github.rest.checks.listForRef, {
+    owner,
+    repo,
+    ref: sha,
+    check_name: 'Claude audit',
+    per_page: 100,
+  });
+  return runs
+    .filter((c) => c.conclusion === 'success')
+    .map((c) => (/\/actions\/runs\/(\d+)/.exec(c.details_url || '') || [])[1])
+    .filter(Boolean);
 }
 
 async function findSticky(github, owner, repo, pr) {
@@ -345,18 +363,20 @@ async function collect({ github, context, core }) {
   const threads = await fetchThreads(github, owner, repo, pr);
 
   // Which reviewers reviewed this exact commit, from GitHub's records rather
-  // than from anything a model says.
-  const { data: headCommit } = await github.rest.repos.getCommit({ owner, repo, ref: headSha });
-  const since = Date.parse(headCommit.commit.committer.date);
+  // than from anything a model says. Every piece of evidence is bound to the
+  // head SHA itself, never to a timestamp: a review submitted on it, an
+  // inline comment made on it, the reviewer's finished status on it, or (for
+  // the Claude audit) its summary comment linking the audit run for it.
   const { data: combined } = await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: headSha });
-  const after = (when) => Date.parse(when) >= since;
+  const auditRuns = await auditRunIds(github, owner, repo, headSha);
   const reviewed = REVIEWERS.filter((r) => {
     const by = (login) => botName(login) === r.login;
     return (
       reviews.some((x) => x.user && by(x.user.login) && x.commit_id === headSha) ||
-      issueComments.some((x) => x.user && by(x.user.login) && after(x.updated_at || x.created_at)) ||
-      threads.some((t) => t.comments.nodes.some((c) => c.author && by(c.author.login) && after(c.createdAt))) ||
-      (r.status && combined.statuses.some((st) => st.context === r.status && st.state === 'success'))
+      threads.some((t) => t.comments.nodes.some((c) => c.author && by(c.author.login) && c.commit && c.commit.oid === headSha)) ||
+      (r.status && combined.statuses.some((st) => st.context === r.status && st.state === 'success')) ||
+      (r.login === 'claude' &&
+        issueComments.some((x) => x.user && by(x.user.login) && auditRuns.some((id) => (x.body || '').includes(`/actions/runs/${id}`))))
     );
   }).map((r) => r.name);
 

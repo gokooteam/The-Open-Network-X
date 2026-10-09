@@ -114,6 +114,7 @@ jobs:
       pull-requests: write
       issues: write
       statuses: read
+      checks: read
       id-token: write
     outputs:
       summary: ${{ steps.post.outputs.summary }}
@@ -227,6 +228,7 @@ jobs:
       pull-requests: write
       issues: write
       statuses: write
+      checks: read
       id-token: write
     env:
       RELAY_PR: ${{ needs.gate.outputs.pr }}

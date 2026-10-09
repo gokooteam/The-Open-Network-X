@@ -46,8 +46,9 @@ Each reviewer gets a verdict:
   GO if it reviewed the commit and has none, NONE if it didn't review it.
 
 A verdict counts only from those four reviewers, and only if GitHub shows
-the reviewer reviewed the head commit (a review on it, a comment since it,
-or its finished status). A name the moderator invents, or a reviewer that
+the reviewer reviewed the head commit itself: a review or inline comment
+on that SHA, its finished status on it, or (for the Claude audit) a
+summary comment linking the audit run for it. Timestamps don't count. A name the moderator invents, or a reviewer that
 didn't review this commit, doesn't vote; one reviewer listed twice keeps
 its NO-GO.
 
