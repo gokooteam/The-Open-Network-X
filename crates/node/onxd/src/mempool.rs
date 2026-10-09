@@ -12,9 +12,10 @@
 //! to parse is left in place and retried a few times before being moved
 //! to `rejected/` (tolerance for concurrent writers, not silent loss).
 //!
-//! Why file-drop and not an in-process channel or socket: the frozen list
-//! forbids networking and RPC, and an in-process channel would only serve
-//! in-process submitters (i.e. tests). A spool directory is a real,
+//! Why file-drop and not an in-process channel or socket: networking was
+//! frozen (ADR-0042 records the unfreeze, but the network loop is not built
+//! yet), so no networking or RPC path exists, and an in-process channel
+//! would only serve in-process submitters (i.e. tests). A spool directory is a real,
 //! cross-process, no-network submission path with durable crash semantics:
 //! an accepted-but-uncommitted message survives a daemon restart because
 //! its file survives in `pending/`. This is the same shape a future RPC

@@ -1,7 +1,8 @@
 # Launch Guide — single node
 
 This guide runs one `onxd` block producer on your machine. There is no
-multi-node network yet: networking is a frozen scaffold, and `onxd`
+multi-node network yet: networking is unfrozen per ADR-0042 but not yet
+implemented (M5 in progress), and `onxd`
 refuses to start with `network_enabled=true`. The four `node-*.toml`
 stubs that `onx-genesis` emits are for a future validator network; they
 are not usable today.
@@ -62,7 +63,8 @@ resume: replay converges on the same state root.
 
 ## When multi-node arrives
 
-Validator networking, peer discovery, and consensus are specified but
-frozen (see the README status table). This guide will grow a real
+Validator networking and peer discovery are specified but not yet implemented
+(unfrozen per ADR-0042, M5 in progress); consensus is still frozen (M6, see
+the README status table). This guide will grow a real
 "launch N nodes" section when the network scaffold is replaced —
 tracked in `ROADMAP.md`, not here.
