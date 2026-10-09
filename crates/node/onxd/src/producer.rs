@@ -87,7 +87,9 @@ use crate::blockfiles::{
     atomic_write_block_file, regenerate_missing_block_files, sweep_temp_block_files,
 };
 use crate::mempool::Mempool;
-use onx::blockfile::{block_file_name, decode_block_file, encode_block_file, BLOCK_FILE_MAGIC};
+#[cfg(test)]
+use onx::blockfile::{block_file_name, decode_block_file};
+use onx::blockfile::{encode_block_file, BLOCK_FILE_MAGIC};
 use onx_data_structures::AccountId;
 use onx_networking::block_sync::MAX_BLOCK_FILE_BYTES;
 use onx_stf::block::{Block, BLOCK_HEADER_BYTE_LEN, PROTOCOL_VERSION, SIG_ENTRY_BYTE_LEN};

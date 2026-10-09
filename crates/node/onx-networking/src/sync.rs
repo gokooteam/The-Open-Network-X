@@ -365,7 +365,7 @@ impl<T: SyncTransport> SyncServer<T> {
         };
         // The transfer id is derived from the requested seqno so the
         // client can filter stale frames (design decision 7).
-        rldp_send(
+        match rldp_send(
             &self.transport,
             peer,
             response_transfer_id(req.seq_no),
@@ -374,6 +374,16 @@ impl<T: SyncTransport> SyncServer<T> {
             self.config.ack_timeout,
         )
         .await
+        {
+            Ok(()) => Ok(()),
+            // The peer went quiet mid-transfer (crashed, partitioned, or
+            // simply left). The client retries on its own timeout; killing
+            // the server — and with it the producer — over a peer's
+            // disappearance would be a remote DoS. Only our own transport
+            // failure propagates.
+            Err(SyncError::Timeout { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Serve forever. Returns only on our own transport failure.

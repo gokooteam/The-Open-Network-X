@@ -132,14 +132,14 @@ async fn test_adnl_node_loopback_ping_pong_and_reconnection() {
     node2_task.await.unwrap();
 }
 
-/// Receiving a FastPacket requires a pre-established session: the sender's
-/// `send_datagram` creates its own session on demand, but the receiver
-/// resolves the channel_id purely from its own `channel_to_peer` map.
-/// A node that never called `connect_peer` for the sender cannot decrypt —
-/// this is the contract `onxd` relies on when it pre-establishes channels
-/// for every configured static peer at startup (see `run_networked`).
+/// Undecryptable datagrams are skipped, never returned as errors: on an
+/// unauthenticated UDP socket anyone can send bytes, and a single bad
+/// datagram must not fail the receiver (that would be an unauthenticated
+/// remote DoS). `onxd` pre-establishes channels for every configured
+/// static peer at startup (see `run_networked`), so legitimate peers
+/// always resolve.
 #[tokio::test]
-async fn test_recv_requires_preestablished_session() {
+async fn test_recv_skips_datagrams_without_session() {
     let node1_sk = SecretKey::from_seed(&[111u8; 32]).unwrap();
     let node1 = Arc::new(
         AdnlTransportNode::bind(node1_sk, "127.0.0.1:0".parse().unwrap())
@@ -158,15 +158,16 @@ async fn test_recv_requires_preestablished_session() {
     let addr2 = node2.local_addr().unwrap();
     let node1_abstract_addr = node1.abstract_address();
 
-    // Only the sender establishes the session.
+    // Only the sender establishes the session. The datagram is valid, but
+    // node2 has no channel for it: it must be skipped, not returned, and
+    // the receiver must keep waiting rather than fail.
     node1.connect_peer(node2_pk, addr2);
     node1.send_datagram(node2_pk, addr2, b"PING").await.unwrap();
 
-    // The receiver has no session for this channel_id: undecryptable.
     let recv_res = timeout(Duration::from_secs(2), node2.recv_datagram()).await;
     assert!(
-        recv_res.unwrap().is_err(),
-        "recv without a pre-established session must fail"
+        recv_res.is_err(),
+        "recv must skip the undecryptable datagram and keep waiting (timeout), not fail"
     );
 
     // After the receiver pre-establishes the session (what onxd does for

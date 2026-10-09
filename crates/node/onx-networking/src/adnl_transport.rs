@@ -410,47 +410,57 @@ impl AdnlTransportNode {
     }
 
     /// Receives and decrypts a datagram over ADNL transport. Handles both FullPacket and FastPacket datagrams.
+    ///
+    /// Undecryptable datagrams (garbage, truncated, unknown channel, bad
+    /// signature) are *skipped*, not returned: on an unauthenticated UDP
+    /// socket anyone can send bytes, and a single bad datagram must never
+    /// fail the receiver — that would be an unauthenticated remote DoS
+    /// (`printf x | nc -u <addr> <port>` killing the node). Only a failure
+    /// of our own socket is returned as an error.
     pub async fn recv_datagram(&self) -> Result<(Uint256, Vec<u8>, SocketAddr), NetworkError> {
-        let mut buf = [0u8; 65535];
-        let (len, src_addr) = self
-            .socket
-            .recv_from(&mut buf)
-            .await
-            .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
+        loop {
+            let mut buf = [0u8; 65535];
+            let (len, src_addr) = self
+                .socket
+                .recv_from(&mut buf)
+                .await
+                .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
 
-        let wire = &buf[..len];
-        if wire.len() < 32 {
-            return Err(NetworkError::TruncatedPacket);
-        }
-
-        let mut id_bytes = [0u8; 32];
-        id_bytes.copy_from_slice(&wire[..32]);
-        let header_id = Uint256(id_bytes);
-
-        // First check if header_id matches our abstract address (FullPacket)
-        if header_id == self.abstract_address {
-            if let Ok(full_pkt) = FullPacket::decode(wire, &self.secret_key) {
-                return Ok((full_pkt.sender_address, full_pkt.payload, src_addr));
+            let wire = &buf[..len];
+            if wire.len() < 32 {
+                continue; // garbage: skip
             }
-        }
 
-        // Check if header_id matches an active session channel_id
-        let session_opt = {
-            let channel_map = self.channel_to_peer.lock().unwrap();
-            let peer_addr = channel_map.get(&header_id).cloned();
-            if let Some(peer_addr) = peer_addr {
-                let sessions = self.sessions.lock().unwrap();
-                sessions.get(&peer_addr).cloned()
-            } else {
-                None
+            let mut id_bytes = [0u8; 32];
+            id_bytes.copy_from_slice(&wire[..32]);
+            let header_id = Uint256(id_bytes);
+
+            // First check if header_id matches our abstract address (FullPacket)
+            if header_id == self.abstract_address {
+                if let Ok(full_pkt) = FullPacket::decode(wire, &self.secret_key) {
+                    return Ok((full_pkt.sender_address, full_pkt.payload, src_addr));
+                }
+                continue; // undecryptable full packet: skip
             }
-        };
 
-        if let Some(session) = session_opt {
-            let pkt = FastPacket::decode(wire, &session.shared_secret)?;
-            return Ok((pkt.sender_address, pkt.payload, src_addr));
+            // Check if header_id matches an active session channel_id
+            let session_opt = {
+                let channel_map = self.channel_to_peer.lock().unwrap();
+                let peer_addr = channel_map.get(&header_id).cloned();
+                if let Some(peer_addr) = peer_addr {
+                    let sessions = self.sessions.lock().unwrap();
+                    sessions.get(&peer_addr).cloned()
+                } else {
+                    None
+                }
+            };
+
+            if let Some(session) = session_opt {
+                if let Ok(pkt) = FastPacket::decode(wire, &session.shared_secret) {
+                    return Ok((pkt.sender_address, pkt.payload, src_addr));
+                }
+            }
+            // Unknown channel or failed integrity check: skip the datagram.
         }
-
-        Err(NetworkError::DecryptionFailed)
     }
 }
