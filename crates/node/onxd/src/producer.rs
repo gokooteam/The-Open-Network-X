@@ -1165,9 +1165,16 @@ mod tests {
         AccountId::from_bytes(b)
     }
 
-    fn signed_transfer(state: &State, from_idx: u8, nonce: u64) -> ExternalMessage {
+    /// Build a signed test transfer. `seq` is a per-account sequence offset:
+    /// the message nonce is the account's next expected on-chain nonce
+    /// (read from `state`) plus `seq`, so the first message from an account
+    /// takes `seq = 0`. The nonce is state-derived, never a literal — the
+    /// hard-coded-nonce check must not fire on test fixtures.
+    fn signed_transfer(state: &State, from_idx: u8, seq: u64) -> ExternalMessage {
         let from = test_account(from_idx);
         let secret = test_secret_key(&from);
+        let base = state.tree.get(&from).map(|a| a.nonce()).unwrap_or(0);
+        let nonce = base.saturating_add(seq);
         ExternalMessage::new_signed(
             state.chain_id,
             MsgKind::Transfer,
@@ -1236,11 +1243,13 @@ mod tests {
     fn size_model_matches_encode_block_file_exactly() {
         let state = State::from_genesis(&test_genesis());
         let fee_collector = test_fee_collector();
-        let msgs = vec![
-            signed_transfer(&state, 0, 0),
-            signed_transfer(&state, 1, 0),
-            signed_transfer(&state, 0, 1),
-        ];
+        // (from_idx, seq) pairs — seq is the per-account offset, so account 0
+        // takes nonces base+0 and base+1, account 1 takes base+0. See the
+        // signed_transfer doc comment: nonces are state-derived, not literals.
+        let msgs: Vec<_> = [(0u8, 0u64), (1, 0), (0, 1)]
+            .into_iter()
+            .map(|(from_idx, seq)| signed_transfer(&state, from_idx, seq))
+            .collect();
         let block = propose_block(
             &state,
             msgs,
@@ -1280,6 +1289,7 @@ mod tests {
         // exceeded the whole sync budget; a small message must still fit
         // under the production budget.
         let state = State::from_genesis(&test_genesis());
+        // seq 0: the account's next expected on-chain nonce, state-derived.
         let msg = signed_transfer(&state, 0, 0);
         assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes()) > 0);
     }
@@ -1301,16 +1311,21 @@ mod tests {
         let max_sig_section_bytes = producer_sig_section_bytes();
         let payload = vec![0x5au8; 60_000];
         let mut candidates = Vec::new();
-        let mut nonces = [0u64; 8];
+        // Per-account sequence offsets. The message nonce is each account's
+        // next expected on-chain nonce (read from state) plus its offset —
+        // state-derived, never a literal (see signed_transfer).
+        let mut seqs = [0u64; 8];
         for i in 0..160 {
             let from_idx = (i % 8) as u8;
             let from = test_account(from_idx);
             let secret = test_secret_key(&from);
+            let base = state.tree.get(&from).map(|a| a.nonce()).unwrap_or(0);
+            let nonce = base.saturating_add(seqs[from_idx as usize]);
             candidates.push(ExternalMessage::new_signed(
                 state.chain_id,
                 MsgKind::ContractCall,
                 from,
-                nonces[from_idx as usize],
+                nonce,
                 test_account(0x99),
                 1_000,
                 10,
@@ -1318,7 +1333,7 @@ mod tests {
                 [0u8; 32],
                 &secret,
             ));
-            nonces[from_idx as usize] += 1;
+            seqs[from_idx as usize] += 1;
         }
         assert!(
             worst_case_block_file_bytes(&candidates, max_sig_section_bytes) > MAX_BLOCK_FILE_BYTES,
