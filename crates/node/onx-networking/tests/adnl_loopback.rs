@@ -131,3 +131,56 @@ async fn test_adnl_node_loopback_ping_pong_and_reconnection() {
 
     node2_task.await.unwrap();
 }
+
+/// Receiving a FastPacket requires a pre-established session: the sender's
+/// `send_datagram` creates its own session on demand, but the receiver
+/// resolves the channel_id purely from its own `channel_to_peer` map.
+/// A node that never called `connect_peer` for the sender cannot decrypt —
+/// this is the contract `onxd` relies on when it pre-establishes channels
+/// for every configured static peer at startup (see `run_networked`).
+#[tokio::test]
+async fn test_recv_requires_preestablished_session() {
+    let node1_sk = SecretKey::from_seed(&[111u8; 32]).unwrap();
+    let node1 = Arc::new(
+        AdnlTransportNode::bind(node1_sk, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap(),
+    );
+
+    let node2_sk = SecretKey::from_seed(&[112u8; 32]).unwrap();
+    let node2_pk = node2_sk.public_key();
+    let node2 = Arc::new(
+        AdnlTransportNode::bind(node2_sk, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap(),
+    );
+
+    let addr2 = node2.local_addr().unwrap();
+    let node1_abstract_addr = node1.abstract_address();
+
+    // Only the sender establishes the session.
+    node1.connect_peer(node2_pk, addr2);
+    node1.send_datagram(node2_pk, addr2, b"PING").await.unwrap();
+
+    // The receiver has no session for this channel_id: undecryptable.
+    let recv_res = timeout(Duration::from_secs(2), node2.recv_datagram()).await;
+    assert!(
+        recv_res.unwrap().is_err(),
+        "recv without a pre-established session must fail"
+    );
+
+    // After the receiver pre-establishes the session (what onxd does for
+    // every configured peer at startup), the same datagram flow works.
+    let node1_pk = node1.public_key();
+    let addr1 = node1.local_addr().unwrap();
+    node2.connect_peer(node1_pk, addr1);
+    node1
+        .send_datagram(node2_pk, addr2, b"PING2")
+        .await
+        .unwrap();
+
+    let recv_res = timeout(Duration::from_secs(2), node2.recv_datagram()).await;
+    let (sender_addr, payload, _src) = recv_res.unwrap().unwrap();
+    assert_eq!(sender_addr, node1_abstract_addr);
+    assert_eq!(payload, b"PING2");
+}

@@ -558,6 +558,23 @@ async fn run_networked(
         peers.push(parse_sync_peer(p)?);
     }
 
+    // Pre-establish an ADNL channel with every configured peer. `send_datagram`
+    // creates the sender's session on demand, but `recv_datagram` can only
+    // decrypt a FastPacket when the channel already exists in our own
+    // `channel_to_peer` map — a peer that only ever receives would otherwise
+    // answer every inbound datagram with DecryptionFailed. Channel state is
+    // deterministic and symmetric (X25519 DH both ways, canonical address
+    // ordering), so both sides independently derive the same channel_id and
+    // shared secret for the pair.
+    let node = Arc::new(node);
+    for p in &peers {
+        node.connect_peer(p.public_key, p.endpoint);
+    }
+    eprintln!(
+        "onxd: ADNL channels established with {} configured peer(s)",
+        peers.len()
+    );
+
     let shutdown = Arc::new(AtomicBool::new(false));
     let runtime_shutdown = config
         .shutdown_after_ms
@@ -580,7 +597,7 @@ async fn run_networked(
             "onxd: follower mode: syncing from producer {}",
             hex::encode(peer.address.0)
         );
-        let transport = SharedAdnlTransport::new(Arc::new(node));
+        let transport = SharedAdnlTransport::new(node.clone());
         let client = SyncClient::new(transport, peer, SyncConfig::default());
         let follower_cfg = FollowerConfig {
             blocks_dir: Path::new(&config.storage_path).join("blocks"),
@@ -654,7 +671,7 @@ async fn run_networked(
     // answering follower block requests from the blocks dir.
     let blocks_dir = Path::new(&config.storage_path).join("blocks");
     let server = SyncServer::new(
-        SharedAdnlTransport::new(Arc::new(node)),
+        SharedAdnlTransport::new(node.clone()),
         peers,
         blocks_dir.clone(),
         SyncConfig::default(),
