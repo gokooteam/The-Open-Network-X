@@ -26,7 +26,7 @@ Could this behave differently on two honest nodes given the same inputs?
 <!-- State the specification section implemented and any deliberate deviations. -->
 
 ## Prompts
-<!-- Exact prompt(s) that orchestrated this change — verbatim, not paraphrased. Required for every PR not triggered by a GitHub Action (the workflow file is the prompt for those). See CONTRIBUTING.md "Prompt documentation". -->
+<!-- Exact prompt(s) that orchestrated this change — verbatim, not paraphrased. Required for every PR not triggered by a GitHub Action (the workflow file is the prompt for those). Redact secrets, credentials, tokens, personal details, and anything under SECURITY.md — mark redactions inline, e.g. [redacted: API key]. See CONTRIBUTING.md "Prompt documentation". -->
 
 ## Review relay
 <!-- After the relay reaches consensus, Gokoo does a live verification pass (Turn 4): checks the relay's claims, runs scoped tests, posts GO/NO-GO. Advisory; Amethyst merges. -->

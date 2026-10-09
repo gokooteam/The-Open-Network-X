@@ -152,6 +152,13 @@ Every change to this repo was orchestrated by some prompt. Document it.
   deliberation reproducible — and reproducible deliberation is what makes
   this repo's review process worth trusting. See
   `docs/conductors-score.md` for the project's own prompt history.
+- **Keep private info out.** Verbatim does not mean unredacted: strip
+  secrets, credentials, tokens, personal details, and anything covered by
+  `SECURITY.md` before quoting. Mark every redaction inline, e.g.
+  `[redacted: API key]`, so the record stays honest about what was asked
+  without publishing what must stay private. Security-sensitive prompts
+  may be recorded privately and disclosed with the fix. Never break this
+  rule to satisfy the one above it.
 
 ## Picking up work
 
