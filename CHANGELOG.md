@@ -37,6 +37,33 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   does the same over SSH from your own device.
 - `MILESTONES.md`: completed milestones M0–M3, exit criteria for M4–M7,
   and the maintenance gate that defines `1.0.0`.
+- `Review Relay` workflow (`review-relay.yml`,
+  `docs/guides/review-relay.md`): after the Claude audit, a second-opinion
+  turn that reads every review and replies where it disagrees, then a
+  moderator turn that merges duplicate findings, states the consensus
+  impact and determinism verdicts, keeps one summary comment per PR, and
+  labels the PR `review-blocking` while a critical, high or medium finding
+  is open. Docs-only PRs, drafts and forks skip it.
+- Review consensus: each reviewer's GO or NO-GO (turn 1, turn 2, and one
+  inferred per review app) is tallied into merge (GO: no standing NO-GO,
+  at least two GOs) or don't merge (NO-GO, with a list of what the PR
+  needs). The relay sets it as the `Review consensus` commit status. The
+  new ruleset `.github/rulesets/review-consensus.json` makes it required
+  once applied (`scripts/apply-branch-protection.sh` now takes a ruleset
+  file). The `consensus-override` label (`review-consensus-override.yml`)
+  lets a maintainer pass it.
+- `.coderabbit.yaml`: keeps CodeRabbit's findings and commit status and
+  turns off its walkthrough extras and pre-merge checks.
+- `README.md` status block: the development phase (development until the
+  M8 maintenance gate passes) and a milestone map with exit-criteria
+  progress and no target dates. `scripts/site.py build` writes it from
+  `MILESTONES.md`; `site.py check` fails CI when it falls behind.
+- `Milestones` workflow (`milestones.yml`): mirrors `MILESTONES.md` into
+  GitHub milestones, titled with exit-criteria progress (e.g.
+  `M4 · 16/21 · …`), finished ones closed and no due dates; and gives each
+  new PR the milestone its title names (`M5: …`), else the current one.
+- PR template: a *Consensus impact* section (breaking, adjacent or none)
+  and the determinism question.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
   key-derived address (`ONX_ADDR_V1`).
 - `Fuzz` CI workflow (`.github/workflows/fuzz.yml`): every PR and push to
@@ -46,6 +73,9 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Changed
 
+- The Claude PR audit posts one summary comment per run instead of two (its
+  progress comment is the summary), and every summary starts with a
+  consensus-impact verdict and a determinism answer.
 - `CONTRIBUTING.md`: adding a research-logbook entry is optional, no longer
   required for every PR. The logbook stays.
 - ADRs: the versioning standard is renumbered ADR-0034 → ADR-0040

@@ -24,11 +24,16 @@ Generated regions in the HTML are delimited by markers:
     <!--gen:KEY-->…<!--/gen:KEY-->        (HTML)
     /*gen:KEY*/…/*/gen:KEY*/              (inside the page's script)
 
+README.md has one generated region too, `readme_status`: the development
+phase and the milestone map, built from MILESTONES.md ('At a glance' plus
+the exit-criteria checkboxes under each milestone's heading).
+
 Commands:
 
     build   Rewrite every generated region from the repository (and update
-            measured facts when their logs/flags are given).
-    check   Fail if any generated region is stale, if a link into this
+            measured facts when their logs/flags are given), in the site
+            and in README.md.
+    check   Fail if any generated region (site or README) is stale, if a link into this
             repository points at a path that doesn't exist, if retired terms
             reappear, if the probe console names a test that doesn't exist,
             or if the explorer's protocol constants disagree with the code.
@@ -40,6 +45,7 @@ Usage:
     python3 scripts/site.py build [--tests-log FILE] [--replay-log FILE] [--reviewed]
     python3 scripts/site.py check
     python3 scripts/site.py live [--attempts N] [--json FILE]
+    python3 scripts/site.py milestones     (JSON for the Milestones workflow)
 
 Only the Python standard library is used.
 """
@@ -61,6 +67,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SITE = ROOT / "site" / "index.html"
+README = ROOT / "README.md"
 STATE = ROOT / "site" / "state.json"
 EXPLORER = ROOT / "explorer" / "index.html"
 REPO = "https://github.com/gokooteam/The-Open-Network-X"
@@ -187,6 +194,78 @@ def done_milestones() -> list[str]:
     return done
 
 
+def milestone_criteria(text: str, mid: str) -> tuple[int, int]:
+    """(checked, total) exit-criteria boxes under the heading that names
+    milestone `mid` ('### M4 — …', or '## Part 3 — … (M8, …)'), up to the
+    next heading."""
+    lines = text.splitlines()
+    head = re.compile(rf"^#{{2,3}} .*\b{mid}\b")
+    for i, line in enumerate(lines):
+        if head.match(line):
+            body = []
+            for nxt in lines[i + 1:]:
+                if nxt.startswith(("## ", "### ")):
+                    break
+                body.append(nxt)
+            done = sum(1 for b in body if b.startswith("- [x]"))
+            return done, done + sum(1 for b in body if b.startswith("- [ ]"))
+    return 0, 0
+
+
+def milestone_map() -> list[dict]:
+    """Every M-row of MILESTONES.md 'At a glance', with its progress."""
+    text = read(ROOT / "MILESTONES.md")
+    rows = []
+    for line in text.splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if not line.startswith("|") or not re.fullmatch(r"\**M\d+\**", cells[0]):
+            continue
+        mid = cells[0].strip("*")
+        status = cells[3]
+        date = re.search(r"\d{4}-\d{2}-\d{2}", status)
+        met, total = milestone_criteria(text, mid)
+        rows.append({
+            "id": mid,
+            "name": cells[1].replace("**", ""),
+            "version": cells[2].replace("**", ""),
+            "done": "✅" in status,
+            "current": "⏭" in status,
+            "date": date.group(0) if date else "",
+            "met": met,
+            "total": total,
+        })
+    if not rows:
+        raise SystemExit("MILESTONES.md: no milestone rows in 'At a glance'")
+    return rows
+
+
+def milestone_problems(rows: list[dict]) -> list[str]:
+    """A milestone with exit criteria is done exactly when all are checked,
+    and the last row (the maintenance gate) must have criteria. Otherwise the
+    README's phase and map could contradict MILESTONES.md."""
+    problems = []
+    if not rows[-1]["total"]:
+        problems.append(f"MILESTONES.md: {rows[-1]['id']} (the maintenance gate) has no exit-criteria checkboxes")
+    for r in rows:
+        if not r["total"]:
+            continue
+        complete = r["met"] == r["total"]
+        if r["done"] and not complete:
+            problems.append(f"MILESTONES.md: {r['id']} is marked ✅ but {r['total'] - r['met']} of its exit criteria are unchecked")
+        if complete and not r["done"]:
+            problems.append(f"MILESTONES.md: every {r['id']} exit criterion is checked; mark its 'At a glance' row ✅ Done")
+    return problems
+
+
+def readme_marker_problems(text: str) -> list[str]:
+    opens = text.count("<!--gen:readme_status-->")
+    closes = text.count("<!--/gen:readme_status-->")
+    if opens == 1 and closes == 1 and text.index("<!--gen:readme_status-->") < text.index("<!--/gen:readme_status-->"):
+        return []
+    return [f"README.md: needs exactly one <!--gen:readme_status-->…<!--/gen:readme_status--> region "
+            f"(found {opens} opening, {closes} closing)"]
+
+
 def explorer_network(name: str) -> dict:
     m = re.search(rf"{name}:\s*\{{[^}}]*chainId:\s*'([0-9a-f]{{64}})'[^}}]*files:\s*'([^']+)'", read(EXPLORER))
     if not m:
@@ -221,6 +300,7 @@ def derived() -> dict:
         "schema_version": int(rust_const("crates/protocol/onx-storage/src/store.rs", "SCHEMA_VERSION")),
         "milestone": current_milestone(),
         "done": done_milestones(),
+        "map": milestone_map(),
         "devnet": explorer_network("testnet"),
         "golden": golden_roots(),
     }
@@ -363,6 +443,71 @@ def render_replay(replay: dict, golden: dict) -> dict[str, str]:
         "replay_final_js": f"'{kv['final_state_root']}'",
     }
     return out
+
+
+def bar(met: int, total: int, width: int = 10) -> str:
+    filled = round(width * met / total) if total else 0
+    return "█" * filled + "░" * (width - filled)
+
+
+def render_readme(d: dict) -> dict[str, str]:
+    """The README's status block: phase, current milestone, milestone map.
+    No target dates: a milestone is done when its exit criteria are."""
+    rows = d["map"]
+    gate = rows[-1]
+    current = next((r for r in rows if r["current"]), next((r for r in rows if not r["done"]), gate))
+    if gate["done"] and gate["total"] and gate["met"] == gate["total"]:
+        phase = ("**Phase: maintenance.** The maintenance gate (M8) is passed: the scope "
+                 "is finished and changes are fixes, security, and compatible improvements.")
+    else:
+        phase = ("**Phase: development.** ONX is being built, not maintained. It switches "
+                 "to maintenance when every box in the "
+                 "[maintenance gate](MILESTONES.md#part-3--the-maintenance-gate-m8-100) "
+                 f"({gate['id']}, `{gate['version'].strip('`')}`) is checked.")
+    now = f"**Now:** {current['id']}, *{current['name']}* (`{current['version'].strip('`')}`)"
+    if current["total"]:
+        now += f": {current['met']} of {current['total']} exit criteria met."
+    else:
+        now += "."
+
+    def mark(r: dict) -> str:
+        if r["done"]:
+            return "✅"
+        if r is current:
+            return "▶"
+        return "🏁" if r is gate else "○"
+
+    line = " ── ".join(f"{r['id']} {mark(r)}" for r in rows)
+    table = ["| | Milestone | Version | Progress |", "| :-: | --- | --- | --- |"]
+    for r in rows:
+        name = f"{r['id']} · {r['name']}"
+        if r is current:
+            name = f"**{name}**"
+        if r["done"]:
+            progress = f"done {r['date']}" if r["date"] else "done"
+        elif r["total"]:
+            progress = f"`{bar(r['met'], r['total'])}` {r['met']}/{r['total']}"
+        else:
+            progress = "criteria not written yet"
+        table.append(f"| {mark(r)} | {name} | {r['version']} | {progress} |")
+    block = "\n".join([
+        "",
+        phase,
+        "",
+        now,
+        "",
+        "```text",
+        line,
+        "```",
+        "",
+        *table,
+        "",
+        "Progress counts the exit-criteria checkboxes in [`MILESTONES.md`](MILESTONES.md); "
+        "a box is ticked in the PR that earns it. There are no target dates. This block is "
+        "generated by `scripts/site.py build`, and CI fails when it falls behind.",
+        "",
+    ])
+    return {"readme_status": block}
 
 
 GEN = re.compile(
@@ -578,7 +723,17 @@ def cmd_build(args) -> int:
         print("No value for generated region(s): " + ", ".join(missing), file=sys.stderr)
         return 1
     SITE.write_text(page, encoding="utf-8")
-    print(f"site/index.html regenerated ({len(page):,} bytes).")
+    d = derived()
+    bad = readme_marker_problems(read(README)) + milestone_problems(d["map"])
+    if bad:
+        print("\n".join(bad), file=sys.stderr)
+        return 1
+    readme, missing = apply(read(README), render_readme(d))
+    if missing:
+        print("README.md: no value for generated region(s): " + ", ".join(missing), file=sys.stderr)
+        return 1
+    README.write_text(readme, encoding="utf-8")
+    print(f"site/index.html regenerated ({len(page):,} bytes); README.md status updated.")
     return 0
 
 
@@ -591,6 +746,14 @@ def cmd_check(_args) -> int:
         problems.append("site: no value for generated region(s): " + ", ".join(missing))
     if fresh != page:
         problems.append("site/index.html is out of date with the repository. Run: python3 scripts/site.py build")
+    readme = read(README)
+    problems += readme_marker_problems(readme)
+    problems += milestone_problems(d["map"])
+    fresh_readme, missing = apply(readme, render_readme(d))
+    if missing:
+        problems.append("README.md: no value for generated region(s): " + ", ".join(missing))
+    if fresh_readme != readme:
+        problems.append("README.md's status block is out of date with MILESTONES.md. Run: python3 scripts/site.py build")
     problems += repo_links(page)
     problems += [f"explorer: {p}" for p in repo_links(read(EXPLORER))]
     problems += retired_terms(page, "site")
@@ -603,6 +766,13 @@ def cmd_check(_args) -> int:
         print("\n".join(f"- {p}" for p in problems))
         return 1
     print("Site check passed: generated facts current, links resolve, explorer constants match the code.")
+    return 0
+
+
+def cmd_milestones(_args) -> int:
+    """Print the milestone map as JSON; milestones.yml syncs GitHub
+    milestones from it."""
+    print(json.dumps({"milestones": milestone_map()}, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -625,7 +795,7 @@ def cmd_live(args) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    b = sub.add_parser("build", help="regenerate site/index.html from the repository")
+    b = sub.add_parser("build", help="regenerate site/index.html and README.md's status from the repository")
     b.add_argument("--tests-log", help="output of `cargo test --workspace --all-targets` at HEAD")
     b.add_argument("--replay-log", help="output of replay_prints_vectors_for_freezing --nocapture at HEAD")
     b.add_argument("--reviewed", action="store_true",
@@ -634,8 +804,10 @@ def main() -> int:
     lv = sub.add_parser("live", help="compare the deployed sites with this checkout")
     lv.add_argument("--attempts", type=int, default=4, help="fetches per URL (default 4)")
     lv.add_argument("--json", help="also write the report as JSON")
+    sub.add_parser("milestones", help="print the milestone map from MILESTONES.md as JSON")
     args = ap.parse_args()
-    return {"build": cmd_build, "check": cmd_check, "live": cmd_live}[args.cmd](args)
+    return {"build": cmd_build, "check": cmd_check, "live": cmd_live,
+            "milestones": cmd_milestones}[args.cmd](args)
 
 
 if __name__ == "__main__":
