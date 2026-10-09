@@ -422,14 +422,13 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         let _ = serve_metrics(metrics_cfg).await;
     });
 
-    // Networking stays frozen: refusing to pretend a network exists.
+    // Networking is unfrozen (ADR-0042) but not yet implemented: refusing to
+    // pretend a network exists.
     if config.network_enabled {
-        return Err(
-            "networking is frozen until the deterministic-replay milestone passes: \
+        return Err("networking is not yet implemented (M5 in progress): \
              refusing to start with network_enabled=true (there is no real network \
              loop yet). Set network_enabled=false to run the single-node producer."
-                .to_string(),
-        );
+            .to_string());
     }
 
     // Block production runs on a dedicated blocking thread: propose/commit
