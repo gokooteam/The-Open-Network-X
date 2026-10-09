@@ -99,7 +99,7 @@ ONX follows several principles:
 **Now:** M4, *Pay down debt: a single node you'd trust* (`0.3.0`): 16 of 21 exit criteria met.
 
 ```text
-M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ○ ── M6 ○ ── M7 ○ ── M8 🏁
+M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ✅ ── M6 ○ ── M7 ○ ── M8 🏁
 ```
 
 | | Milestone | Version | Progress |
@@ -109,7 +109,7 @@ M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ○ ─
 | ✅ | M2 · Single-node chain: TVM, message model, hardening | in 0.2.0 | done 2026-10-07 |
 | ✅ | M3 · Authenticated blocks, devnet-1, release engineering | `v0.2.0` tag | done 2026-10-08 |
 | ▶ | **M4 · Pay down debt: a single node you'd trust** | 0.3.0 | `████████░░` 16/21 |
-| ○ | M5 · Networking: nodes find each other and stay in sync | 0.4.0 | `████░░░░░░` 3/7 |
+| ✅ | M5 · Networking: nodes find each other and stay in sync | 0.4.0 | done 2026-10-09 |
 | ○ | M6 · Consensus: more than one validator | 0.5.0 | `░░░░░░░░░░` 0/6 |
 | ○ | M7 · A public testnet other people can use | 0.6.0 – 0.9.x | `░░░░░░░░░░` 0/8 |
 | 🏁 | M8 · Maintenance gate: stop developing, start maintaining | 1.0.0 | `░░░░░░░░░░` 0/14 |
@@ -142,7 +142,7 @@ earned.
 | `onxd` block-production loop | ✅ | ✅ | ✅ | ✅ spool mempool, demand blocks, replay-to-identical-roots |
 | VM / TVM execution | ✅ | ✅ | ✅ | ⚠️ partial — `LDREF` child-cell bug fixed (#7, `vm_child_cells.rs`), checked arithmetic (#8), `tvm_execution` fuzzed in CI, `JMPREF`/`CALLREF` work from real contracts (#32, `callref_stf.rs`); open: nested calls after an implicit return, padding bits of bit-granular code cells (M4) |
 | Consensus | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
-| Networking (ADNL/DHT) | ✅ | ❌ scaffold | ❌ | ❌ — unfrozen per ADR-0042, not yet built |
+| Networking (ADNL/DHT) | ✅ | ⚠️ partial | ⚠️ partial | ⚠️ partial — block-sync wire protocol + ADNL datagram transport + follower sync loop (M5, `follower_sync.rs`, `multinode-sync-test.sh`); open: peer discovery/DHT, mempool gossip, broadcast overlay (M6+) |
 | Sharding | ✅ | ❌ | ❌ | ❌ — frozen |
 | Payment channels | ✅ | ❌ | ❌ | ❌ — frozen |
 | RPC / telemetry | ✅ | partial | ❌ | ❌ — frozen |

@@ -83,8 +83,13 @@
 //! now the database is the source of truth and any missing (or torn)
 //! block file is regenerated from it at startup.
 
+use crate::blockfiles::{
+    atomic_write_block_file, regenerate_missing_block_files, sweep_temp_block_files,
+};
 use crate::mempool::Mempool;
-use onx::blockfile::{block_file_name, decode_block_file, encode_block_file, BLOCK_FILE_MAGIC};
+#[cfg(test)]
+use onx::blockfile::{block_file_name, decode_block_file};
+use onx::blockfile::{encode_block_file, BLOCK_FILE_MAGIC};
 use onx_data_structures::AccountId;
 use onx_networking::block_sync::MAX_BLOCK_FILE_BYTES;
 use onx_stf::block::{Block, BLOCK_HEADER_BYTE_LEN, PROTOCOL_VERSION, SIG_ENTRY_BYTE_LEN};
@@ -96,7 +101,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::fs;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -259,7 +264,7 @@ pub struct ProducerStats {
 /// payload and a full stack trace LOUDLY to stderr, then run the default
 /// hook. `force_capture` (not `capture`) so the trace is recorded even
 /// when `RUST_BACKTRACE` is unset — panics are rare, the cost is fine.
-fn install_panic_backtrace_hook() {
+pub(crate) fn install_panic_backtrace_hook() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
         let default = std::panic::take_hook();
@@ -1019,123 +1024,6 @@ fn find_first_panicking_prefix(
     } else {
         None
     })
-}
-
-/// Temp path for an atomic block-file write. Hidden name, per-process
-/// suffix: a crash leaves a stray `.tmp-block-*` file (swept at startup),
-/// never a torn `.blk` file.
-fn temp_block_path(blocks_dir: &Path, seqno: u32) -> PathBuf {
-    blocks_dir.join(format!(
-        ".tmp-block-{:08}-{}.blk",
-        seqno,
-        std::process::id()
-    ))
-}
-
-/// Atomically write a block file: write + fsync a temp file in the same
-/// directory, then rename over the target. Rename is atomic on a single
-/// filesystem, so readers never see a partial file.
-fn atomic_write_block_file(blocks_dir: &Path, seqno: u32, bytes: &[u8]) -> Result<(), String> {
-    use std::io::Write;
-    let tmp = temp_block_path(blocks_dir, seqno);
-    {
-        let mut f = fs::File::create(&tmp)
-            .map_err(|e| format!("producer: cannot create temp block file: {e}"))?;
-        f.write_all(bytes)
-            .map_err(|e| format!("producer: cannot write temp block file: {e}"))?;
-        f.sync_all()
-            .map_err(|e| format!("producer: cannot fsync temp block file: {e}"))?;
-    }
-    fs::rename(&tmp, blocks_dir.join(block_file_name(seqno)))
-        .map_err(|e| format!("producer: cannot publish block file: {e}"))?;
-    Ok(())
-}
-
-/// Remove temp files left by crashed block-file writes.
-fn sweep_temp_block_files(blocks_dir: &Path) -> Result<usize, String> {
-    let mut swept = 0;
-    let entries =
-        fs::read_dir(blocks_dir).map_err(|e| format!("producer: cannot read blocks dir: {e}"))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("producer: dir entry failed: {e}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(".tmp-block-") {
-            fs::remove_file(entry.path())
-                .map_err(|e| format!("producer: cannot sweep temp file: {e}"))?;
-            swept += 1;
-        }
-    }
-    Ok(swept)
-}
-
-/// Regenerate block files missing from `blocks_dir`, from the database.
-///
-/// A crash between the atomic DB commit and the block-file write leaves a
-/// block committed but its `.blk` file absent — a gap `onx replay` would
-/// choke on. The database holds every committed header and body, so files
-/// are rebuilt here at startup. Existing files are verified against the
-/// committed header hash and rewritten on mismatch (covers torn files
-/// written before atomic writes existed).
-fn regenerate_missing_block_files(store: &ChainStore, blocks_dir: &Path) -> Result<usize, String> {
-    let head_seqno = match store
-        .head()
-        .map_err(|e| format!("producer: head lookup failed: {e}"))?
-    {
-        Some((seqno, _)) => seqno,
-        None => return Ok(0), // genesis only: no blocks to regenerate
-    };
-    let mut regenerated = 0;
-    for seqno in 1..=head_seqno {
-        let path = blocks_dir.join(block_file_name(seqno));
-        let needs_write = match fs::read(&path) {
-            Ok(bytes) => match decode_block_file(&bytes) {
-                Ok(signed) => {
-                    let committed = store
-                        .block_hash_for_seqno(seqno)
-                        .map_err(|e| format!("producer: block hash lookup failed: {e}"))?;
-                    // Compare the header hash AND the signature section: sigs
-                    // sit outside the hashed header, so a file with a
-                    // corrupted sig section would otherwise never be repaired.
-                    let committed_sigs = store
-                        .get_block_sigs(&committed.ok_or_else(|| {
-                            format!("producer: no committed block at seqno {seqno}")
-                        })?)
-                        .map_err(|e| format!("producer: sig lookup failed: {e}"))?;
-                    let file_sigs = onx::auth::encode_sig_section(&signed.sig_entries);
-                    committed != Some(signed.block.header.hash())
-                        || committed_sigs != Some(file_sigs)
-                }
-                Err(_) => true, // undecodable: rewrite
-            },
-            Err(_) => true, // missing: rewrite
-        };
-        if !needs_write {
-            continue;
-        }
-        let hash = store
-            .block_hash_for_seqno(seqno)
-            .map_err(|e| format!("producer: block hash lookup failed: {e}"))?
-            .ok_or_else(|| format!("producer: no committed block at seqno {seqno}"))?;
-        let header = store
-            .get_block_header(&hash)
-            .map_err(|e| format!("producer: header lookup failed: {e}"))?
-            .ok_or_else(|| format!("producer: missing header for seqno {seqno}"))?;
-        let body = store
-            .get_block_body(&hash)
-            .map_err(|e| format!("producer: body lookup failed: {e}"))?
-            .ok_or_else(|| format!("producer: missing body for seqno {seqno}"))?;
-        let sig_bytes = store
-            .get_block_sigs(&hash)
-            .map_err(|e| format!("producer: sig lookup failed: {e}"))?
-            .ok_or_else(|| format!("producer: missing sigs for seqno {seqno}"))?;
-        let sig_entries = onx::auth::decode_sig_section(&sig_bytes)
-            .map_err(|e| format!("producer: bad stored sigs for seqno {seqno}: {e}"))?;
-        let block = Block { header, body };
-        atomic_write_block_file(blocks_dir, seqno, &encode_block_file(&block, &sig_entries))?;
-        regenerated += 1;
-        eprintln!("producer: regenerated block file for seqno {seqno}");
-    }
-    Ok(regenerated)
 }
 
 #[cfg(test)]

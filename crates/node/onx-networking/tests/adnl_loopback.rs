@@ -131,3 +131,57 @@ async fn test_adnl_node_loopback_ping_pong_and_reconnection() {
 
     node2_task.await.unwrap();
 }
+
+/// Undecryptable datagrams are skipped, never returned as errors: on an
+/// unauthenticated UDP socket anyone can send bytes, and a single bad
+/// datagram must not fail the receiver (that would be an unauthenticated
+/// remote DoS). `onxd` pre-establishes channels for every configured
+/// static peer at startup (see `run_networked`), so legitimate peers
+/// always resolve.
+#[tokio::test]
+async fn test_recv_skips_datagrams_without_session() {
+    let node1_sk = SecretKey::from_seed(&[111u8; 32]).unwrap();
+    let node1 = Arc::new(
+        AdnlTransportNode::bind(node1_sk, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap(),
+    );
+
+    let node2_sk = SecretKey::from_seed(&[112u8; 32]).unwrap();
+    let node2_pk = node2_sk.public_key();
+    let node2 = Arc::new(
+        AdnlTransportNode::bind(node2_sk, "127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap(),
+    );
+
+    let addr2 = node2.local_addr().unwrap();
+    let node1_abstract_addr = node1.abstract_address();
+
+    // Only the sender establishes the session. The datagram is valid, but
+    // node2 has no channel for it: it must be skipped, not returned, and
+    // the receiver must keep waiting rather than fail.
+    node1.connect_peer(node2_pk, addr2);
+    node1.send_datagram(node2_pk, addr2, b"PING").await.unwrap();
+
+    let recv_res = timeout(Duration::from_secs(2), node2.recv_datagram()).await;
+    assert!(
+        recv_res.is_err(),
+        "recv must skip the undecryptable datagram and keep waiting (timeout), not fail"
+    );
+
+    // After the receiver pre-establishes the session (what onxd does for
+    // every configured peer at startup), the same datagram flow works.
+    let node1_pk = node1.public_key();
+    let addr1 = node1.local_addr().unwrap();
+    node2.connect_peer(node1_pk, addr1);
+    node1
+        .send_datagram(node2_pk, addr2, b"PING2")
+        .await
+        .unwrap();
+
+    let recv_res = timeout(Duration::from_secs(2), node2.recv_datagram()).await;
+    let (sender_addr, payload, _src) = recv_res.unwrap().unwrap();
+    assert_eq!(sender_addr, node1_abstract_addr);
+    assert_eq!(payload, b"PING2");
+}

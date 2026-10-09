@@ -194,6 +194,26 @@ def done_milestones() -> list[str]:
     return done
 
 
+def format_done_milestones(done: list[str]) -> str:
+    """'M0–M3, M5 done': done milestones rendered as contiguous runs, so a
+    finished later milestone (M5) is not folded into an unfinished earlier
+    one (M4)."""
+    if not done:
+        return "none done yet"
+    nums = sorted(int(m[1:]) for m in done)
+    runs = []
+    start = prev = nums[0]
+    for n in nums[1:]:
+        if n == prev + 1:
+            prev = n
+        else:
+            runs.append((start, prev))
+            start = prev = n
+    runs.append((start, prev))
+    parts = [f"M{a}–M{b}" if a != b else f"M{a}" for a, b in runs]
+    return ", ".join(parts) + " done"
+
+
 def milestone_criteria(text: str, mid: str) -> tuple[int, int]:
     """(checked, total) exit-criteria boxes under the heading that names
     milestone `mid` ('### M4 — …', or '## Part 3 — … (M8, …)'), up to the
@@ -375,8 +395,7 @@ def render(d: dict, st: dict) -> dict[str, str]:
                          f"protocol version {d['protocol_version']}, storage schema {d['schema_version']}")
     r["milestone"] = f"{ms['id']}: {esc(ms['name'])}"
     r["milestone_short"] = esc(ms["name"])
-    r["milestones_done"] = (f"{d['done'][0]}–{d['done'][-1]} done" if len(d["done"]) > 1
-                            else f"{d['done'][0]} done" if d["done"] else "none done yet")
+    r["milestones_done"] = format_done_milestones(d["done"])
     r["devnet_chain_id"] = d["devnet"]["chain_id"]
     r["devnet_source"] = esc(d["devnet"]["source"])
 

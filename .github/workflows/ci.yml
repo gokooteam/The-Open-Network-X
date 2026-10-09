@@ -118,3 +118,27 @@ jobs:
 
       - name: Ed25519 self-test
         run: python3 -c "import sys; sys.path.insert(0, 'reference'); import ed25519; ed25519.self_test()"
+
+  multinode:
+    name: Multi-node sync (real binaries)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.1
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # M5 acceptance: two real onxd binaries (producer + follower) on
+      # localhost. The follower syncs blocks over ADNL, verifying everything
+      # itself; then it is kill -9'd mid-sync, restarted, and must resume
+      # and converge. Roots are compared via two independent `onx replay`
+      # runs. See scripts/multinode-sync-test.sh.
+      - name: Producer + follower sync, kill -9 resume
+        run: bash scripts/multinode-sync-test.sh
+        timeout-minutes: 25

@@ -104,6 +104,7 @@ async fn main() {
     // the machine for Sentry (see `redact_sensitive_values`).
     let sensitive_values: Vec<String> = [
         &config.signing_key_path,
+        &config.node_key_path,
         &config.bootstrap_genesis,
         &config.fee_collector,
     ]

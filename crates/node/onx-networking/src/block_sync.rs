@@ -123,6 +123,12 @@ pub enum SyncError {
     BlockTooLarge { seq_no: u32, len: u64 },
     /// Block file could not be read.
     BlockReadFailed { seq_no: u32, reason: String },
+    /// Underlying datagram transport failure (UDP I/O, closed channel...).
+    /// Never a framing or content fault.
+    Transport(String),
+    /// Peer did not answer within the configured timeout. Expected in
+    /// normal operation (e.g. block not produced yet); the caller retries.
+    Timeout { what: &'static str },
 }
 
 impl fmt::Display for SyncError {
@@ -185,11 +191,25 @@ impl fmt::Display for SyncError {
             Self::BlockReadFailed { seq_no, reason } => {
                 write!(f, "could not read block {seq_no}: {reason}")
             }
+            Self::Transport(reason) => {
+                write!(f, "sync transport failure: {reason}")
+            }
+            Self::Timeout { what } => {
+                write!(f, "sync timeout waiting for {what}")
+            }
         }
     }
 }
 
 impl std::error::Error for SyncError {}
+
+/// Transport-level failures surface as [`SyncError::Transport`]; the sync
+/// layer never invents framing faults from I/O errors.
+impl From<NetworkError> for SyncError {
+    fn from(err: NetworkError) -> Self {
+        Self::Transport(err.to_string())
+    }
+}
 
 impl From<SyncError> for NetworkError {
     /// Sync framing faults surface as transport-level decryption-agnostic
@@ -200,6 +220,8 @@ impl From<SyncError> for NetworkError {
             | SyncError::PayloadLengthMismatch { .. }
             | SyncError::BadPayloadLength { .. }
             | SyncError::MalformedResponse { .. } => Self::TruncatedPacket,
+            SyncError::Transport(reason) => Self::TransportIo(reason),
+            SyncError::Timeout { .. } => Self::RldpTimeout,
             _ => Self::MalformedRldpFrame,
         }
     }

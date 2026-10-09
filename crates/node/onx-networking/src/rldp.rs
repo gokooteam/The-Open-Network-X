@@ -18,7 +18,7 @@ pub const ACK_TAG: u32 = 0x3a4f_1092;
 pub const DEFAULT_CHUNK_SIZE: usize = 1024;
 pub const MAX_TRANSFER_SIZE: usize = 16 * 1024 * 1024;
 const DATA_HEADER_LEN: usize = 4 + 32 + 32 + 4 + 2 + 2 + 2 + 2;
-const ACK_HEADER_LEN: usize = 4 + 32 + 4 + 2 + 2;
+const ACK_HEADER_LEN: usize = 4 + 32 + 4 + 2;
 
 /// Bounds transmission work so a single transfer cannot monopolize ADNL UDP.
 #[derive(Debug, Clone, Copy)]
@@ -154,6 +154,8 @@ pub struct RldpSender {
     transfer_id: Uint256,
     acknowledged: HashSet<u16>,
     last_ack_seq: u32,
+    /// Previous ack mask, for delta computation in [`Self::apply_ack`].
+    last_ack_mask: Vec<u8>,
     config: RldpConfig,
     cursor: usize,
 }
@@ -200,6 +202,7 @@ impl RldpSender {
             transfer_id,
             acknowledged: HashSet::new(),
             last_ack_seq: 0,
+            last_ack_mask: Vec::new(),
             config,
             cursor: 0,
         })
@@ -207,7 +210,23 @@ impl RldpSender {
     pub fn is_complete(&self) -> bool {
         self.acknowledged.len() == self.frames.len()
     }
+    /// Whether the frame with this sequence number has been acknowledged.
+    /// Used by pipelined senders to start the next round as soon as the
+    /// outstanding frames are acked, instead of waiting out the round
+    /// timeout.
+    pub fn is_acknowledged(&self, seq_no: u16) -> bool {
+        self.acknowledged.contains(&seq_no)
+    }
     pub fn next_round(&mut self) -> Vec<Vec<u8>> {
+        self.next_round_seq()
+            .into_iter()
+            .map(|(_, packet)| packet)
+            .collect()
+    }
+    /// Like [`Self::next_round`], but also returns each packet's frame
+    /// sequence number so the sender can tell when the round's frames are
+    /// all acknowledged.
+    pub fn next_round_seq(&mut self) -> Vec<(u16, Vec<u8>)> {
         let mut packets = Vec::with_capacity(self.config.packets_per_round);
         let mut inspected = 0;
         while packets.len() < self.config.packets_per_round && inspected < self.frames.len() {
@@ -222,7 +241,7 @@ impl RldpSender {
                 if packets.len() == self.config.packets_per_round {
                     break;
                 }
-                packets.push(frame.encode().expect("validated frame"));
+                packets.push((frame.seq_no, frame.encode().expect("validated frame")));
             }
         }
         packets
@@ -235,11 +254,35 @@ impl RldpSender {
             return Err(NetworkError::MalformedRldpFrame);
         }
         self.last_ack_seq = ack.ack_seq;
-        for (i, byte) in ack.received_mask.iter().enumerate() {
+        // Insert only newly-set bits: masks are cumulative and ack_seqs
+        // increase, so XOR against the previous mask isolates the delta.
+        // Re-scanning the whole mask per ack is O(frames) per ack and
+        // O(frames^2) per round — at 2048 frames that dominates debug-build
+        // round time and defeats pipelining.
+        if self.last_ack_mask.len() != ack.received_mask.len() {
+            self.last_ack_mask = vec![0; ack.received_mask.len()];
+        }
+        for (i, (old, new)) in self
+            .last_ack_mask
+            .iter_mut()
+            .zip(ack.received_mask.iter())
+            .enumerate()
+        {
+            // Bits the receiver reports as newly set since the last ack.
+            // (Clears cannot happen from our receiver — masks only grow —
+            // but syncing `old` unconditionally keeps the delta exact even
+            // if they did.)
+            let newly = *new & !*old;
+            *old = *new;
+            if newly == 0 {
+                continue;
+            }
             for bit in 0..8 {
-                let seq = i * 8 + bit;
-                if seq < self.frames.len() && byte & (1 << bit) != 0 {
-                    self.acknowledged.insert(seq as u16);
+                if newly & (1 << bit) != 0 {
+                    let seq = i * 8 + bit;
+                    if seq < self.frames.len() {
+                        self.acknowledged.insert(seq as u16);
+                    }
                 }
             }
         }
@@ -260,6 +303,11 @@ pub struct RldpReceiver {
     chunk_count: usize,
     chunks: BTreeMap<u16, Vec<u8>>,
     ack_seq: u32,
+    /// Incrementally maintained ack bitmap (bit `i` = chunk `i` received).
+    /// Rebuilt-from-scratch on every `ack()` would be O(chunks) per ack and
+    /// O(chunks^2) per round — at 2048 chunks that alone costs ~100 ms per
+    /// round in debug builds, defeating the pipelined sender.
+    ack_mask: Vec<u8>,
 }
 
 impl RldpReceiver {
@@ -273,6 +321,7 @@ impl RldpReceiver {
             chunk_count: frame.chunk_count as usize,
             chunks: BTreeMap::new(),
             ack_seq: 0,
+            ack_mask: vec![0; (frame.chunk_count as usize).div_ceil(8)],
         })
     }
     pub fn ingest(&mut self, frame: RldpDataFrame) -> Result<Option<Vec<u8>>, NetworkError> {
@@ -284,7 +333,10 @@ impl RldpReceiver {
         {
             return Err(NetworkError::MalformedRldpFrame);
         }
-        self.chunks.entry(frame.seq_no).or_insert(frame.chunk_data);
+        if !self.chunks.contains_key(&frame.seq_no) {
+            self.ack_mask[frame.seq_no as usize / 8] |= 1 << (frame.seq_no as usize % 8);
+            self.chunks.insert(frame.seq_no, frame.chunk_data);
+        }
         if self.chunks.len() != self.chunk_count {
             return Ok(None);
         }
@@ -304,14 +356,10 @@ impl RldpReceiver {
     }
     pub fn ack(&mut self) -> RldpAckFrame {
         self.ack_seq = self.ack_seq.wrapping_add(1);
-        let mut mask = vec![0; self.chunk_count.div_ceil(8)];
-        for seq in self.chunks.keys() {
-            mask[*seq as usize / 8] |= 1 << (*seq as usize % 8);
-        }
         RldpAckFrame {
             transfer_id: self.transfer_id,
             ack_seq: self.ack_seq,
-            received_mask: mask,
+            received_mask: self.ack_mask.clone(),
         }
     }
 }
@@ -398,5 +446,57 @@ impl AdnlTransportNode {
                 return Ok(payload);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_frame_round_trip() {
+        // Regression: ACK_HEADER_LEN was 44 while the encoded header is 42
+        // bytes, so decode rejected every valid ack and no RLDP transfer
+        // could ever complete.
+        let ack = RldpAckFrame {
+            transfer_id: Uint256([0x77; 32]),
+            ack_seq: 3,
+            received_mask: vec![0b1010_0101, 0b0000_0011],
+        };
+        let wire = ack.encode();
+        assert_eq!(wire.len(), ACK_HEADER_LEN + 2);
+        let back = RldpAckFrame::decode(&wire).expect("valid ack decodes");
+        assert_eq!(back, ack);
+    }
+
+    #[test]
+    fn ack_frame_rejects_truncated_and_wrong_tag() {
+        let ack = RldpAckFrame {
+            transfer_id: Uint256([0x77; 32]),
+            ack_seq: 1,
+            received_mask: vec![0b1],
+        };
+        let wire = ack.encode();
+        assert!(RldpAckFrame::decode(&wire[..wire.len() - 1]).is_err());
+        let mut bad_tag = wire.clone();
+        bad_tag[0] ^= 0xff;
+        assert!(RldpAckFrame::decode(&bad_tag).is_err());
+    }
+
+    #[test]
+    fn data_frame_round_trip() {
+        let frame = RldpDataFrame {
+            transfer_id: Uint256([0x11; 32]),
+            payload_digest: [0x22; 32],
+            total_size: 2048,
+            chunk_size: 1024,
+            chunk_count: 2,
+            seq_no: 1,
+            chunk_data: vec![0x5a; 1024],
+        };
+        let wire = frame.encode().expect("valid frame encodes");
+        assert_eq!(wire.len(), DATA_HEADER_LEN + 1024);
+        let back = RldpDataFrame::decode(&wire).expect("valid frame decodes");
+        assert_eq!(back, frame);
     }
 }
