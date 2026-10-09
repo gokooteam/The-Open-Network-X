@@ -47,3 +47,22 @@ milestone.**
 - M7 (public testnet: "someone who has never talked to you can join")
   re-opens this decision — that milestone is where discovery is actually
   needed, and this ADR will be the thing it amends.
+
+## Amendment (2026-10-09) — descriptors carry the public key
+
+Implementation (the M5 follower slice) found the `abstract-address@host:port`
+format insufficient: establishing the ADNL channel requires the peer's
+ed25519 public key for the X25519 handshake (`AdnlTransportNode::send_datagram`
+takes the key, not the address). Descriptors are now
+`<ed25519-pubkey-hex>@<host:port>`; the abstract address is DERIVED from the
+key (`KeyDescription::compute_abstract_address`) and pinned — a peer
+presenting a different key computes a different address and its datagrams
+are ignored.
+
+This preserves and strengthens the original intent: pinning the key pins
+the address deterministically, so the DNS/routing-attacker argument holds
+exactly as written. The decision (static list, no DHT wiring for M5) is
+unchanged; only the descriptor encoding moved to carry what the channel
+needs. Parsed by `onxd::follower::parse_sync_peer`, which enforces the
+strict key predicate (canonical, on-curve, large-order) at config load —
+a malformed peer key is a startup refusal, not a mid-handshake surprise.

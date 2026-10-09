@@ -32,6 +32,8 @@ onx-genesis = { path = "../../tooling/onx-genesis" }
 # node reuses the tooling crate's implementation rather than duplicating the
 # format (two encoders would drift).
 onx = { path = "../../tooling/onx" }
+# M5: block sync over ADNL (follower loop + producer-side sync server).
+onx-networking = { path = "../onx-networking" }
 
 [dev-dependencies]
 tokio = { version = "1.38", features = ["full"] }

@@ -46,6 +46,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use onx_primitives::{PublicKey, Uint256};
@@ -120,6 +121,44 @@ impl SyncTransport for AdnlSyncTransport<'_> {
     }
 }
 
+/// [`SyncTransport`] over a shared [`AdnlTransportNode`].
+///
+/// [`AdnlSyncTransport`] borrows the node, so it cannot be moved into a
+/// spawned task. This variant owns an `Arc<AdnlTransportNode>` instead —
+/// the same datagram semantics, but `'static`, for the daemon's sync
+/// server and follower tasks.
+pub struct SharedAdnlTransport {
+    node: Arc<AdnlTransportNode>,
+}
+
+impl SharedAdnlTransport {
+    /// Share ownership of a bound ADNL node for sync traffic.
+    pub fn new(node: Arc<AdnlTransportNode>) -> Self {
+        Self { node }
+    }
+}
+
+impl SyncTransport for SharedAdnlTransport {
+    fn send_to(
+        &self,
+        peer: &SyncPeer,
+        bytes: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<(), SyncError>> + Send + '_ {
+        let peer = *peer;
+        let node = self.node.clone();
+        async move {
+            node.send_datagram(peer.public_key, peer.endpoint, &bytes)
+                .await
+                .map_err(SyncError::from)
+        }
+    }
+
+    async fn recv_from(&self) -> Result<(Uint256, Vec<u8>), SyncError> {
+        let (addr, payload, _src) = self.node.recv_datagram().await.map_err(SyncError::from)?;
+        Ok((addr, payload))
+    }
+}
+
 /// Sync-level tuning knobs.
 #[derive(Debug, Clone)]
 pub struct SyncConfig {
@@ -151,7 +190,7 @@ impl Default for SyncConfig {
 
 /// RLDP transfer id for a block response, derived from the seqno (design
 /// decision 7). Both sides compute it independently; no handshake needed.
-fn response_transfer_id(seq_no: u32) -> Uint256 {
+pub(crate) fn response_transfer_id(seq_no: u32) -> Uint256 {
     let mut h = Sha256::new();
     h.update(b"ONX_SYNC_RESP_V1");
     h.update(seq_no.to_be_bytes());
@@ -349,75 +388,8 @@ impl<T: SyncTransport> SyncServer<T> {
 mod tests {
     use super::*;
     use crate::block_sync::{decode_request, encode_response, BlockResponse};
+    use crate::testutil::LoopbackTransport;
     use onx_primitives::SecretKey;
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex};
-    use tokio::sync::{mpsc, Mutex as AsyncMutex};
-
-    /// In-memory datagram network: address -> inbox.
-    type InboxMap = HashMap<Uint256, mpsc::UnboundedSender<(Uint256, Vec<u8>)>>;
-
-    #[derive(Clone, Default)]
-    struct LoopbackNetwork {
-        inboxes: Arc<Mutex<InboxMap>>,
-    }
-
-    /// [`SyncTransport`] over the loopback network. Fully deterministic;
-    /// no UDP involved (the sandbox blocks it).
-    struct LoopbackTransport {
-        network: LoopbackNetwork,
-        address: Uint256,
-        inbox: AsyncMutex<mpsc::UnboundedReceiver<(Uint256, Vec<u8>)>>,
-    }
-
-    impl LoopbackTransport {
-        fn pair(addr_a: Uint256, addr_b: Uint256) -> (Self, Self) {
-            let network = LoopbackNetwork::default();
-            let (tx_a, rx_a) = mpsc::unbounded_channel();
-            let (tx_b, rx_b) = mpsc::unbounded_channel();
-            network.inboxes.lock().unwrap().insert(addr_a, tx_a);
-            network.inboxes.lock().unwrap().insert(addr_b, tx_b);
-            (
-                Self {
-                    network: network.clone(),
-                    address: addr_a,
-                    inbox: AsyncMutex::new(rx_a),
-                },
-                Self {
-                    network,
-                    address: addr_b,
-                    inbox: AsyncMutex::new(rx_b),
-                },
-            )
-        }
-    }
-
-    impl SyncTransport for LoopbackTransport {
-        fn send_to(
-            &self,
-            peer: &SyncPeer,
-            bytes: Vec<u8>,
-        ) -> impl std::future::Future<Output = Result<(), SyncError>> + Send + '_ {
-            let peer = *peer;
-            async move {
-                let inboxes = self.network.inboxes.lock().unwrap();
-                let tx = inboxes
-                    .get(&peer.address)
-                    .ok_or_else(|| SyncError::Transport("loopback: unknown peer".into()))?;
-                tx.send((self.address, bytes))
-                    .map_err(|_| SyncError::Transport("loopback: inbox closed".into()))
-            }
-        }
-
-        async fn recv_from(&self) -> Result<(Uint256, Vec<u8>), SyncError> {
-            self.inbox
-                .lock()
-                .await
-                .recv()
-                .await
-                .ok_or_else(|| SyncError::Transport("loopback: inbox closed".into()))
-        }
-    }
 
     fn test_peer(address: Uint256, seed: u8) -> SyncPeer {
         let secret = SecretKey::from_seed(&[seed; 32]).unwrap();
@@ -530,28 +502,21 @@ mod tests {
         let peer_client = test_peer(addr_client, 0x22);
 
         let dir = block_dir(1, &[0x42; 16]);
-        let server_net = tx_server.network.clone();
-        let server = SyncServer::new(tx_server, vec![peer_client], dir.clone(), test_config());
 
-        // 1. Garbage from a known peer: ignored, no response.
+        // 1. Garbage from a known peer: queued first, ignored, no response.
         tx_client
             .send_to(&test_peer(addr_server, 0x11), vec![0xFF; 20])
             .await
             .unwrap();
-        server.serve_one().await.expect("garbage ignored");
-
-        // 2. Well-formed request from an unknown sender: ignored, no response.
+        // 2. Well-formed request from an unknown sender: queued second.
         // Inject it straight into the server's inbox (the stranger is on a
         // separate loopback pair, so it cannot address the server directly —
-        // the point is the server checks the sender address).
-        {
-            let inboxes = server_net.inboxes.lock().unwrap();
-            inboxes
-                .get(&addr_server)
-                .unwrap()
-                .send((addr_stranger, encode_request(&BlockRequest { seq_no: 1 })))
-                .unwrap();
-        }
+        // the point is the server checks the sender address). Queued before
+        // the transport moves into the server below.
+        tx_server.inject(addr_stranger, encode_request(&BlockRequest { seq_no: 1 }));
+
+        let server = SyncServer::new(tx_server, vec![peer_client], dir.clone(), test_config());
+        server.serve_one().await.expect("garbage ignored");
         server.serve_one().await.expect("unknown sender ignored");
 
         std::fs::remove_dir_all(&dir).unwrap();

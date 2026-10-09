@@ -428,15 +428,39 @@ follower stays in sync and verifies everything itself.
       ADR-0042 (`docs/adr/0042-networking-unfreeze.md`) records the unfreeze;
       the freeze guard in `crates/node/onxd/src/lib.rs` is replaced with an
       honest not-yet-implemented refusal until the M5 network loop lands.
-- [ ] `onxd` with `network_enabled = true` carries blocks between nodes over
-      ADNL and the overlay layer.
-- [ ] A fresh follower syncs from genesis through peers (`onx-blocks::sync`).
+- [x] `onxd` with `network_enabled = true` carries blocks between nodes over
+      ADNL and the overlay layer. **Done:** the M5 network loop landed —
+      `run_daemon` binds an `AdnlTransportNode` under the node's identity
+      key (`node_key_path`, 0600), runs the producer loop plus a `SyncServer`
+      answering follower block requests (static peer list, ADR-0043), or —
+      with `follower = true` — the follower loop instead of producing.
+      Responses travel as RLDP transfers; the sync wire protocol is
+      `docs/specification/networking-block-sync.md`. (The overlay
+      *announcement* machinery stays M6+; M5 sync runs directly over ADNL
+      datagrams + RLDP, polled by the follower.)
+- [x] A fresh follower syncs from genesis through peers (`onx-blocks::sync`).
       It verifies the `ONXBLK05` signatures, persists the blocks, and reaches
       the same state root as the producer. It also survives a kill -9 and
-      resume.
-- [ ] Adversarial tests: a peer that serves corrupted, forged, out-of-order,
+      resume. **Done:** `crates/node/onxd/src/follower.rs` — fetch →
+      strict decode → seqno binding → `verify_block_auth` → `commit_block`
+      (STF re-execution) → atomic persist, polled from the head; kill -9
+      resume via the atomic commit + startup block-file regeneration (same
+      recovery as the producer). Evidence: `follower_syncs_from_genesis_and_matches_producer_root`
+      (follower reaches the producer's exact root; block files
+      byte-identical) and `follower_resumes_after_restart` (kill window
+      between commit and file write → startup regen → resume → converge)
+      in `crates/node/onxd/tests/follower_sync.rs`.
+- [x] Adversarial tests: a peer that serves corrupted, forged, out-of-order,
       or wrong-chain blocks is rejected, and the follower carries on. The same
-      holds for a peer that disconnects mid-transfer.
+      holds for a peer that disconnects mid-transfer. **Done:**
+      `follower_rejects_forged_signature`, `follower_rejects_corrupted_block_file`,
+      `follower_rejects_wrong_seqno_block`, `follower_rejects_wrong_chain_block`,
+      `follower_rejects_body_header_mismatch` (signed header, lying body —
+      the STF's re-execution catches it), and
+      `follower_survives_mid_transfer_disconnect` (partial RLDP then silence
+      → clean timeout → syncs once the honest peer answers). Rogue peers are
+      driven by `onx_networking::testutil::rogue`. All rejections are
+      retryable — a Byzantine peer wastes time, never the chain.
 - [x] Decide how peers are found for this milestone, either static peer lists
       or the DHT, and record the choice. **Done:** ADR-0043
       (`docs/adr/0043-static-peer-discovery.md`) — static peer list for M5;
@@ -446,8 +470,14 @@ follower stays in sync and verifies everything itself.
       (`docs/adr/0044-direct-submission-no-gossip.md`) — direct submission
       only for M5; no mempool gossip; the file-drop spool stays the
       submission path.
-- [ ] A multi-node test of the **real binaries** runs in CI, for example with
+- [x] A multi-node test of the **real binaries** runs in CI, for example with
       docker-compose. This replaces the Python model in `tests/simulation/`.
+      **Done:** `scripts/multinode-sync-test.sh` (CI job `multinode` in
+      `.github/workflows/ci.yml`) — two real `onxd` binaries on localhost,
+      producer + follower over ADNL; faucet transfers via `onx-cli`; the
+      follower syncs block 1 and the roots are compared via two independent
+      `onx replay` runs; then the follower is kill -9'd, block 2 is made
+      while it's dead, it restarts, resumes, and the roots converge again.
 
 ### M6 — Consensus: more than one validator (`0.5.0`)
 
