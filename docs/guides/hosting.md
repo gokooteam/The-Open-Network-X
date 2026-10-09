@@ -6,6 +6,29 @@ describes that machinery). It is written for someone doing it for the first
 time, from a phone, with cPanel open in one tab and an SSH session in the
 other.
 
+## The scripted way (recommended)
+
+[`scripts/onx-hosting.sh`](../../scripts/onx-hosting.sh) does steps 2–5
+below over SSH, from any terminal (Termux, a laptop). It keeps one SSH key
+and a small config file on your device, outside the repository, and stores
+no passwords.
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/gokooteam/The-Open-Network-X/main/scripts/onx-hosting.sh
+sh onx-hosting.sh init      # makes ~/.config/onx/hosting.env and ~/.ssh/onx_ed25519
+#   edit hosting.env: put your cPanel username where it says CPANELUSER
+#   in each cPanel account, once: "Manage Shell" -> Enable
+sh onx-hosting.sh keys      # asks each server's password one last time
+sh onx-hosting.sh status    # read-only: docroots, cron jobs, which DNS record to delete
+sh onx-hosting.sh deploy    # installs both cron jobs and deploys right away
+sh onx-hosting.sh vm        # read-only: how onxd and nginx run on the VM
+```
+
+The one thing it does not do is change DNS: `status` shows which
+on-x-scan.com record to delete, and step 1 below is that deletion in cPanel.
+On a cPanel host it uses cPanel's command-line API (`uapi`) for the document
+roots and the zone, and `crontab` for the jobs.
+
 ## What runs where
 
 Measured from outside on 2026-10-09:
