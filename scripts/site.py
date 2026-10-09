@@ -232,6 +232,50 @@ def milestone_criteria(text: str, mid: str) -> tuple[int, int]:
     return 0, 0
 
 
+def milestone_criteria_list(text: str, mid: str) -> list[dict]:
+    """Every exit-criteria box under the milestone heading, in order.
+
+    Each item: {"index": n, "text": "...", "checked": bool}. Multi-line
+    boxes (continuation lines indented under the "- [ ]") are joined with
+    single spaces. Same scope as milestone_criteria, so the two can't drift.
+    """
+    lines = text.splitlines()
+    head = re.compile(rf"^#{{2,3}} .*\b{mid}\b")
+    out: list[dict] = []
+    for i, line in enumerate(lines):
+        if not head.match(line):
+            continue
+        for nxt in lines[i + 1:]:
+            if nxt.startswith(("## ", "### ")):
+                break
+            m = re.match(r"^- \[( |x)\] (.*)$", nxt)
+            if m:
+                out.append({"index": len(out),
+                            "text": m.group(2).strip(),
+                            "checked": m.group(1) == "x"})
+            elif out and nxt.strip() and nxt[0] in " \t":
+                out[-1]["text"] += " " + nxt.strip()
+        break
+    return out
+
+
+def next_task() -> dict | None:
+    """First unchecked exit criterion across Part 2 then Part 3.
+
+    Returns {"milestone", "index", "text", "task_id"} or None when every
+    box is checked. task_id is stable: milestone + 12 hex chars of the
+    sha256 of the criterion text, so retries recognize the same task.
+    """
+    text = read(ROOT / "MILESTONES.md")
+    for mid in ("M4", "M5", "M6", "M7", "M8"):
+        for box in milestone_criteria_list(text, mid):
+            if not box["checked"]:
+                tid = hashlib.sha256(box["text"].encode()).hexdigest()[:12]
+                return {"milestone": mid, "index": box["index"],
+                        "text": box["text"], "task_id": f"{mid}-{tid}"}
+    return None
+
+
 def milestone_map() -> list[dict]:
     """Every M-row of MILESTONES.md 'At a glance', with its progress."""
     text = read(ROOT / "MILESTONES.md")
@@ -795,6 +839,12 @@ def cmd_milestones(_args) -> int:
     return 0
 
 
+def cmd_next_task(_args) -> int:
+    """Print the next milestone-task-chain task as JSON (null when done)."""
+    print(json.dumps(next_task(), indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_live(args) -> int:
     report, failures = live(args.attempts)
     if args.json:
@@ -824,9 +874,10 @@ def main() -> int:
     lv.add_argument("--attempts", type=int, default=4, help="fetches per URL (default 4)")
     lv.add_argument("--json", help="also write the report as JSON")
     sub.add_parser("milestones", help="print the milestone map from MILESTONES.md as JSON")
+    sub.add_parser("next-task", help="print the first unchecked exit criterion (task chain) as JSON")
     args = ap.parse_args()
     return {"build": cmd_build, "check": cmd_check, "live": cmd_live,
-            "milestones": cmd_milestones}[args.cmd](args)
+            "milestones": cmd_milestones, "next-task": cmd_next_task}[args.cmd](args)
 
 
 if __name__ == "__main__":
