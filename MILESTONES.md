@@ -419,8 +419,13 @@ under *Known bugs* below.
       devnet-1 is public. **Done 2026-10-09:** `SECURITY.md` exists and
       GitHub private vulnerability reporting is enabled (verified via the
       API) — the "Report a vulnerability" button is live on the Security tab.
-- [ ] Publish the GitHub Release for `v0.2.0`. The tag exists and
-      `release.yml` creates a *draft*, but no published release exists yet.
+- [x] Publish a GitHub Release for the 0.2.x line. **Done 2026-10-09 (owner
+      decision):** `v0.2.0` left untouched at `9a8d72f6` — its tree doesn't
+      build (the `reqwest` dep was lost in the PR #21 merge). Minted `v0.2.1`
+      instead: `release/v0.2.1` = `9a8d72f6` + the dep fix (audit-approved
+      slim spec from `8284e3c`) + version bump to 0.2.1. `release.yml` built,
+      tested, and drafted it; the release is published:
+      https://github.com/gokooteam/The-Open-Network-X/releases/tag/v0.2.1
 - [ ] Tag `v0.3.0` through the Version Bump workflow.
 
 ### M5 — Networking: nodes find each other and stay in sync (`0.4.0`)
