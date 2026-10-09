@@ -89,7 +89,10 @@ itself.
 
 ## Deployment
 
-Set up once per host. Both hosts need `curl` and outbound HTTPS to
+Step-by-step for the current hosts (cPanel cron jobs, the DNS fix for
+on-x-scan.com, and what is known about the devnet VM):
+[`docs/guides/hosting.md`](../docs/guides/hosting.md). In general, set it up
+once per host. Both hosts need `curl` and outbound HTTPS to
 `api.github.com` and `raw.githubusercontent.com`.
 
 ```cron
@@ -125,7 +128,8 @@ with access to the DNS and the servers:
   - over HTTP the two servers answer differently too (nginx serves the
     explorer from `f1a88fb`; LiteSpeed answers with a 301 page).
 
-  Fix: decide which server hosts the explorer and remove the other A record
+  Fix ([`docs/guides/hosting.md`](../docs/guides/hosting.md) walks
+  through it): decide which server hosts the explorer and remove the other A record
   (and the `www` CNAME target, which follows the apex), or make both servers
   serve the same file with a certificate valid for `on-x-scan.com` and
   `www.on-x-scan.com`. Then run the deploy script there. `python3
