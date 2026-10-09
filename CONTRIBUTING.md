@@ -61,16 +61,19 @@ open an issue so this document can be corrected.
 
 ## Research Question Logbook
 
-Every contributor is required to participate in the ONX Research Question Logbook (`docs/planning/research-logbook.md`).
+The Research Question Logbook (`docs/planning/research-logbook.md`) is
+**optional**. You don't need to add an entry to open or merge a PR.
 
-When submitting changes to the codebase, contributors must:
-1. Read the latest question in `docs/planning/research-logbook.md`.
-2. Add a new entry (`Entry #N`) to `docs/planning/research-logbook.md`.
-3. Provide an answer to the previous question under a section containing the `[ANSWER]` label.
-4. Ask a new research/development question about ONX under a section containing the `[QUESTION]` label.
+It used to be required of every contributor. That rule was retired on
+2026-10-08 (M4): none of PRs #1–#23 added an entry, nothing checks it, and
+the work it was meant to capture already has a home — decisions go in ADRs,
+open problems in `MILESTONES.md`, and per-PR history in `ROADMAP.md`.
 
-The logbook is a convention, not a gate: no CI workflow checks it today.
-(If enforcement is ever added, this paragraph must name the workflow.)
+If an entry helps (a research answer that fits no ADR, or a question worth
+leaving for the next contributor), add one: number it `Entry #N` after the
+last one, answer the previous question under `[ANSWER]`, and ask a new one
+under `[QUESTION]`. `scripts/check-research-logbook.py` checks that format
+locally; no CI workflow runs it.
 
 ## Decision records
 

@@ -267,6 +267,13 @@ impl Interpreter {
                 // caller through the same choke point so `code_refs`
                 // mirrors the restored code cell (ADR-0039).
                 self.set_code(prev_code, prev_pc)?;
+                // Same c0 reset as an explicit RET: c0 still names the
+                // frame we just returned to, so point it at the caller's
+                // own return address (or clear it at the outermost level).
+                self.control_registers.c0 = self
+                    .call_stack
+                    .last()
+                    .map(|(code, pc)| Continuation::new(code.clone(), *pc));
                 return Ok(true);
             } else {
                 return Ok(false); // Execution finished successfully

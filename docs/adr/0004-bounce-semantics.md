@@ -6,8 +6,8 @@ exceptions bounce (including out-of-gas)" rule below no longer holds for
 destination, no bounce). All other exception kinds still bounce as
 described here. See ADR-0037 for the taxonomy and rationale. The fatal
 `OutOfGas` part of that amendment was **rejected** on 2026-10-08 (see
-ADR-0037's status). The code still implements it. Until the M4 fix in
-`MILESTONES.md` lands, out-of-gas deliveries are fatal in practice.
+ADR-0037's status) and reverted in code, so out-of-gas deliveries bounce
+again, as described here. Bounce receipts report the gas burned.
 **Date:** 2026-10-05
 **Milestone:** message-based single-shard chain
 

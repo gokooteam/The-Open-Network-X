@@ -6,9 +6,10 @@ Usage:
   python3 reference/gen_fatal_bounce_vectors.py --check  # fail if it would change (CI drift gate)
 
 Implements ADR-0037 from the specification text, not from the Rust code:
-  - A contract-execution failure is FATAL iff the message's gas budget was
-    exhausted (ExceptionKind::OutOfGas). All other exception kinds bounce,
-    whether raised by the VM or deliberately by the contract via THROW.
+  - Every contract-execution failure bounces, whether raised by the VM or
+    deliberately by the contract via THROW. That includes gas exhaustion
+    (ExceptionKind::OutOfGas): ADR-0037 first made it fatal, but that rule
+    was rejected on 2026-10-08 (see the ADR's status), so no kind is fatal.
   - ADR-0039 adds CallStackOverflow (VM-raised only: THROW's 0x77 operand
     domain stays 0-3, so user-thrown and VM-raised CallStackOverflow are
     distinguishable by construction — the former cannot exist).
@@ -28,13 +29,14 @@ import tempfile
 import filecmp
 
 # The closed ExceptionKind set, docs/specification/execution.md §3.4.
-# ADR-0037: only OutOfGas is fatal.
+# ADR-0037 as amended: no kind is fatal (the OutOfGas-is-fatal rule was
+# rejected; out-of-gas bounces like every other failure).
 # ADR-0039 (Wave 4 step 7): CallStackOverflow is VM-raised (the CALLREF
 # depth check), never gas exhaustion, so it bounces like the other
 # structural failures. THROW's operand domain is unchanged (0-3); a
 # contract cannot deliberately raise CallStackOverflow.
 EXCEPTION_OUTCOMES = {
-    "OutOfGas": "fatal",
+    "OutOfGas": "bounce",
     "IntegerOverflow": "bounce",
     "AbsentNode": "bounce",
     "MalformedCell": "bounce",

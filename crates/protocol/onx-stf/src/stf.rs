@@ -111,10 +111,11 @@ pub struct DeliveryReceipt {
     /// True when the message could not be processed and was bounced
     /// (value returned to `src` minus fees, as a new internal message).
     pub bounced: bool,
-    /// True when the delivery failed *fatally* (ADR-0037): the message's
-    /// gas budget was exhausted (`ExceptionKind::OutOfGas`), so the value
-    /// is NOT returned — it is credited to the destination like a plain
-    /// transfer, with no contract data update and no bounce queued.
+    /// True when the delivery failed *fatally* (ADR-0037 mechanics): the
+    /// value is NOT returned — it is credited to the destination like a
+    /// plain transfer, with no contract data update and no bounce queued.
+    /// No `ExceptionKind` is currently fatal (`is_fatal_exception`; the
+    /// "OutOfGas is fatal" rule was rejected), so this is always false.
     /// Invariant: at most one of `bounced` / `fatal` is true; both false
     /// means the delivery was processed.
     pub fatal: bool,
@@ -574,9 +575,8 @@ fn wallet_receive(
 /// Then the destination decides:
 /// - `Active` + empty payload → plain value credit.
 /// - `Active` + payload + code → TVM execution (gas from the message fee);
-///   success credits value and updates contract data, a non-fatal failure
-///   bounces, gas exhaustion is fatal (ADR-0037: value credited to the
-///   destination, no bounce).
+///   success credits value and updates contract data, any failure —
+///   gas exhaustion included — bounces (`is_fatal_exception`).
 /// - `Active` + payload + no code → bounce.
 /// - `Uninitialized` + empty payload → create a keyless `Active` account.
 /// - `Uninitialized` + payload → bounce (calls never create accounts).
@@ -667,9 +667,10 @@ fn deliver(
     }
 
     if is_fatal {
-        // ADR-0037: the message exhausted its gas budget. The value is NOT
-        // returned — it is credited to the destination like a plain
-        // transfer (no data update, no bounce queued). A bounce message
+        // ADR-0037 fatal mechanics (unreachable while `is_fatal_exception`
+        // names no kind): the value is NOT returned — it is credited to the
+        // destination like a plain transfer (no data update, no bounce
+        // queued). A bounce message
         // carries an empty payload and can never reach this arm, so there
         // is no bounce-of-bounce case here.
         debug_assert!(!must_bounce, "fatal and bounce are mutually exclusive");
@@ -806,7 +807,7 @@ struct ContractExecOutput {
 /// - `Success`: apply the value credit and the data update.
 /// - `Bounce`: queue a bounce message returning the value to the sender.
 /// - `Fatal`: credit the value to the destination (no data update, no
-///   bounce) — the message exhausted its gas budget.
+///   bounce). Unreachable while `is_fatal_exception` names no kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ExecOutcome {
     Success(ContractExecOutput),
@@ -815,13 +816,16 @@ enum ExecOutcome {
 }
 
 /// The ADR-0037 fatal-vs-bounce taxonomy, as a pure predicate over the
-/// closed `ExceptionKind` set. Only `OutOfGas` is fatal: the network spent
-/// the full paid budget, so returning the value would price griefing at
-/// the fee alone. Every other kind — whether raised by the VM or
-/// deliberately by the contract via `THROW` (0x77 maps onto the original
-/// four kinds; `CallStackOverflow` is VM-raised only, ADR-0039) — bounces:
-/// an early, cheap failure or a deliberate rejection, and the sender is
-/// refunded.
+/// closed `ExceptionKind` set. No kind is fatal: every one — whether
+/// raised by the VM or deliberately by the contract via `THROW` (0x77 maps
+/// onto the original four kinds; `CallStackOverflow` is VM-raised only,
+/// ADR-0039) — bounces, and the sender is refunded the value.
+///
+/// `OutOfGas` bounces too. ADR-0037 originally made it fatal; that rule was
+/// rejected (see the ADR's status): the sender pays the full fee whether or
+/// not the budget is spent, so keeping the value adds no cost to an attack
+/// and only takes it from honest senders who underestimate gas. The bounce
+/// receipt still reports the burned gas, so the block gas cap sees it.
 ///
 /// `reference/vectors/fatal_bounce.json` pins this table; the agreement
 /// test asserts it covers the closed set exhaustively.
@@ -830,8 +834,8 @@ enum ExecOutcome {
 /// fails compilation here until its outcome is decided.
 pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
     match kind {
-        ExceptionKind::OutOfGas => true,
-        ExceptionKind::IntegerOverflow
+        ExceptionKind::OutOfGas
+        | ExceptionKind::IntegerOverflow
         | ExceptionKind::AbsentNode
         | ExceptionKind::MalformedCell
         | ExceptionKind::TypeMismatch
@@ -844,10 +848,11 @@ pub fn is_fatal_exception(kind: &ExceptionKind) -> bool {
 /// Pure: reads only the already-fetched code/data and the tree's persisted
 /// contract cell DAGs, never touches the tree's accounts. Returns the
 /// ADR-0037 delivery outcome: `Success` on clean execution with no
-/// out-messages; `Bounce` on a non-fatal TVM exception or an out-message
-/// egress attempt (deliberately unwired this milestone — the message would
-/// otherwise be silently dropped, so the value bounces instead); `Fatal`
-/// when the execution exhausted its gas budget (`OutOfGas`).
+/// out-messages; `Bounce` on a TVM exception (gas exhaustion included) or
+/// an out-message egress attempt (deliberately unwired this milestone —
+/// the message would otherwise be silently dropped, so the value bounces
+/// instead); `Fatal` only for a kind `is_fatal_exception` names (none
+/// today).
 ///
 /// Calling convention (documented, deterministic):
 /// - The contract's persistent data cell is pushed on the operand stack at

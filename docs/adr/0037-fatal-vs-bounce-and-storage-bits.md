@@ -12,9 +12,12 @@
   takes the value from honest senders who underestimate gas. The TON
   precedent is also misstated: TON bounces a bounceable message whose compute
   phase fails, out-of-gas included, returning the value minus fees.
-  `OutOfGas` should bounce like the other kinds. The code (#32) still
-  implements the fatal rule. Reverting it is a consensus change, tracked as a
-  known M4 bug in `MILESTONES.md`.
+  `OutOfGas` bounces like the other kinds. **Reverted in code** (consensus
+  change): `is_fatal_exception` maps `OutOfGas` to bounce,
+  `reference/vectors/fatal_bounce.json` was regenerated, and
+  `execution.md` §3.4 was amended. Bounce receipts still report the burned
+  gas. Evidence: `tvm_out_of_gas_bounces` in
+  `crates/protocol/onx-stf/tests/tvm_integration.rs`.
 **Decider:** Gokoo (design authority between audits; flagged for Claude's Wave 4 audit)
 **Amends:** ADR-0004 (bounce semantics); `docs/specification/execution.md` §3.4
 
