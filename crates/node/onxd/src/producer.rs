@@ -1379,6 +1379,186 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// ADR-0045 review follow-up (CodeRabbit Major / Greptile P2 on PR
+    /// #47): the size trim is covered end to end, not just at
+    /// `propose_robust`. An oversize candidate set goes through `run_tick`:
+    /// the trimmed block commits, its `.blk` file decodes, verifies, and
+    /// re-applies to the committed state root (replay), and the held tail
+    /// commits on the next tick. Nothing is rejected — the tail is held,
+    /// not dropped.
+    ///
+    /// The calls target an account with no code: they bounce on delivery
+    /// (a normal outcome — the message is still included in the block) and
+    /// burn ~0 gas, so the size trim fires instead of the gas cap.
+    #[test]
+    fn oversize_set_replays_and_held_tail_commits_next_tick() {
+        use onx_data_structures::{ShardIdent, WorkchainIdent};
+        use onx_primitives::SecretKey;
+        use onx_state_model::{AccountState, GenesisDocument, GenesisValidator, StorageStat};
+        use onx_stf::apply_block;
+        use std::collections::BTreeMap;
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "onxd-trimreplay-test-{}-{nanos}",
+            std::process::id()
+        ));
+        let tx_pool_dir = root.join("pool");
+        std::fs::create_dir_all(&tx_pool_dir).unwrap();
+
+        let fee_collector = test_fee_collector();
+        let contract = AccountId::from_bytes([0xC0; 32]);
+        let senders: Vec<AccountId> = (0..8).map(test_account).collect();
+        let validator_key = SecretKey::from_seed(&[0x11; 32]).unwrap();
+
+        let stat = StorageStat {
+            cell_count: 0,
+            byte_count: 0,
+            bit_count: 0,
+        };
+        let mut accounts = BTreeMap::new();
+        for id in &senders {
+            accounts.insert(
+                *id,
+                AccountState::Active {
+                    balance_nanos: 1_000_000_000,
+                    last_trans_lt: 0,
+                    code: None,
+                    data: None,
+                    storage_stat: stat,
+                    pubkey: test_secret_key(id).public_key().encode(),
+                    nonce: 0,
+                },
+            );
+        }
+        accounts.insert(
+            contract,
+            AccountState::Active {
+                balance_nanos: 0,
+                last_trans_lt: 0,
+                code: None,
+                data: None,
+                storage_stat: stat,
+                pubkey: [0u8; 32],
+                nonce: 0,
+            },
+        );
+        let doc = GenesisDocument::new(
+            WorkchainIdent::BASIC,
+            ShardIdent::root(WorkchainIdent::BASIC),
+            vec![GenesisValidator {
+                pubkey: validator_key.public_key().encode(),
+                stake: 1_000,
+            }],
+            accounts,
+        )
+        .unwrap();
+        let store = ChainStore::open(root.join("db")).unwrap();
+        store.init_genesis(&doc).unwrap();
+        let genesis_state = store.load_state().unwrap().unwrap();
+
+        // 160 near-max-payload calls across 8 senders: the worst-case file
+        // is ~9.6 MiB against the 8 MiB servable cap, so the trim must fire.
+        let payload = vec![0x5au8; 60_000];
+        let mut seqs = [0u64; 8];
+        let mut sent = Vec::new();
+        for i in 0..160 {
+            let from_idx = i % 8;
+            let from = senders[from_idx];
+            let secret = test_secret_key(&from);
+            let msg = ExternalMessage::new_signed(
+                genesis_state.chain_id,
+                MsgKind::ContractCall,
+                from,
+                seqs[from_idx],
+                contract,
+                1_000,
+                10,
+                payload.clone(),
+                [0u8; 32],
+                &secret,
+            );
+            let name = format!("{}.msg", hex::encode(msg.hash()));
+            std::fs::write(tx_pool_dir.join(name), msg.to_bytes()).unwrap();
+            sent.push(msg.hash());
+            seqs[from_idx] += 1;
+        }
+
+        let cfg = ProducerConfig {
+            fee_collector,
+            poll_interval: Duration::from_millis(0),
+            tx_pool_dir: tx_pool_dir.clone(),
+            blocks_dir: root.join("blocks"),
+            telemetry: None,
+            signing_key: Some(validator_key),
+        };
+        std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
+        let mut mempool =
+            Mempool::new(&tx_pool_dir, 1000, genesis_state.chain_id, fee_collector).unwrap();
+        let mut stats = ProducerStats::default();
+
+        // Tick 1: the trim fires — a block commits with the fitting prefix
+        // and the tail stays held in the mempool.
+        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        let hash1 = store.block_hash_for_seqno(1).unwrap().unwrap();
+        let header1 = store.get_block_header(&hash1).unwrap().unwrap();
+        let body1 = store.get_block_body(&hash1).unwrap().unwrap();
+        assert!(
+            !body1.messages.is_empty() && body1.messages.len() < 160,
+            "tick 1 must commit a trimmed, non-empty block"
+        );
+        assert!(
+            !mempool.is_empty(),
+            "the held tail stays in the mempool for tick 2"
+        );
+
+        // Replay: the emitted .blk file decodes, its signature section
+        // verifies under the same acceptance check every verifier runs,
+        // and re-applying it from genesis reproduces the committed root.
+        let file_bytes = std::fs::read(cfg.blocks_dir.join(block_file_name(1))).unwrap();
+        let signed = decode_block_file(&file_bytes).expect("block file decodes");
+        assert_eq!(signed.block.header.hash(), hash1);
+        assert_eq!(signed.block.body.messages.len(), body1.messages.len());
+        let validators = canonical_validators(&store).expect("validators");
+        onx::auth::verify_block_auth(
+            &genesis_state.chain_id,
+            &signed.block.header,
+            0, // genesis is block 1's parent: block_time 0
+            &signed.sig_entries,
+            &validators,
+        )
+        .expect("replayed block's signatures verify");
+        let (replayed, _) = apply_block(&genesis_state, &signed.block).expect("replay applies");
+        assert_eq!(
+            replayed.state_root().unwrap(),
+            header1.state_root,
+            "replay of the trimmed block reproduces the committed root"
+        );
+
+        // Tick 2: the held tail commits. Everything lands, nothing rejected.
+        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        assert_eq!(stats.blocks_produced, 2);
+        assert_eq!(stats.txs_rejected, 0);
+        assert!(mempool.is_empty());
+        let mut committed = Vec::new();
+        for seqno in 1..=2 {
+            let h = store.block_hash_for_seqno(seqno).unwrap().unwrap();
+            let b = store.get_block_body(&h).unwrap().unwrap();
+            committed.extend(b.messages.iter().map(|m| m.hash()));
+        }
+        committed.sort();
+        sent.sort();
+        assert_eq!(
+            committed, sent,
+            "all 160 messages committed across the two ticks"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Contract code that burns ~9.8M gas and then halts successfully: a
     /// loop of eight `DUP HASHCELL DROP`s on the data cell, run 6000 times.
     ///
