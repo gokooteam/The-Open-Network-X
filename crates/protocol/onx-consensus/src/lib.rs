@@ -77,9 +77,7 @@ pub use engine::{
     proposal_signing_bytes, vote_signing_bytes, ConsensusEngine, ConsensusProposal, ConsensusStep,
     ConsensusVote, FinalizedBlock, RoundTimeouts, VotePhase,
 };
-pub use wire::{
-    decode_proposal, decode_vote, encode_proposal, encode_vote, PROPOSAL_TAG, VOTE_TAG,
-};
+pub use wire::{decode_proposal, decode_vote, encode_proposal, encode_vote, PROPOSAL_TAG, VOTE_TAG};
 
 impl std::error::Error for ConsensusError {}
 
