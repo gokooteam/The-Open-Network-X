@@ -110,7 +110,10 @@ fn run_net(
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("consensus-net: nonblocking: {e}"))?;
-    eprintln!("consensus-net: listening on {bind_addr}, {} peers", peers.len());
+    eprintln!(
+        "consensus-net: listening on {bind_addr}, {} peers",
+        peers.len()
+    );
 
     loop {
         // Accept inbound connections (non-blocking).
@@ -148,9 +151,7 @@ fn handle_inbound(
     addr: SocketAddr,
     inbound_tx: Sender<InboundConsensusMsg>,
 ) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
     loop {
         let mut len_buf = [0u8; 4];
         if stream.read_exact(&mut len_buf).is_err() {
@@ -179,9 +180,7 @@ fn handle_inbound(
 fn send_to_peer(peer: SocketAddr, bytes: &[u8]) -> Result<(), String> {
     let mut stream = TcpStream::connect_timeout(&peer, Duration::from_secs(5))
         .map_err(|e| format!("connect: {e}"))?;
-    stream
-        .write_all(bytes)
-        .map_err(|e| format!("write: {e}"))?;
+    stream.write_all(bytes).map_err(|e| format!("write: {e}"))?;
     stream.flush().map_err(|e| format!("flush: {e}"))?;
     Ok(())
 }

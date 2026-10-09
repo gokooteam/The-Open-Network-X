@@ -203,40 +203,6 @@ fn canonical_validators(
     Ok(refs)
 }
 
-/// Sign a block with the producer's key (ONXBLK05).
-///
-/// Returns the signature section entries. A signing key is REQUIRED:
-/// an unsigned block would be rejected by every verifier (replay fails
-/// closed on empty/insufficient stake), so producing one is never useful —
-/// fail here with a clear error instead of emitting a dead block.
-///
-/// `validators` is the canonical (pubkey-sorted) genesis validator list;
-/// `validator_index` is the signer's position in it.
-fn sign_block(
-    block: &Block,
-    chain_id: &[u8; 32],
-    signing_key: Option<&onx_primitives::SecretKey>,
-    validators: &[onx::auth::GenesisValidatorRef],
-) -> Result<Vec<SigEntry>, String> {
-    let Some(secret) = signing_key else {
-        return Err(
-            "no signing key configured: block production requires --signing-key \
-             (an unsigned block would be rejected by every verifier)"
-                .to_string(),
-        );
-    };
-    let pubkey = secret.public_key().encode();
-    let index = validators
-        .iter()
-        .position(|v| v.pubkey == pubkey)
-        .ok_or_else(|| "signing key pubkey not in genesis validator list".to_string())?;
-    let preimage = block.header.sign_bytes(chain_id);
-    let sig = secret.sign_raw(&preimage);
-    Ok(vec![SigEntry {
-        validator_index: index as u32,
-        sig: sig.encode(),
-    }])
-}
 
 pub struct ProducerConfig {
     pub fee_collector: AccountId,
@@ -450,9 +416,9 @@ pub fn run_producer_loop(
     // spawn it; otherwise run in single-validator loopback mode.
     let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
     let mut outbound: Vec<crate::consensus_driver::DriverEvent> = Vec::new();
-    let net = cfg.consensus_bind.map(|bind| {
-        crate::consensus_net::spawn_consensus_net(bind, cfg.consensus_peers.clone())
-    });
+    let net = cfg
+        .consensus_bind
+        .map(|bind| crate::consensus_net::spawn_consensus_net(bind, cfg.consensus_peers.clone()));
 
     while !shutdown.load(Ordering::Relaxed) {
         // Drain the network's inbound channel (non-blocking).
@@ -490,10 +456,9 @@ pub fn run_producer_loop(
         if let Some((_, outbound_tx)) = &net {
             for event in outbound.drain(..) {
                 let msg = match event {
-                    crate::consensus_driver::DriverEvent::BroadcastProposal {
-                        proposal,
-                        block,
-                    } => crate::consensus_net::OutboundConsensusMsg::Proposal(proposal, block),
+                    crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
+                        crate::consensus_net::OutboundConsensusMsg::Proposal(proposal, block)
+                    }
                     crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
                         crate::consensus_net::OutboundConsensusMsg::Vote(v)
                     }
@@ -548,7 +513,7 @@ fn build_consensus_driver(
         })
         .collect::<Result<Vec<_>, String>>()?;
     // Canonical pubkey-sorted order: validator_id is the position.
-    validators.sort_by(|a, b| a.0.encode().cmp(&b.0.encode()));
+    validators.sort_by_key(|(pk, _)| pk.encode());
     let shard = onx_data_structures::ShardIdent {
         workchain_id: onx_data_structures::WorkchainIdent(onx_primitives::Int32(-1)),
         shard_prefix_ident: onx_primitives::Uint64(onx_data_structures::ShardIdent::ROOT_PREFIX),

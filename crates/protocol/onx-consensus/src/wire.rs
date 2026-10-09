@@ -80,9 +80,7 @@ pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError
     let (proposer_id, rest) = read_u32_be(rest)?;
     let (signature, rest) = read_sig(rest)?;
     if !rest.is_empty() {
-        return Err(ConsensusError::InvalidMessage(
-            "trailing bytes in proposal",
-        ));
+        return Err(ConsensusError::InvalidMessage("trailing bytes in proposal"));
     }
     Ok(ConsensusProposal {
         height,
@@ -148,17 +146,13 @@ pub fn decode_vote(bytes: &[u8]) -> Result<(ConsensusVote, Option<Signature>), C
     let (validator_id, rest) = read_u32_be(rest)?;
     let (signature, rest) = read_sig(rest)?;
     if rest.is_empty() {
-        return Err(ConsensusError::InvalidMessage(
-            "truncated header_sig flag",
-        ));
+        return Err(ConsensusError::InvalidMessage("truncated header_sig flag"));
     }
     let (header_sig, rest) = match rest[0] {
         0 => (None, &rest[1..]),
         1 => {
             if rest.len() < 65 {
-                return Err(ConsensusError::InvalidMessage(
-                    "truncated header signature",
-                ));
+                return Err(ConsensusError::InvalidMessage("truncated header signature"));
             }
             let sig = Signature::decode_exact(&rest[1..65])
                 .map_err(|_| ConsensusError::InvalidMessage("bad header sig encoding"))?;
@@ -175,9 +169,7 @@ pub fn decode_vote(bytes: &[u8]) -> Result<(ConsensusVote, Option<Signature>), C
         _ => return Err(ConsensusError::InvalidMessage("bad header_sig flag")),
     };
     if !rest.is_empty() {
-        return Err(ConsensusError::InvalidMessage(
-            "trailing bytes in vote",
-        ));
+        return Err(ConsensusError::InvalidMessage("trailing bytes in vote"));
     }
     Ok((
         ConsensusVote {

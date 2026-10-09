@@ -86,7 +86,7 @@ impl ConsensusDriver {
             .enumerate()
             .map(|(i, (pk, stake))| ValidatorSetEntry {
                 validator_id: i as u32,
-                public_key: pk.clone(),
+                public_key: *pk,
                 actual_stake: Uint64(*stake),
             })
             .collect();
@@ -99,7 +99,7 @@ impl ConsensusDriver {
             precommit: 60_000,
             commit: 60_000,
         };
-        let engine = ConsensusEngine::new(shard.clone(), height, entries, now, timeouts)
+        let engine = ConsensusEngine::new(shard, height, entries, now, timeouts)
             .map_err(|e| format!("consensus: engine init failed: {e}"))?;
         Ok(Self {
             engine,
@@ -107,7 +107,7 @@ impl ConsensusDriver {
             chain_id,
             own_id,
             signing_key,
-            validator_pubkeys: validators.iter().map(|(pk, _)| pk.clone()).collect(),
+            validator_pubkeys: validators.iter().map(|(pk, _)| *pk).collect(),
             blocks: BTreeMap::new(),
             header_sigs: BTreeMap::new(),
             voted: BTreeSet::new(),
@@ -236,7 +236,9 @@ impl ConsensusDriver {
                             .unwrap_or([0u8; 32])
                     ),
                 );
-                return Err("consensus: conflicting proposal (equivocation evidence logged)".to_string());
+                return Err(
+                    "consensus: conflicting proposal (equivocation evidence logged)".to_string(),
+                );
             }
             Err(e) => {
                 return Err(format!("consensus: proposal rejected: {e}"));
@@ -405,11 +407,11 @@ impl ConsensusDriver {
             .validator_pubkeys
             .iter()
             .zip(self.engine.stakes())
-            .map(|(pk, stake)| (pk.clone(), stake))
+            .map(|(pk, stake)| (*pk, stake))
             .collect();
         *self = Self::new(
             self.chain_id,
-            self.shard.clone(),
+            self.shard,
             height,
             &validators,
             self.signing_key.clone(),
@@ -425,11 +427,11 @@ impl ConsensusDriver {
             .validator_pubkeys
             .iter()
             .zip(self.engine.stakes())
-            .map(|(pk, stake)| (pk.clone(), stake))
+            .map(|(pk, stake)| (*pk, stake))
             .collect();
         Self::new(
             self.chain_id,
-            self.shard.clone(),
+            self.shard,
             height,
             &validators,
             self.signing_key.clone(),
