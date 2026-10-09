@@ -402,12 +402,12 @@ under *Known bugs* below.
       24-hour criterion.
 
 *Release hygiene*
-- [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.
-      devnet-1 is public. **Progress:** `SECURITY.md` exists and points to
-      GitHub private vulnerability reporting. That channel only works once a
-      repo admin enables it (Settings → Code security → Private vulnerability
-      reporting). Tick this box when the "Report a vulnerability" button
-      appears on the Security tab.
+- [x] Add a `SECURITY.md` with a way to report vulnerabilities privately.
+      devnet-1 is public. **Done:** `SECURITY.md` (#42) points reporters to
+      GitHub private vulnerability reporting, which a repo admin enabled on
+      2026-10-09. Evidence: `GET /repos/gokooteam/The-Open-Network-X/private-vulnerability-reporting`
+      returns `{"enabled": true}`, and the Security tab shows "Report a
+      vulnerability".
 - [ ] Publish the GitHub Release for `v0.2.0`. The tag exists and
       `release.yml` creates a *draft*, but no published release exists yet.
 - [ ] Tag `v0.3.0` through the Version Bump workflow.
