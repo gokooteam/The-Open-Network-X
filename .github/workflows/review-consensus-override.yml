@@ -4,15 +4,16 @@ name: Review Consensus Override
 # review relay (docs/guides/review-relay.md). Adding the consensus-override
 # label to a PR turns the check green whatever the relay's verdict; removing
 # it restores the relay's verdict for the current commit (red if there is
-# none yet). Only someone with write access can use it: the label is taken
-# off again for anyone else.
+# none yet). A new push keeps the override while the label stays on. Only
+# someone with write access can use it: the label is taken off again for
+# anyone else.
 
 on:
   # Runs the default branch's version of this file with a token that can set
   # a commit status. It never checks out or runs PR code: it reads the label
   # event and loads its script from main.
   pull_request_target:  # zizmor: ignore[dangerous-triggers]
-    types: [labeled, unlabeled]
+    types: [labeled, unlabeled, synchronize, reopened]
 
 permissions: {}
 
@@ -21,7 +22,9 @@ jobs:
     name: Consensus override
     if: >-
       github.repository == 'gokooteam/The-Open-Network-X' &&
-      github.event.label.name == 'consensus-override'
+      (github.event.label.name == 'consensus-override' ||
+       ((github.event.action == 'synchronize' || github.event.action == 'reopened') &&
+        contains(github.event.pull_request.labels.*.name, 'consensus-override')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:

@@ -31,6 +31,21 @@ const CONSENSUS_CONTEXT = 'Review consensus';
 // A maintainer's label that turns the status green whatever the verdict.
 const OVERRIDE_LABEL = 'consensus-override';
 const VERDICTS = ['GO', 'NO-GO', 'NONE'];
+// The reviewers whose verdicts can count, besides turn 2. A verdict counts
+// only if its reviewer is one of these and reviewed the head commit (a
+// review on it, a comment or thread reply since it, or its finished status).
+const REVIEWERS = [
+  { name: 'Claude audit', login: 'claude', status: null },
+  { name: 'CodeRabbit', login: 'coderabbitai', status: 'CodeRabbit' },
+  { name: 'Greptile', login: 'greptile-apps', status: null },
+  { name: 'Devin', login: 'devin-ai-integration', status: 'Devin Review' },
+];
+
+function canonicalReviewer(text) {
+  const t = String(text || '').toLowerCase();
+  const r = REVIEWERS.find((x) => t.includes(x.name.toLowerCase()) || t.includes(x.login));
+  return r ? r.name : null;
+}
 
 // A PR whose files all match this skips turns 2 and 3; turn 1 covers it.
 const DOCS_ONLY = /(^docs\/)|(\.md$)/;
@@ -329,6 +344,22 @@ async function collect({ github, context, core }) {
   });
   const threads = await fetchThreads(github, owner, repo, pr);
 
+  // Which reviewers reviewed this exact commit, from GitHub's records rather
+  // than from anything a model says.
+  const { data: headCommit } = await github.rest.repos.getCommit({ owner, repo, ref: headSha });
+  const since = Date.parse(headCommit.commit.committer.date);
+  const { data: combined } = await github.rest.repos.getCombinedStatusForRef({ owner, repo, ref: headSha });
+  const after = (when) => Date.parse(when) >= since;
+  const reviewed = REVIEWERS.filter((r) => {
+    const by = (login) => botName(login) === r.login;
+    return (
+      reviews.some((x) => x.user && by(x.user.login) && x.commit_id === headSha) ||
+      issueComments.some((x) => x.user && by(x.user.login) && after(x.updated_at || x.created_at)) ||
+      threads.some((t) => t.comments.nodes.some((c) => c.author && by(c.author.login) && after(c.createdAt))) ||
+      (r.status && combined.statuses.some((st) => st.context === r.status && st.state === 'success'))
+    );
+  }).map((r) => r.name);
+
   const lines = [];
   const commentIds = [];
   const roots = {};
@@ -397,6 +428,7 @@ async function collect({ github, context, core }) {
     path.join(outDir, 'known.json'),
     JSON.stringify({
       comment_ids: commentIds,
+      reviewed,
       roots,
       // null: GitHub sent no patch (large or binary file), so lines can't be
       // checked; findings there are posted as a comment, not inline.
@@ -660,17 +692,26 @@ async function postTurn3({ github, context, core }) {
 
   // The moderator reports turn 1 and the review apps; turn 2's own verdict
   // comes straight from its output, not through the moderator.
-  const verdicts = (output.verdicts || [])
-    .filter((v) => v && String(v.reviewer || '').trim() && VERDICTS.includes(v.verdict))
-    .filter((v) => !/turn 2/i.test(v.reviewer))
-    .slice(0, 10)
-    .map((v) => ({
-      reviewer: String(v.reviewer).trim(),
+  // One verdict per known reviewer that reviewed this commit. Names the
+  // moderator invents, or reviewers that didn't review the head, don't vote;
+  // if it gives one reviewer twice, a NO-GO wins.
+  const reviewedHead = new Set(known.reviewed || []);
+  const byReviewer = new Map();
+  for (const v of output.verdicts || []) {
+    if (!v || !VERDICTS.includes(v.verdict) || /turn 2/i.test(String(v.reviewer))) continue;
+    const name = canonicalReviewer(v.reviewer);
+    if (!name || !reviewedHead.has(name)) continue;
+    const entry = {
+      reviewer: name,
       verdict: v.verdict,
       // A refutation must say why, or it doesn't count.
       refuted: v.verdict === 'NO-GO' && v.refuted === true && Boolean(String(v.note || '').trim()),
       note: String(v.note || ''),
-    }));
+    };
+    const prev = byReviewer.get(name);
+    if (!prev || (entry.verdict === 'NO-GO' && prev.verdict !== 'NO-GO')) byReviewer.set(name, entry);
+  }
+  const verdicts = [...byReviewer.values()];
   const t2 = process.env.RELAY_TURN2_VERDICT;
   verdicts.push({
     reviewer: 'Relay turn 2 (second opinion)',
@@ -769,6 +810,15 @@ async function reportFailure({ github, context }) {
 async function override({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = context.payload.pull_request;
+  // A new commit (or a reopened PR) has no status yet: carry the override
+  // to it while the label is on. The relay, if it reaches this PR, keeps it.
+  if (['synchronize', 'reopened'].includes(context.payload.action)) {
+    if (await hasOverride(github, owner, repo, pr.number)) {
+      await setConsensus(github, owner, repo, pr.head.sha, 'success', 'Overridden by label');
+      core.info(`${OVERRIDE_LABEL} carried to ${pr.head.sha.slice(0, 7)}.`);
+    }
+    return;
+  }
   if (!context.payload.label || context.payload.label.name !== OVERRIDE_LABEL) return;
   const sender = context.payload.sender && context.payload.sender.login;
   const allowed = await makeTrust(github, owner, repo)(sender, false);

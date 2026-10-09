@@ -113,6 +113,7 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      statuses: read
       id-token: write
     outputs:
       summary: ${{ steps.post.outputs.summary }}
@@ -303,7 +304,10 @@ jobs:
               anything resolved. If nothing is open, say so in one line.
               Under 400 words, no @mentions.
             - "verdicts": one per reviewer except turn 2 (its verdict is
-              added for you): "Claude audit" (turn 1; read its
+              added for you), with "reviewer" exactly one of "Claude
+              audit", "CodeRabbit", "Greptile", "Devin" (other names are
+              dropped, and a reviewer that didn't review this commit doesn't
+              count): "Claude audit" (turn 1; read its
               `Verdict:` line), and each review app that reviewed this
               commit (CodeRabbit, Greptile, Devin). Apps give no verdict,
               so infer it: NO-GO if the app has an open critical, high or

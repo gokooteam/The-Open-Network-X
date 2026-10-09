@@ -45,6 +45,12 @@ Each reviewer gets a verdict:
   infers it: NO-GO if the app has an open critical, high or medium finding,
   GO if it reviewed the commit and has none, NONE if it didn't review it.
 
+A verdict counts only from those four reviewers, and only if GitHub shows
+the reviewer reviewed the head commit (a review on it, a comment since it,
+or its finished status). A name the moderator invents, or a reviewer that
+didn't review this commit, doesn't vote; one reviewer listed twice keeps
+its NO-GO.
+
 **Consensus is GO (merge)** when no reviewer's NO-GO stands and at least
 two reviewers (`RELAY_MIN_GO`) said GO. Otherwise it is **NO-GO (don't
 merge)**, and the summary lists what the PR needs: one item per blocking
@@ -61,8 +67,9 @@ applied, a PR can't merge without GO ([branch-protection.md](branch-protection.m
 
 **Override:** a maintainer adds the `consensus-override` label and the
 status passes whatever the verdict (`review-consensus-override.yml`). The
-label only works for people with write access. Removing it restores the
-relay's verdict for the current commit.
+label only works for people with write access, and it carries over to
+new commits while it stays on. Removing it restores the relay's verdict
+for the current commit.
 
 GO is a gate, not an approval: it means no reviewer has a standing
 objection. A person still decides to merge, and the override keeps that
