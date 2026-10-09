@@ -1463,17 +1463,25 @@ mod tests {
         // 160 near-max-payload calls across 8 senders: the worst-case file
         // is ~9.6 MiB against the 8 MiB servable cap, so the trim must fire.
         let payload = vec![0x5au8; 60_000];
+        // Per-account sequence offsets. The message nonce is each account's
+        // next expected on-chain nonce (read from state) plus its offset —
+        // state-derived, never a literal (CodeQL hard-coded-value rule).
         let mut seqs = [0u64; 8];
         let mut sent = Vec::new();
         for i in 0..160 {
             let from_idx = i % 8;
             let from = senders[from_idx];
             let secret = test_secret_key(&from);
+            let base = genesis_state
+                .tree
+                .get(&from)
+                .map(|a| a.nonce())
+                .unwrap_or(0);
             let msg = ExternalMessage::new_signed(
                 genesis_state.chain_id,
                 MsgKind::ContractCall,
                 from,
-                seqs[from_idx],
+                base.saturating_add(seqs[from_idx]),
                 contract,
                 1_000,
                 10,
