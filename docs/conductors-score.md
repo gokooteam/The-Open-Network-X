@@ -71,6 +71,8 @@ Her gist, verbatim in spirit: *"make GitHub actions that activate you to do each
 
 What got built instead of the spec's Actions machinery: no new workflows — the driver that already wakes every 30 minutes *is* the scheduler, and the PR event watch that already sees merges *is* the trigger. `scripts/site.py next-task` exposes the first unchecked exit criterion as JSON (single parser, no drift); GitHub issues labeled `gokoo-task` are the visible ledger, so the issue timeline records exactly when each merge happened and when the next task started; the `gokoo/<task-id>` branch is the resume token if a run dies. Claude's audit, the relay, and the consensus are untouched. Guide: `docs/guides/task-chain.md`.
 
+Her follow-up, same day: *"You need to update the milestone documents to include these specific item requests as well as making a decision recording because it is absolutely important."* So the chain and the contributor strategy went into `MILESTONES.md` as standing directives SD1–SD3 — not exit criteria, so the counters don't touch them — and the decisions got ADRs: 0046 (the chain) and 0047 (humans). Her reason, in her words: there should be a record of the thing being accomplished with her direction, the direction should be documented, and that's the only way it would be trusted.
+
 ---
 
 ## Part II — The Claude session prompts
