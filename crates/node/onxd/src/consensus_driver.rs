@@ -90,13 +90,14 @@ impl ConsensusDriver {
                 actual_stake: Uint64(*stake),
             })
             .collect();
-        // M6 timeouts: 5s proposal, 5s per vote phase. Generous for devnet;
-        // tune with real network measurements later.
+        // M6 timeouts: generous for devnet (block building itself can take
+        // seconds on big batches; the timeout is for dead leaders, not slow
+        // builders). Tune with real network measurements later.
         let timeouts = RoundTimeouts {
-            proposal: 5_000,
-            prevote: 5_000,
-            precommit: 5_000,
-            commit: 5_000,
+            proposal: 60_000,
+            prevote: 60_000,
+            precommit: 60_000,
+            commit: 60_000,
         };
         let engine = ConsensusEngine::new(shard.clone(), height, entries, now, timeouts)
             .map_err(|e| format!("consensus: engine init failed: {e}"))?;
@@ -125,6 +126,11 @@ impl ConsensusDriver {
         self.engine.step()
     }
 
+    /// Current round (for view-change logging).
+    pub fn round(&self) -> u32 {
+        self.engine.round()
+    }
+
     /// Should this node propose now? True when it is the round leader,
     /// the engine is waiting for a proposal, and it hasn't proposed this
     /// round yet.
@@ -150,7 +156,11 @@ impl ConsensusDriver {
 
     /// Propose `block` as this round's leader. Builds the proposal,
     /// feeds it to the engine, votes PreVote, and returns the broadcast.
-    pub fn propose(&mut self, block: Block, block_bytes: Vec<u8>) -> Result<Vec<DriverEvent>, String> {
+    pub fn propose(
+        &mut self,
+        block: Block,
+        block_bytes: Vec<u8>,
+    ) -> Result<Vec<DriverEvent>, String> {
         if !self.should_propose() {
             return Err("consensus: propose called when not leader".to_string());
         }
@@ -366,6 +376,27 @@ impl ConsensusDriver {
         Ok(vec![DriverEvent::Finalized { block, sig_entries }])
     }
 
+    /// Advance to the next height's engine in place. Call after handling
+    /// `Finalized`.
+    pub fn advance_height(&mut self, now: u64) -> Result<(), String> {
+        let height = self.engine.height() + 1;
+        let validators: Vec<(PublicKey, u64)> = self
+            .validator_pubkeys
+            .iter()
+            .zip(self.engine.stakes())
+            .map(|(pk, stake)| (pk.clone(), stake))
+            .collect();
+        *self = Self::new(
+            self.chain_id,
+            self.shard.clone(),
+            height,
+            &validators,
+            self.signing_key.clone(),
+            now,
+        )?;
+        Ok(())
+    }
+
     /// The engine for the next height. Call after handling `Finalized`.
     pub fn next_height(self, now: u64) -> Result<Self, String> {
         let height = self.engine.height() + 1;
@@ -429,10 +460,8 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> = keys
-            .iter()
-            .map(|k| (k.public_key(), 1_000_000))
-            .collect();
+        let validators: Vec<(PublicKey, u64)> =
+            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
 
         let mut drivers: Vec<ConsensusDriver> = keys
             .into_iter()
@@ -523,10 +552,8 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> = keys
-            .iter()
-            .map(|k| (k.public_key(), 1_000_000))
-            .collect();
+        let validators: Vec<(PublicKey, u64)> =
+            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
 
         // Validator 3 is offline: only 0..=2 participate.
         let mut drivers: Vec<ConsensusDriver> = keys
@@ -540,9 +567,10 @@ mod tests {
         let mut proposal: Option<(Vec<u8>, Vec<u8>, Block)> = None;
         for e in drivers[0].propose(block.clone(), vec![]).unwrap() {
             match e {
-                DriverEvent::BroadcastProposal { proposal: p, block: b } => {
-                    proposal = Some((p, b, block.clone()))
-                }
+                DriverEvent::BroadcastProposal {
+                    proposal: p,
+                    block: b,
+                } => proposal = Some((p, b, block.clone())),
                 DriverEvent::BroadcastVote(v) => votes.push(v),
                 DriverEvent::Finalized { .. } => panic!("finalized too early"),
             }
