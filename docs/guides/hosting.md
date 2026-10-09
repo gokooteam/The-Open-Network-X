@@ -150,31 +150,25 @@ Leave the `data.on-x-scan.com` block alone.
 
 ## The devnet VM
 
-What is known from outside and from the login banner:
+Recorded 2026-10-09 (login banner and `onx-hosting.sh vm`):
 
 - Public IPv4 `192.241.136.73`, private `10.10.0.92`, IPv6 in
   `2604:a880:400::/48`; rented through BitLaunch, hostname `to-x`.
-- Ubuntu 26.04.1 LTS, about 57 GB of disk, nginx 1.28.3.
-- Serves `https://data.on-x-scan.com/devnet-1/`: `genesis.boc` and, as of
-  2026-10-09, `block-00000001.blk` only. That is expected: `onxd` produces a
-  block only when a message arrives
+- Ubuntu 26.04.1 LTS, 58 GB disk (11% used), nginx 1.28.3.
+- `onxd` runs as the systemd unit `onxd.service` ("ONX single-node block
+  producer"), enabled, so it starts again after a reboot. The binary is
+  `/root/onx/target/release/onxd`, built from a checkout in `/root/onx`, with
+  config `/root/onx/onxd.toml`.
+- nginx site `/etc/nginx/sites-enabled/onx-data` serves
+  `data.on-x-scan.com` straight from `/root/onx/data/blocks`, so new blocks
+  are public as soon as `onxd` writes them. Its certificate is the Let's
+  Encrypt one in `/etc/letsencrypt/live/data.on-x-scan.com`. No other
+  site is enabled, and root has no crontab.
+- devnet-1 has `genesis.boc` and `block-00000001.blk` (2026-10-07). That is
+  expected: `onxd` produces a block only when a message arrives
   ([`local-network-launch.md`](local-network-launch.md)).
 
-Not recorded anywhere in this repository yet: how `onxd` is started (systemd
-unit or by hand), where its config and data directory are, and how block
-files reach the nginx web root. Running this on the VM shows all of it:
-
-```sh
-systemctl list-units --type=service --all | grep -i onx
-ps aux | grep -i [o]nxd
-grep -rn "root\|server_name" /etc/nginx/sites-enabled/
-ls -la /etc/letsencrypt/live/ 2>/dev/null
-crontab -l
-```
-
-Record the answers here, so the next person (and M5, which adds a follower
-node on a second machine) starts from facts.
-
-**Before rebooting** for pending updates (`*** System restart required ***`
-in the banner): find out from the commands above whether `onxd` starts by
-itself. If it does not, it has to be started again by hand after the reboot.
+`sh scripts/onx-hosting.sh vm` prints all of this again. Rebooting for
+pending updates is safe for `onxd` (the unit is enabled); afterwards check
+`systemctl status onxd` and that `https://data.on-x-scan.com/devnet-1/genesis.boc`
+still loads.

@@ -111,6 +111,11 @@ inject anything; the monitor compares bytes, and a wrapped copy is drift.
 
 ## Known issues (found 2026-10-08)
 
+**Status 2026-10-09:** on-x-scan.com now has one A record
+(`198.54.114.221`), and both sites are deployed by the cron jobs from
+[`docs/guides/hosting.md`](../docs/guides/hosting.md). Kept below for
+history until the `Site monitor` reports both domains clean.
+
 These are on the hosting side, not in this repository, so they need someone
 with access to the DNS and the servers:
 
