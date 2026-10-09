@@ -11,12 +11,14 @@ name: Review Relay
 #           disagreements, collects each reviewer's GO or NO-GO, and keeps
 #           one summary comment per PR, edited in place.
 #
-# Consensus: GO when no reviewer's NO-GO stands and at least RELAY_MIN_GO
-# reviewers said GO. The relay sets the "Review consensus" commit status
-# (success on GO, failure on NO-GO, pending while it runs) and labels the PR
-# review-blocking on NO-GO. Make the status a required check to gate merges;
-# the consensus-override label (review-consensus-override.yml) lets a
-# maintainer pass it anyway. GO is a gate, not an approval.
+# Consensus: GO (merge) when no reviewer's NO-GO stands and at least
+# RELAY_MIN_GO reviewers said GO; otherwise NO-GO (don't merge), with a list
+# of what the PR needs before it can. The relay sets the "Review consensus"
+# commit status (success on GO, failure on NO-GO, pending while it runs) and
+# labels the PR review-blocking on NO-GO. The ruleset in
+# .github/rulesets/review-consensus.json makes the status required; the
+# consensus-override label (review-consensus-override.yml) lets a maintainer
+# pass it anyway. GO is a gate, not an approval: a person still merges.
 #
 # Docs-only PRs, drafts and forks stop after turn 1. A newer push cancels the
 # relay for the older commit. Run it by hand from the Actions tab with a PR
@@ -310,6 +312,11 @@ jobs:
               behind it, and put the file:line evidence in "note". Never
               approve or recommend merging: verdicts are facts about open
               findings, and the merge decision belongs to the maintainer.
+            - "merge_needs": if any verdict is a standing NO-GO, what the
+              PR needs before it can merge: one short, concrete item per
+              blocking finding ("Fix the unchecked add at stf.rs:812,
+              raised by Claude audit and Greptile", or "Show that X can't
+              happen"). Empty when nothing blocks.
             - "replies": at most 3, only in threads where reviewers disagree
               and the code settles it. Cite file:line.
 
@@ -318,7 +325,7 @@ jobs:
             --model claude-opus-5-5
             --effort medium
             --allowedTools "Read,Grep,Glob"
-            --json-schema '{"type":"object","properties":{"consensus_impact":{"type":"string","enum":["breaking","adjacent","none","unclear"]},"determinism":{"type":"string"},"verdicts":{"type":"array","items":{"type":"object","properties":{"reviewer":{"type":"string"},"verdict":{"type":"string","enum":["GO","NO-GO","NONE"]},"refuted":{"type":"boolean"},"note":{"type":"string"}},"required":["reviewer","verdict","refuted","note"]}},"summary_markdown":{"type":"string"},"replies":{"type":"array","items":{"type":"object","properties":{"comment_id":{"type":"integer"},"body":{"type":"string"}},"required":["comment_id","body"]}}},"required":["consensus_impact","determinism","verdicts","summary_markdown","replies"]}'
+            --json-schema '{"type":"object","properties":{"consensus_impact":{"type":"string","enum":["breaking","adjacent","none","unclear"]},"determinism":{"type":"string"},"verdicts":{"type":"array","items":{"type":"object","properties":{"reviewer":{"type":"string"},"verdict":{"type":"string","enum":["GO","NO-GO","NONE"]},"refuted":{"type":"boolean"},"note":{"type":"string"}},"required":["reviewer","verdict","refuted","note"]}},"summary_markdown":{"type":"string"},"replies":{"type":"array","items":{"type":"object","properties":{"comment_id":{"type":"integer"},"body":{"type":"string"}},"required":["comment_id","body"]}},"merge_needs":{"type":"array","items":{"type":"string"}}},"required":["consensus_impact","determinism","verdicts","summary_markdown","replies","merge_needs"]}'
 
       - name: Post turn 3 and update the summary comment
         if: steps.collect.outputs.stale == 'false'

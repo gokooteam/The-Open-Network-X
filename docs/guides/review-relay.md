@@ -19,9 +19,10 @@ pile of separate verdicts.
 The summary comment is edited in place on each push, so a PR has one. It
 gives:
 
-- **Consensus: GO or NO-GO**, with a table of each reviewer's verdict (see
-  below). On NO-GO the PR carries the `review-blocking` label, so it shows
-  in the PR list before anyone merges.
+- **Merge: yes or no** (consensus GO or NO-GO), with a table of each
+  reviewer's verdict (see below). On no, a numbered list of what the PR
+  needs before it can merge, and the `review-blocking` label so it shows
+  in the PR list.
 - **Consensus impact**: `breaking` (a node with and a node without the PR
   compute different state for the same blocks), `adjacent` (touches
   consensus code, results unchanged), `none`, or `unclear`. Turn 1 gives the
@@ -44,16 +45,19 @@ Each reviewer gets a verdict:
   infers it: NO-GO if the app has an open critical, high or medium finding,
   GO if it reviewed the commit and has none, NONE if it didn't review it.
 
-**Consensus is GO** when no reviewer's NO-GO stands and at least two
-reviewers (`RELAY_MIN_GO`) said GO. One reviewer can block; none can pass
-a PR alone. A NO-GO stops counting only when the moderator marks it
-refuted *and* gives the file:line evidence, which the summary table shows.
+**Consensus is GO (merge)** when no reviewer's NO-GO stands and at least
+two reviewers (`RELAY_MIN_GO`) said GO. Otherwise it is **NO-GO (don't
+merge)**, and the summary lists what the PR needs: one item per blocking
+finding from the moderator, plus "at least N reviewers must say GO" when
+too few did. One reviewer can block; none can pass a PR alone. A NO-GO
+stops counting only when the moderator marks it refuted *and* gives the
+file:line evidence, which the summary table shows.
 
 The relay puts the result on the PR's head commit as the **`Review
 consensus`** status: pending while the relay runs, success on GO (and on
-docs-only PRs), failure on NO-GO, error if a relay job fails. It's in
-`.github/rulesets/main.json`, so once the ruleset is applied, a PR can't
-merge without GO ([branch-protection.md](branch-protection.md)).
+docs-only PRs), failure on NO-GO, error if a relay job fails. The
+`review-consensus.json` ruleset makes it required, so once that ruleset is
+applied, a PR can't merge without GO ([branch-protection.md](branch-protection.md)).
 
 **Override:** a maintainer adds the `consensus-override` label and the
 status passes whatever the verdict (`review-consensus-override.yml`). The

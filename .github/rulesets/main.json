@@ -40,8 +40,7 @@
           { "context": "Rust hygiene", "integration_id": 15368 },
           { "context": "TruffleHog", "integration_id": 15368 },
           { "context": "Version consistency", "integration_id": 15368 },
-          { "context": "Dependency Review", "integration_id": 15368 },
-          { "context": "Review consensus", "integration_id": 15368 }
+          { "context": "Dependency Review", "integration_id": 15368 }
         ]
       }
     }

@@ -501,12 +501,12 @@ function tally(verdicts, minGo) {
   const standing = verdicts.filter((v) => v.verdict === 'NO-GO' && !v.refuted);
   const gos = verdicts.filter((v) => v.verdict === 'GO');
   if (standing.length > 0) {
-    return { consensus: 'NO-GO', why: `${standing.length} standing NO-GO (${standing.map((v) => v.reviewer).join(', ')})` };
+    return { consensus: 'NO-GO', standing, gos, why: `${standing.length} standing NO-GO (${standing.map((v) => v.reviewer).join(', ')})` };
   }
   if (gos.length < minGo) {
-    return { consensus: 'NO-GO', why: `only ${gos.length} GO verdict(s); ${minGo} needed` };
+    return { consensus: 'NO-GO', standing, gos, why: `only ${gos.length} GO verdict(s); ${minGo} needed` };
   }
-  return { consensus: 'GO', why: `${gos.length} GO, no standing NO-GO` };
+  return { consensus: 'GO', standing, gos, why: `${gos.length} GO, no standing NO-GO` };
 }
 
 function cell(text) {
@@ -653,8 +653,20 @@ async function postTurn3({ github, context, core }) {
     refuted: false,
     note: '',
   });
-  const { consensus, why } = tally(verdicts, Number(process.env.RELAY_MIN_GO || 2));
+  const minGo = Number(process.env.RELAY_MIN_GO || 2);
+  const { consensus, why, standing, gos } = tally(verdicts, minGo);
   const blocking = consensus !== 'GO';
+
+  // What the PR needs before it can merge: the moderator's items, plus the
+  // ones the tally implies, so a NO-GO always says how to get to GO.
+  const needs = [];
+  if (blocking) {
+    needs.push(...(output.merge_needs || []).map((n) => String(n || '').trim()).filter(Boolean).slice(0, 10));
+    if (needs.length === 0) {
+      for (const v of standing) needs.push(`Resolve ${v.reviewer}'s NO-GO${v.note.trim() ? `: ${v.note.trim()}` : ''}.`);
+    }
+    if (gos.length < minGo) needs.push(`At least ${minGo} reviewers must say GO (now ${gos.length}).`);
+  }
 
   const table = [
     '| Reviewer | Verdict | Note |',
@@ -662,7 +674,9 @@ async function postTurn3({ github, context, core }) {
     ...verdicts.map((v) => `| ${cell(v.reviewer)} | ${v.refuted ? 'NO-GO, refuted' : v.verdict} | ${cell(v.note)} |`),
   ].join('\n');
   const state = [
-    `**Consensus: ${consensus}** (${why})`,
+    blocking
+      ? `**Merge: no. Consensus: NO-GO** (${why}). What it needs before it can merge:\n\n${needs.map((n, i) => `${i + 1}. ${defuse(cap(n, 500))}`).join('\n')}\n`
+      : `**Merge: yes. Consensus: GO** (${why}).`,
     `**Consensus impact:** ${impact}`,
     `**Determinism:** ${defuse(cap(output.determinism, 600)) || 'not assessed'}`,
     '',
@@ -707,7 +721,8 @@ async function postTurn3({ github, context, core }) {
   if (overridden) {
     await setConsensus(github, owner, repo, headSha, 'success', `Overridden by label (relay says ${consensus})`);
   } else {
-    await setConsensus(github, owner, repo, headSha, blocking ? 'failure' : 'success', `${consensus}: ${why}`);
+    await setConsensus(github, owner, repo, headSha, blocking ? 'failure' : 'success',
+      blocking ? `NO-GO, don't merge: ${needs.length} item(s) needed (see the relay summary)` : `GO, merge: ${why}`);
   }
   core.info(`Turn 3: ${posted} replies; summary ${sticky ? 'updated' : 'created'}; consensus: ${consensus}.`);
 }
@@ -744,7 +759,7 @@ async function override({ github, context, core }) {
   // Removed: go back to the relay's own verdict for this commit, if it has one.
   const sticky = await findSticky(github, owner, repo, pr.number);
   const current = sticky && sticky.body.includes(headMarker(pr.head.sha));
-  if (current && sticky.body.includes('**Consensus: GO**')) {
+  if (current && sticky.body.includes('Consensus: GO**')) {
     await setConsensus(github, owner, repo, pr.head.sha, 'success', `Override removed; the relay's verdict is GO`);
   } else {
     await setConsensus(github, owner, repo, pr.head.sha, 'failure',
