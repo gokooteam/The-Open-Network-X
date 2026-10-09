@@ -645,6 +645,19 @@ an ADR, and update this file to match.
 | D3 | Are on-chain economics (fee burn, inflation rewards, slashing debits) live in 1.0? | Fees and the fee burn, yes, since fees already exist. Inflation and slashing ride with D2. |
 | D4 | The _(proposed)_ thresholds in M4–M8 | Accept them or change them once, now. Don't change them later just to pass the gate. |
 
+## Standing directives
+
+These are Amethyst's standing orders for how the remaining work gets done.
+They are not milestone exit criteria — `scripts/site.py` does not count them —
+but they bind every task the chain works. Each one is recorded in an ADR;
+this section is the index.
+
+| # | Directive | Record |
+| --- | --- | --- |
+| SD1 | **Milestone task chain.** The remaining exit criteria are worked one at a time, each as a GitHub issue labeled `gokoo-task`, each merged task starting the next. The issue timeline is the merge→start ledger. No new scheduler was built: the 30-minute plan driver is the scheduler, the 90-second PR event watch is the merge trigger. | ADR-0046, `docs/guides/task-chain.md` |
+| SD2 | **Direction is part of the trusted record.** Work is only trustworthy if the direction behind it is documented. Every task issue carries the direction that commissioned it; her prompts and decisions are kept verbatim in `docs/conductors-score.md`. | ADR-0046 |
+| SD3 | **Bring in human contributors.** The solo build got ONX this far — that is in the git log — but the best systems are not built by one person. The project is made ready for expert human contributors *before* they arrive (branch protection, review gates, contributor docs), the intent is signaled publicly, and the existing work stays protected behind the same gates that guard it now. | ADR-0047, `docs/planning/contributor-strategy.md` |
+
 ## Parking lot (post-1.0 or undecided)
 
 These items have specs, and often library code, but no milestone. Moving one
