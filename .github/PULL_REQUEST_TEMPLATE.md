@@ -24,3 +24,6 @@ Could this behave differently on two honest nodes given the same inputs?
 
 ## Notes
 <!-- State the specification section implemented and any deliberate deviations. -->
+
+## Review relay
+<!-- After the relay reaches consensus, Gokoo does a live verification pass (Turn 4): checks the relay's claims, runs scoped tests, posts GO/NO-GO. Advisory; Amethyst merges. -->

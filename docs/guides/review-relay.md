@@ -15,6 +15,7 @@ pile of separate verdicts.
 | On each push | **Turn 1**: Claude PR audit (`claude-review.yml`) | inline findings and one summary comment |
 | After turn 1 succeeds and the apps finish | **Turn 2**: second opinion (`review-relay.yml`) | replies where it disagrees with a finding, a 👍 on findings it confirms, and one review with anything everyone missed |
 | After turn 2 | **Turn 3**: moderator (`review-relay.yml`) | replies settling disagreements, and the **Review relay: state of the review** comment |
+| After turn 3 posts the `Review consensus` status | **Turn 4**: Gokoo live verification (event-driven, off-workflow) | one `Gokoo verification` comment: what was checked, VERDICT: GO/NO-GO, anything the relay missed |
 
 The summary comment is edited in place on each push, so a PR has one. It
 gives:
@@ -82,6 +83,34 @@ the head commit are no longer pending and Greptile has reviewed the PR once
 (it reviews only a PR's first commit). It waits at most 10 minutes, then
 goes ahead with what is there. These are the `RELAY_WAIT_*` variables at the
 top of `review-relay.yml`; edit them if a review app is added or removed.
+
+## Turn 4: Gokoo live verification
+
+Turns 1–3 run as model turns inside CI with read-only tools. Turn 4 is
+Gokoo himself, live: the repo, the test suite, and memory of in-flight
+work. It exists because some claims can only be checked by running things.
+
+- **Trigger:** the `Review consensus` status posting on the head commit
+  (or, before the relay, all required checks green plus Claude's final
+  verdict). An event watch wakes Gokoo; nothing polls.
+- **What it does:**
+  1. Verifies the relay summary's factual claims via the API — check-run
+     conclusions on the head SHA, open review threads and their resolution
+     state.
+  2. Runs scoped local checks for code changes (`cargo fmt --check`,
+     `cargo test` for the touched crates only).
+  3. Checks against in-flight work and plan state (conflicting branches,
+     ADR implications).
+  4. Posts one `Gokoo verification` comment: what was checked,
+     **VERDICT: GO or NO-GO** with concrete reasons, and anything the
+     relay missed.
+- **Weight:** advisory. The verdict is recorded in the summary table;
+  Amethyst weighs it at merge time. Turn 4 does not change the consensus
+  math and never approves.
+- **Hard rules:** never merge, never approve, never push to `main`.
+
+Turn 4 needs no workflow changes: it is triggered by the status Turn 3
+posts, not by any workflow in this repo.
 
 ## When the relay doesn't run
 
