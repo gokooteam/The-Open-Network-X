@@ -80,3 +80,7 @@ on the final PR provide the review.
   tests ported to BFT ticks; 16/16 onxd lib green, clippy clean.
   REMAINING: P4 real network broadcast (RLDP vs ADNL datagram decision),
   P5 fork-choice rule, P6 multinode integration test.
+- 2026-10-09: P6 done — tests/four_validator_consensus.rs: 4 real nodes,
+  TCP gossip, same block finalized with quorum sigs in <3s. M6 COMPLETE:
+  P1 (genesis) + P2 (sig budget) + P3 (driver) + P4 (wire + TCP) +
+  P5 (equivocation) + P6 (integration). All tests green.
