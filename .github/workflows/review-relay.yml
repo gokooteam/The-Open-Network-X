@@ -267,6 +267,8 @@ jobs:
             PR NUMBER: ${{ needs.gate.outputs.pr }}
             HEAD: ${{ needs.gate.outputs.head_sha }}
 
+            TURN 2 VERDICT: ${{ needs.turn2.outputs.verdict }}
+
             You are turn 3 of the review relay on this pull request to The
             Open Network X, a Rust blockchain implementation: the moderator.
             Turn 1 (the Claude PR audit), the review apps, and turn 2 (a
@@ -316,7 +318,10 @@ jobs:
               PR needs before it can merge: one short, concrete item per
               blocking finding ("Fix the unchecked add at stf.rs:812,
               raised by Claude audit and Greptile", or "Show that X can't
-              happen"). Empty when nothing blocks.
+              happen"). Include turn 2's blocking findings when TURN 2
+              VERDICT above is NO-GO (its replies and review are marked
+              "Review relay · turn 2"), and name it as "raised by turn 2".
+              Empty when nothing blocks.
             - "replies": at most 3, only in threads where reviewers disagree
               and the code settles it. Cite file:line.
 

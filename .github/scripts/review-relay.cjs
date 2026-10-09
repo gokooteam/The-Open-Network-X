@@ -685,8 +685,14 @@ async function postTurn3({ github, context, core }) {
   const needs = [];
   if (blocking) {
     needs.push(...(output.merge_needs || []).map((n) => String(n || '').trim()).filter(Boolean).slice(0, 10));
-    if (needs.length === 0) {
-      for (const v of standing) needs.push(`Resolve ${v.reviewer}'s NO-GO${v.note.trim() ? `: ${v.note.trim()}` : ''}.`);
+    // Every standing NO-GO must appear in the list: if the moderator's items
+    // never name a reviewer (turn 2's verdict reaches the moderator only
+    // through its prompt), add one for it.
+    for (const v of standing) {
+      const key = /turn 2/i.test(v.reviewer) ? /turn 2/i : new RegExp(v.reviewer.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      if (!needs.some((n) => key.test(n))) {
+        needs.push(`Resolve ${v.reviewer}'s NO-GO${v.note.trim() ? `: ${v.note.trim()}` : ' (see its review comments)'}.`);
+      }
     }
     if (gos.length < minGo) needs.push(`At least ${minGo} reviewers must say GO (now ${gos.length}).`);
   }
