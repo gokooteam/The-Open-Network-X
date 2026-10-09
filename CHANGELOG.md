@@ -46,6 +46,10 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   is open. Docs-only PRs, drafts and forks skip it.
 - `.coderabbit.yaml`: keeps CodeRabbit's findings and commit status and
   turns off its walkthrough extras and pre-merge checks.
+- `README.md` status block: the development phase (development until the
+  M8 maintenance gate passes) and a milestone map with exit-criteria
+  progress and no target dates. `scripts/site.py build` writes it from
+  `MILESTONES.md`; `site.py check` fails CI when it falls behind.
 - PR template: a *Consensus impact* section (breaking, adjacent or none)
   and the determinism question.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
