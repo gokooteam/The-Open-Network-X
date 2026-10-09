@@ -350,6 +350,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      issues: read
       statuses: write
     env:
       RELAY_PR: ${{ needs.gate.outputs.pr }}

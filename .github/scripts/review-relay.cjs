@@ -274,7 +274,7 @@ async function gate({ github, context, core }) {
   const { data: latest } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
   if (latest.head.sha !== headSha) return skip('a newer commit was pushed while waiting');
 
-  await setConsensus(github, owner, repo, headSha, 'pending', 'Review relay running');
+  await setRelayStatus(github, owner, repo, pr, headSha, 'pending', 'Review relay running');
   core.setOutput('run', 'true');
   core.setOutput('reason', '');
   return undefined;
@@ -492,6 +492,29 @@ async function setConsensus(github, owner, repo, sha, state, description) {
 async function hasOverride(github, owner, repo, pr) {
   const { data } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: pr, per_page: 100 });
   return data.some((l) => l.name === OVERRIDE_LABEL);
+}
+
+// Every status the relay itself writes goes through here, so it never
+// replaces a maintainer's override: with the label on, it writes success.
+// It checks again after writing, because the label's own workflow may have
+// posted success while this write was in flight; the last write then
+// still ends green.
+async function setRelayStatus(github, owner, repo, pr, sha, state, description) {
+  if (await hasOverride(github, owner, repo, pr)) {
+    await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
+    return true;
+  }
+  await setConsensus(github, owner, repo, sha, state, description);
+  if (state !== 'success' && (await hasOverride(github, owner, repo, pr))) {
+    await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
+    return true;
+  }
+  return false;
+}
+
+async function docsOnly(github, owner, repo, pr) {
+  const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: pr, per_page: 100 });
+  return files.length > 0 && files.every((f) => DOCS_ONLY.test(f.filename));
 }
 
 // GO only when no reviewer's NO-GO stands (unrefuted) and at least
@@ -718,12 +741,8 @@ async function postTurn3({ github, context, core }) {
     await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
   }
   await setBlockingLabel(github, owner, repo, pr, blocking);
-  if (overridden) {
-    await setConsensus(github, owner, repo, headSha, 'success', `Overridden by label (relay says ${consensus})`);
-  } else {
-    await setConsensus(github, owner, repo, headSha, blocking ? 'failure' : 'success',
-      blocking ? `NO-GO, don't merge: ${needs.length} item(s) needed (see the relay summary)` : `GO, merge: ${why}`);
-  }
+  await setRelayStatus(github, owner, repo, pr, headSha, blocking ? 'failure' : 'success',
+    blocking ? `NO-GO, don't merge: ${needs.length} item(s) needed (see the relay summary)` : `GO, merge: ${why}`);
   core.info(`Turn 3: ${posted} replies; summary ${sticky ? 'updated' : 'created'}; consensus: ${consensus}.`);
 }
 
@@ -734,7 +753,7 @@ async function reportFailure({ github, context }) {
   const pr = Number(process.env.RELAY_PR);
   const headSha = process.env.RELAY_HEAD_SHA;
   if (await headMoved(github, owner, repo, pr, headSha)) return;
-  await setConsensus(github, owner, repo, headSha, 'error', `Relay failed; re-run it, or a maintainer adds ${OVERRIDE_LABEL}`);
+  await setRelayStatus(github, owner, repo, pr, headSha, 'error', `Relay failed; re-run it, or a maintainer adds ${OVERRIDE_LABEL}`);
 }
 
 // The consensus-override label was added or removed. Only a person with
@@ -756,7 +775,13 @@ async function override({ github, context, core }) {
     core.info(`${OVERRIDE_LABEL} added by ${sender}.`);
     return;
   }
-  // Removed: go back to the relay's own verdict for this commit, if it has one.
+  // Removed: go back to what the relay would say for this commit. A
+  // docs-only PR passes without a relay run, as the gate does.
+  if (await docsOnly(github, owner, repo, pr.number)) {
+    await setConsensus(github, owner, repo, pr.head.sha, 'success', 'Docs-only change: the turn 1 audit covers it');
+    core.info(`${OVERRIDE_LABEL} removed by ${sender}; docs-only PR passes.`);
+    return;
+  }
   const sticky = await findSticky(github, owner, repo, pr.number);
   const current = sticky && sticky.body.includes(headMarker(pr.head.sha));
   if (current && sticky.body.includes('Consensus: GO**')) {
