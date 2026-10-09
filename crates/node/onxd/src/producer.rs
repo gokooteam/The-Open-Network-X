@@ -528,15 +528,13 @@ fn run_tick(
             })?
             .block_time
     };
-    // Canonical validator set, loaded once: its size bounds the worst-case
-    // signature section for the block-size check (ADR-0045), and the set
-    // itself is needed for signing and self-verification below.
+    // Canonical validator set, loaded once: needed for signing (the
+    // signer's index in `sign_block`) and self-verification below. Its
+    // size no longer feeds the block-size check: the producer writes
+    // exactly one signature, so the sig-section budget is
+    // `producer_sig_section_bytes()`, not per-validator (ADR-0045).
     let validators = canonical_validators(store)?;
-    // Worst case: every validator signs this block (4-byte entry count +
-    // SIG_ENTRY_BYTE_LEN per entry). The real section is never larger, so
-    // a block that fits under this bound always fits on the wire.
-    let max_sig_section_bytes =
-        4usize.saturating_add(validators.len().saturating_mul(SIG_ENTRY_BYTE_LEN));
+    let max_sig_section_bytes = producer_sig_section_bytes();
     let block = match propose_robust(
         &state,
         candidates,
@@ -631,13 +629,30 @@ fn run_tick(
 /// loop: without containment, the poison message sits in the drop dir and
 /// kills the process on every tick.
 ///
-/// Worst-case encoded `.blk` file size for these messages: magic +
-/// header + the full signature section (`max_sig_section_bytes`: every
-/// validator signing) + the length-prefixed body. Deterministic — the
-/// same messages always give the same size, so every honest producer
-/// agrees on the bound. Must match `onx::blockfile::encode_block_file`'s
-/// layout exactly: magic(8) || header(160) || sig section ||
-/// msg_count(u32be) || [msg_len(u32be) || msg_bytes]*.
+/// Byte budget reserved for the block file's signature section (ADR-0045).
+///
+/// The producer attaches exactly one signature — its own (`sign_block`
+/// returns a single `SigEntry`; the validator list only locates the
+/// signer's index) — so the section is always 4 (entry count) + one
+/// entry, independent of the genesis validator set's size. An earlier
+/// revision reserved space for *every* genesis validator (4 + n·68);
+/// with ~124,000 validators that reservation alone exceeded
+/// `MAX_BLOCK_FILE_BYTES`, so `largest_fitting_prefix` returned zero
+/// and the producer halted on a `Fatal` tick error — even though the
+/// block it would have written carried exactly one 68-byte signature
+/// (devin 🟡 review on PR #47). Revisit when multi-validator quorum
+/// signing lands (M6): the budget must then cover however many
+/// signatures the producer attaches.
+fn producer_sig_section_bytes() -> usize {
+    4usize.saturating_add(SIG_ENTRY_BYTE_LEN)
+}
+
+/// Worst-case encoded `.blk` file size for these messages: magic + header +
+/// the full signature section (`max_sig_section_bytes`: the producer's own
+/// single signature — see [`producer_sig_section_bytes`]) + the length-prefixed
+/// body. Deterministic — the same messages always give the same size, so every
+/// honest producer agrees on the bound, and it must match
+/// `onx::blockfile::encode_block_file`'s layout exactly.
 fn worst_case_block_file_bytes(
     messages: &[ExternalMessage],
     max_sig_section_bytes: usize,
@@ -705,9 +720,9 @@ fn propose_robust(
     // MAX_BLOCK_FILE_BYTES strands every follower at that height — the
     // server refuses it and no peer can deliver it. Trim the tail (held
     // for the next block, never rejected) until the worst-case encoded
-    // file — every validator signing — fits. This is a pure size check,
-    // no STF involved; it mirrors the BlockGasExceeded arm in the loop
-    // below.
+    // file — the producer's own single signature — fits. This is a pure
+    // size check, no STF involved; it mirrors the BlockGasExceeded arm in
+    // the loop below.
     let fitting = largest_fitting_prefix(&candidates, max_sig_section_bytes);
     if fitting < candidates.len() {
         eprintln!(
@@ -1195,9 +1210,9 @@ mod tests {
             state.last_lt + 1,
             fee_collector,
             0,
-            // One validator in the test genesis: the sig-section bound is
-            // exact, and two small transfers are far under the file cap.
-            4 + SIG_ENTRY_BYTE_LEN,
+            // The producer's sig-section budget (one entry: its own
+            // signature); two small transfers are far under the file cap.
+            producer_sig_section_bytes(),
             &mut mempool,
             &mut stats,
         )
@@ -1250,6 +1265,25 @@ mod tests {
         );
     }
 
+    /// Devin 🟡 review on PR #47: the old sig-section budget reserved
+    /// 4 + n·68 bytes for *every* genesis validator. With ~124,000
+    /// validators that reservation alone exceeded `MAX_BLOCK_FILE_BYTES`,
+    /// so `largest_fitting_prefix` returned zero and the producer halted
+    /// with a `Fatal` tick error — even though the block it would have
+    /// written carried exactly one 68-byte signature. The budget is the
+    /// producer's own single signature and must not grow with the
+    /// validator set.
+    #[test]
+    fn sig_section_budget_ignores_validator_set_size() {
+        assert_eq!(producer_sig_section_bytes(), 4 + SIG_ENTRY_BYTE_LEN);
+        // At 130,000 validators the old formula (4 + n·68 ≈ 8.43 MiB)
+        // exceeded the whole sync budget; a small message must still fit
+        // under the production budget.
+        let state = State::from_genesis(&test_genesis());
+        let msg = signed_transfer(&state, 0, 0);
+        assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes()) > 0);
+    }
+
     /// ADR-0045: a candidate set bigger than the sync servable bound is
     /// trimmed (tail held for the next block), never committed as a block
     /// no follower can fetch — and never rejected as invalid.
@@ -1263,8 +1297,8 @@ mod tests {
     fn oversize_candidate_set_is_trimmed_not_rejected() {
         let state = State::from_genesis(&test_genesis());
         let fee_collector = test_fee_collector();
-        // One validator in the test genesis.
-        let max_sig_section_bytes = 4 + SIG_ENTRY_BYTE_LEN;
+        // The producer's sig-section budget (one entry: its own signature).
+        let max_sig_section_bytes = producer_sig_section_bytes();
         let payload = vec![0x5au8; 60_000];
         let mut candidates = Vec::new();
         let mut nonces = [0u64; 8];

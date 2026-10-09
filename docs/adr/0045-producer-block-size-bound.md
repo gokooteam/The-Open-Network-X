@@ -30,10 +30,10 @@ exceeds `MAX_BLOCK_FILE_BYTES`.** Enforcement is producer-side, in
 `propose_robust` (`crates/node/onxd/src/producer.rs`):
 
 1. Before proposing, compute the worst-case encoded `.blk` size for the
-   candidate set: magic(8) + header(160) + the full signature section
-   (every canonical validator signing: 4 + n·68 bytes) +
-   length-prefixed body. The encoding is deterministic, so every honest
-   producer computes the same bound.
+   candidate set: magic(8) + header(160) + the signature section (exactly
+   the producer's own single signature: 4 + 68 bytes —
+   `producer_sig_section_bytes()`) + length-prefixed body. The encoding
+   is deterministic, so every honest producer computes the same bound.
 2. If the set does not fit, trim the tail — exactly like the existing
    `BlockGasExceeded` arm — and hold the excess for the next block.
    Trimming is not rejection: the messages did nothing wrong.
@@ -54,10 +54,16 @@ The size model is pinned to the real encoder by a unit test
 2. **Trim, don't reject.** An oversize candidate set is not evidence of
    bad messages — it is evidence of too many good ones. The gas-cap arm
    already established the pattern: hold for the next block.
-3. **Worst-case sig section, not actual.** The check runs before signing;
-   bounding by "every validator signs" is exact on devnet (one
-   validator) and conservative everywhere else. A block that fits under
-   the worst case always fits on the wire.
+3. **Exact sig section, not worst-case.** The check runs before signing,
+   but `sign_block` always returns exactly one `SigEntry` — the
+   producer's own signature (the validator list only locates the
+   signer's index) — so the section size is known exactly: 4 + 68
+   bytes. An earlier revision reserved 4 + n·68 for every genesis
+   validator; devin 🟡 on PR #47 showed that halts block production at
+   ~124,000 validators even though the written block would carry one
+   signature. If multi-validator quorum signing ever attaches more
+   signatures (M6), the budget must be revisited alongside the
+   consensus-rule promotion.
 
 ## Consequences
 
