@@ -109,7 +109,7 @@ M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ○ ─
 | ✅ | M2 · Single-node chain: TVM, message model, hardening | in 0.2.0 | done 2026-10-07 |
 | ✅ | M3 · Authenticated blocks, devnet-1, release engineering | `v0.2.0` tag | done 2026-10-08 |
 | ▶ | **M4 · Pay down debt: a single node you'd trust** | 0.3.0 | `████████░░` 16/21 |
-| ○ | M5 · Networking: nodes find each other and stay in sync | 0.4.0 | `█░░░░░░░░░` 1/7 |
+| ○ | M5 · Networking: nodes find each other and stay in sync | 0.4.0 | `████░░░░░░` 3/7 |
 | ○ | M6 · Consensus: more than one validator | 0.5.0 | `░░░░░░░░░░` 0/6 |
 | ○ | M7 · A public testnet other people can use | 0.6.0 – 0.9.x | `░░░░░░░░░░` 0/8 |
 | 🏁 | M8 · Maintenance gate: stop developing, start maintaining | 1.0.0 | `░░░░░░░░░░` 0/14 |
