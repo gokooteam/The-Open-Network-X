@@ -3,6 +3,7 @@ pub mod adnl_transport;
 pub mod block_sync;
 pub mod dht_daemon;
 pub mod rldp;
+pub mod sync;
 
 pub use adnl_transport::{
     apply_aes256_ctr, derive_symmetric_key_iv, AdnlTransportNode, FastPacket, FullPacket,
@@ -21,6 +22,7 @@ use onx_primitives::{
 };
 pub use rldp::{RldpConfig, RldpSender};
 use std::fmt;
+pub use sync::{AdnlSyncTransport, SyncClient, SyncConfig, SyncPeer, SyncServer, SyncTransport};
 
 /// Errors in networking operations.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,7 +18,7 @@ pub const ACK_TAG: u32 = 0x3a4f_1092;
 pub const DEFAULT_CHUNK_SIZE: usize = 1024;
 pub const MAX_TRANSFER_SIZE: usize = 16 * 1024 * 1024;
 const DATA_HEADER_LEN: usize = 4 + 32 + 32 + 4 + 2 + 2 + 2 + 2;
-const ACK_HEADER_LEN: usize = 4 + 32 + 4 + 2 + 2;
+const ACK_HEADER_LEN: usize = 4 + 32 + 4 + 2;
 
 /// Bounds transmission work so a single transfer cannot monopolize ADNL UDP.
 #[derive(Debug, Clone, Copy)]
@@ -398,5 +398,57 @@ impl AdnlTransportNode {
                 return Ok(payload);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ack_frame_round_trip() {
+        // Regression: ACK_HEADER_LEN was 44 while the encoded header is 42
+        // bytes, so decode rejected every valid ack and no RLDP transfer
+        // could ever complete.
+        let ack = RldpAckFrame {
+            transfer_id: Uint256([0x77; 32]),
+            ack_seq: 3,
+            received_mask: vec![0b1010_0101, 0b0000_0011],
+        };
+        let wire = ack.encode();
+        assert_eq!(wire.len(), ACK_HEADER_LEN + 2);
+        let back = RldpAckFrame::decode(&wire).expect("valid ack decodes");
+        assert_eq!(back, ack);
+    }
+
+    #[test]
+    fn ack_frame_rejects_truncated_and_wrong_tag() {
+        let ack = RldpAckFrame {
+            transfer_id: Uint256([0x77; 32]),
+            ack_seq: 1,
+            received_mask: vec![0b1],
+        };
+        let wire = ack.encode();
+        assert!(RldpAckFrame::decode(&wire[..wire.len() - 1]).is_err());
+        let mut bad_tag = wire.clone();
+        bad_tag[0] ^= 0xff;
+        assert!(RldpAckFrame::decode(&bad_tag).is_err());
+    }
+
+    #[test]
+    fn data_frame_round_trip() {
+        let frame = RldpDataFrame {
+            transfer_id: Uint256([0x11; 32]),
+            payload_digest: [0x22; 32],
+            total_size: 2048,
+            chunk_size: 1024,
+            chunk_count: 2,
+            seq_no: 1,
+            chunk_data: vec![0x5a; 1024],
+        };
+        let wire = frame.encode().expect("valid frame encodes");
+        assert_eq!(wire.len(), DATA_HEADER_LEN + 1024);
+        let back = RldpDataFrame::decode(&wire).expect("valid frame decodes");
+        assert_eq!(back, frame);
     }
 }
