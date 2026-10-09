@@ -1,4 +1,4 @@
-# ADR-0047 — Human-contributor strategy
+# ADR-0048 — Human-contributor strategy
 
 **Status:** Accepted (2026-10-09).
 **Decider:** Amethyst.

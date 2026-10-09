@@ -1,6 +1,6 @@
 # Contributor strategy
 
-Amethyst's directive (2026-10-09, ADR-0047, SD3): the solo build got ONX
+Amethyst's directive (2026-10-09, ADR-0048, SD3): the solo build got ONX
 here — the best systems are not built by one person. This is the plan for
 bringing expert human contributors in, and for protecting what's already
 built when they arrive.

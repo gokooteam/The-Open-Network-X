@@ -1,4 +1,4 @@
-# ADR-0046 — Milestone task chain
+# ADR-0047 — Milestone task chain
 
 **Status:** Accepted (2026-10-09).
 **Decider:** Amethyst.

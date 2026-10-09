@@ -70,7 +70,7 @@ Her direction, in gist: automate working every remaining task — each one activ
 
 What got built instead of the spec's Actions machinery: no new workflows — the driver that already wakes every 30 minutes *is* the scheduler, and the PR event watch that already sees merges *is* the trigger. `scripts/site.py next-task` exposes the first unchecked exit criterion as JSON (single parser, no drift); GitHub issues labeled `gokoo-task` are the visible ledger, so the issue timeline records exactly when each merge happened and when the next task started; the `gokoo/<task-id>` branch is the resume token if a run dies. Claude's audit, the relay, and the consensus are untouched. Guide: `docs/guides/task-chain.md`.
 
-Her rule on what makes work trustworthy, same day: there must be a record of the thing being accomplished *with her direction* — direction documented is the only way it's trusted. That rule now binds the chain three ways: the remaining criteria are worked as one-at-a-time task issues carrying her direction on each (SD1); her prompts and decisions stay in this document (SD2); and the project prepares for human contributors without diluting her merge authority (SD3). Decisions recorded as ADR-0046 and ADR-0047.
+Her rule on what makes work trustworthy, same day: there must be a record of the thing being accomplished *with her direction* — direction documented is the only way it's trusted. That rule now binds the chain three ways: the remaining criteria are worked as one-at-a-time task issues carrying her direction on each (SD1); her prompts and decisions stay in this document (SD2); and the project prepares for human contributors without diluting her merge authority (SD3). Decisions recorded as ADR-0047 and ADR-0048.
 
 ---
 

@@ -841,7 +841,7 @@ def cmd_milestones(_args) -> int:
 
 def cmd_next_task(_args) -> int:
     """Print the next milestone-task-chain task as JSON (null when done)."""
-    print(json.dumps({"task": next_task()}, indent=2, ensure_ascii=False))
+    print(json.dumps(next_task(), indent=2, ensure_ascii=False))
     return 0
 
 
