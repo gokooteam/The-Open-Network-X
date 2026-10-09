@@ -1,3 +1,10 @@
+<p align="center">
+  <img src="docs/assets/onx-logo-compact.jpg" alt="ONX logo — a faceted black onyx mark with glowing blue edges" width="220">
+</p>
+<p align="center">
+  <img src="docs/assets/onx-logo-tall.jpg" alt="ONX logo, tall variant" width="130">
+</p>
+
 # Open Network X
 
 [![CI](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml/badge.svg)](https://github.com/gokooteam/The-Open-Network-X/actions/workflows/ci.yml)
