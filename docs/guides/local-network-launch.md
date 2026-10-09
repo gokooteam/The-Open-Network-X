@@ -1,7 +1,8 @@
 # Launch Guide — single node
 
 This guide runs one `onxd` block producer on your machine. There is no
-multi-node network yet: networking is a frozen scaffold, and `onxd`
+multi-node network yet: networking is unfrozen per ADR-0042 but not yet
+implemented (M5 in progress), and `onxd`
 refuses to start with `network_enabled=true`. The four `node-*.toml`
 stubs that `onx-genesis` emits are for a future validator network; they
 are not usable today.

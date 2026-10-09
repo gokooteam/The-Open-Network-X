@@ -412,8 +412,9 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
     }
 
     let metrics = TelemetryHandle::new().map_err(|err| err.to_string())?;
-    // Networking is frozen: reporting a peer count would imply a network
-    // exists. Zero is the honest value until the real loop lands.
+    // Networking is unfrozen (ADR-0042) but not yet implemented: reporting a
+    // peer count would imply a network exists. Zero is the honest value
+    // until the real loop lands.
     metrics.set_connected_peers(0);
     metrics.set_tx_pool_size(0);
 

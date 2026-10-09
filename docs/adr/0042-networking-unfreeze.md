@@ -1,6 +1,6 @@
 # ADR-0042 — Unfreeze networking (M5)
 
-**Status:** Proposed (2026-10-09).
+**Status:** Accepted (2026-10-09).
 **Decider:** Amethyst (owner; M5 kickoff at her direction).
 **Amends:** the freeze rationale in `crates/node/onxd/src/lib.rs` ("networking
 is frozen until the deterministic-replay milestone passes").
