@@ -1,0 +1,53 @@
+# CodeRabbit configuration: https://docs.coderabbit.ai/reference/configuration
+#
+# CodeRabbit is one of several reviewers on each PR (see
+# docs/guides/review-relay.md). This keeps its findings and its commit status
+# (the review relay waits on it) and turns off the walkthrough extras and
+# pre-merge checks that the other reviewers and CI already cover.
+
+tone_instructions: >-
+  Other AI reviewers (a Claude audit and a relay that reads every review)
+  also review each PR. Report only verified findings and do not repeat
+  points already raised in another thread.
+
+reviews:
+  profile: chill
+  commit_status: true
+  review_status: false
+  collapse_walkthrough: true
+  changed_files_summary: false
+  sequence_diagrams: false
+  estimate_code_review_effort: false
+  assess_linked_issues: false
+  related_issues: false
+  related_prs: false
+  suggested_labels: false
+  suggested_reviewers: false
+  in_progress_fortune: false
+  poem: false
+  auto_review:
+    enabled: true
+    drafts: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    autofix:
+      enabled: false
+    fix_ci:
+      enabled: false
+    resolve_merge_conflict:
+      enabled: false
+  pre_merge_checks:
+    docstrings:
+      mode: "off"
+    title:
+      mode: "off"
+    description:
+      mode: "off"
+    issue_assessment:
+      mode: "off"
+
+chat:
+  art: false

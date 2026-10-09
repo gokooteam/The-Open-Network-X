@@ -37,6 +37,17 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   does the same over SSH from your own device.
 - `MILESTONES.md`: completed milestones M0–M3, exit criteria for M4–M7,
   and the maintenance gate that defines `1.0.0`.
+- `Review Relay` workflow (`review-relay.yml`,
+  `docs/guides/review-relay.md`): after the Claude audit, a second-opinion
+  turn that reads every review and replies where it disagrees, then a
+  moderator turn that merges duplicate findings, states the consensus
+  impact and determinism verdicts, keeps one summary comment per PR, and
+  labels the PR `review-blocking` while a critical, high or medium finding
+  is open. Docs-only PRs, drafts and forks skip it.
+- `.coderabbit.yaml`: keeps CodeRabbit's findings and commit status and
+  turns off its walkthrough extras and pre-merge checks.
+- PR template: a *Consensus impact* section (breaking, adjacent or none)
+  and the determinism question.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
   key-derived address (`ONX_ADDR_V1`).
 - `Fuzz` CI workflow (`.github/workflows/fuzz.yml`): every PR and push to
@@ -46,6 +57,9 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Changed
 
+- The Claude PR audit posts one summary comment per run instead of two (its
+  progress comment is the summary), and every summary starts with a
+  consensus-impact verdict and a determinism answer.
 - `CONTRIBUTING.md`: adding a research-logbook entry is optional, no longer
   required for every PR. The logbook stays.
 - ADRs: the versioning standard is renumbered ADR-0034 → ADR-0040

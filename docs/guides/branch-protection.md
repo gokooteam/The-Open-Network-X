@@ -46,8 +46,10 @@ Deliberately not required:
 
 - **Cargo Audit** and **Workflow Security**: they run only when certain
   paths change. A required check that never starts blocks the PR forever.
-- **Claude audit** and **Codex review**: they need secrets and are skipped
-  for forks; they are review aids, not gates.
+- **Claude audit**, **Review Relay** and **Codex review**: they need
+  secrets and are skipped for forks; they are review aids, not gates. The
+  relay's `review-blocking` label is information for whoever merges, not
+  a required check.
 - **Code Coverage**, **CodeQL**, **rust-clippy analyze**, **Scorecard**:
   reporting jobs. The tests and Clippy already gate through `Rust checks`.
 
