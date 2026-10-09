@@ -83,9 +83,9 @@ async function sync({ github, context, core }) {
   }
 }
 
-// Give a PR with no milestone the one its title names ("M5: …"), or else the
-// current one: the lowest-numbered open milestone. A milestone someone set
-// by hand is left alone.
+// Give a PR with no milestone the one its title names ("M5: …") if that is
+// still open, or else the current one: the lowest-numbered open milestone. A
+// milestone someone set by hand is left alone.
 async function assign({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = context.payload.pull_request;
@@ -96,6 +96,8 @@ async function assign({ github, context, core }) {
   const all = await byId(github, owner, repo, 'all');
   const named = /\b(M\d+)\b/.exec(pr.title || '');
   let target = named && all.get(named[1]);
+  // A finished (closed) milestone named in the title falls back to the current one.
+  if (target && target.state !== 'open') target = undefined;
   if (!target) {
     target = [...all.entries()]
       .filter(([, ms]) => ms.state === 'open')

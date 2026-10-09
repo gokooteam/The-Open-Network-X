@@ -12,6 +12,9 @@ tone_instructions: >-
 
 reviews:
   profile: chill
+  # The relay waits on the legacy "CodeRabbit" commit status, which the
+  # schema only guarantees with review_progress off.
+  review_progress: false
   commit_status: true
   review_status: false
   collapse_walkthrough: true
