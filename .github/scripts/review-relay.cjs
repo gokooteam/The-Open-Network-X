@@ -494,22 +494,24 @@ async function hasOverride(github, owner, repo, pr) {
   return data.some((l) => l.name === OVERRIDE_LABEL);
 }
 
-// Every status the relay itself writes goes through here, so it never
-// replaces a maintainer's override: with the label on, it writes success.
-// It checks again after writing, because the label's own workflow may have
-// posted success while this write was in flight; the last write then
-// still ends green.
+// Every status the relay itself writes goes through here, so it agrees with
+// the consensus-override label: success while the label is on, the relay's
+// own state otherwise. The label's workflow can add or remove it while this
+// write is in flight, so it re-reads the label after each write and writes
+// again if it changed; the last write then matches the label as last read.
 async function setRelayStatus(github, owner, repo, pr, sha, state, description) {
-  if (await hasOverride(github, owner, repo, pr)) {
-    await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
-    return true;
+  let overridden = await hasOverride(github, owner, repo, pr);
+  for (let i = 0; i < 3; i += 1) {
+    if (overridden) {
+      await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
+    } else {
+      await setConsensus(github, owner, repo, sha, state, description);
+    }
+    const now = await hasOverride(github, owner, repo, pr);
+    if (now === overridden) return overridden;
+    overridden = now;
   }
-  await setConsensus(github, owner, repo, sha, state, description);
-  if (state !== 'success' && (await hasOverride(github, owner, repo, pr))) {
-    await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
-    return true;
-  }
-  return false;
+  return overridden;
 }
 
 async function docsOnly(github, owner, repo, pr) {
