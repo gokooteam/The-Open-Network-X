@@ -432,10 +432,15 @@ follower stays in sync and verifies everything itself.
 - [ ] Adversarial tests: a peer that serves corrupted, forged, out-of-order,
       or wrong-chain blocks is rejected, and the follower carries on. The same
       holds for a peer that disconnects mid-transfer.
-- [ ] Decide how peers are found for this milestone, either static peer lists
-      or the DHT, and record the choice.
-- [ ] Decide whether messages reach the producer only by direct submission or
-      also by gossip, and record the choice.
+- [x] Decide how peers are found for this milestone, either static peer lists
+      or the DHT, and record the choice. **Done:** ADR-0043
+      (`docs/adr/0043-static-peer-discovery.md`) — static peer list for M5;
+      DHT stays as library code, rewiring deferred to M7.
+- [x] Decide whether messages reach the producer only by direct submission or
+      also by gossip, and record the choice. **Done:** ADR-0044
+      (`docs/adr/0044-direct-submission-no-gossip.md`) — direct submission
+      only for M5; no mempool gossip; the file-drop spool stays the
+      submission path.
 - [ ] A multi-node test of the **real binaries** runs in CI, for example with
       docker-compose. This replaces the Python model in `tests/simulation/`.
 
