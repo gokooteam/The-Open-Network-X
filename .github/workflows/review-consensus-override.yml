@@ -1,0 +1,48 @@
+name: Review Consensus Override
+
+# A maintainer's escape hatch for the "Review consensus" check set by the
+# review relay (docs/guides/review-relay.md). Adding the consensus-override
+# label to a PR turns the check green whatever the relay's verdict; removing
+# it restores the relay's verdict for the current commit (red if there is
+# none yet). Only someone with write access can use it: the label is taken
+# off again for anyone else.
+
+on:
+  # Runs the default branch's version of this file with a token that can set
+  # a commit status. It never checks out or runs PR code: it reads the label
+  # event and loads its script from main.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    types: [labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  override:
+    name: Consensus override
+    if: >-
+      github.repository == 'gokooteam/The-Open-Network-X' &&
+      github.event.label.name == 'consensus-override'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: consensus-override-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+      statuses: write
+    steps:
+      - name: Check out relay scripts (default branch)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Apply or remove the override
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const relay = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review-relay.cjs`);
+            await relay.override({ github, context, core });

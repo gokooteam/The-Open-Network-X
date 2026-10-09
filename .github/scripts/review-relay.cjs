@@ -25,6 +25,12 @@ const WRITE_PERMISSIONS = new Set(['admin', 'maintain', 'write']);
 // so it shows in the PR list before anyone merges.
 const BLOCKING_LABEL = 'review-blocking';
 const IMPACTS = ['breaking', 'adjacent', 'none', 'unclear'];
+// Commit status the relay sets on the PR head. Add it to the ruleset's
+// required checks to make GO a merge requirement.
+const CONSENSUS_CONTEXT = 'Review consensus';
+// A maintainer's label that turns the status green whatever the verdict.
+const OVERRIDE_LABEL = 'consensus-override';
+const VERDICTS = ['GO', 'NO-GO', 'NONE'];
 
 // A PR whose files all match this skips turns 2 and 3; turn 1 covers it.
 const DOCS_ONLY = /(^docs\/)|(\.md$)/;
@@ -220,6 +226,7 @@ async function gate({ github, context, core }) {
     per_page: 100,
   });
   if (files.length > 0 && files.every((f) => DOCS_ONLY.test(f.filename))) {
+    await setConsensus(github, owner, repo, headSha, 'success', 'Docs-only change: the turn 1 audit covers it');
     return skip('docs-only change; the turn 1 audit covers it');
   }
 
@@ -267,6 +274,7 @@ async function gate({ github, context, core }) {
   const { data: latest } = await github.rest.pulls.get({ owner, repo, pull_number: pr });
   if (latest.head.sha !== headSha) return skip('a newer commit was pushed while waiting');
 
+  await setConsensus(github, owner, repo, headSha, 'pending', 'Review relay running');
   core.setOutput('run', 'true');
   core.setOutput('reason', '');
   return undefined;
@@ -464,6 +472,47 @@ async function setBlockingLabel(github, owner, repo, pr, blocking) {
   }
 }
 
+function runUrl() {
+  const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: run } = process.env;
+  return server && repo && run ? `${server}/${repo}/actions/runs/${run}` : undefined;
+}
+
+async function setConsensus(github, owner, repo, sha, state, description) {
+  await github.rest.repos.createCommitStatus({
+    owner,
+    repo,
+    sha,
+    state,
+    context: CONSENSUS_CONTEXT,
+    description: description.slice(0, 140),
+    target_url: runUrl(),
+  });
+}
+
+async function hasOverride(github, owner, repo, pr) {
+  const { data } = await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: pr, per_page: 100 });
+  return data.some((l) => l.name === OVERRIDE_LABEL);
+}
+
+// GO only when no reviewer's NO-GO stands (unrefuted) and at least
+// RELAY_MIN_GO reviewers said GO. One reviewer can block; none can pass a
+// PR alone.
+function tally(verdicts, minGo) {
+  const standing = verdicts.filter((v) => v.verdict === 'NO-GO' && !v.refuted);
+  const gos = verdicts.filter((v) => v.verdict === 'GO');
+  if (standing.length > 0) {
+    return { consensus: 'NO-GO', why: `${standing.length} standing NO-GO (${standing.map((v) => v.reviewer).join(', ')})` };
+  }
+  if (gos.length < minGo) {
+    return { consensus: 'NO-GO', why: `only ${gos.length} GO verdict(s); ${minGo} needed` };
+  }
+  return { consensus: 'GO', why: `${gos.length} GO, no standing NO-GO` };
+}
+
+function cell(text) {
+  return defuse(cap(text, 300)).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+}
+
 function readTurn(env, turn) {
   if (!env) {
     // The model step succeeded but returned nothing: fail, so the relay isn't
@@ -568,24 +617,56 @@ async function postTurn2({ github, context, core }) {
 
   const summary = cap(output.summary, MAX_BODY_CHARS);
   core.setOutput('summary', summary);
+  core.setOutput('verdict', ['GO', 'NO-GO'].includes(output.verdict) ? output.verdict : 'NONE');
   core.setOutput('activity', String(posted + findings.length));
   core.info(`Turn 2: ${posted} replies, ${agree.length} agreements, ${findings.length} findings (${inline} inline).`);
 }
 
-// Turn 3: settle disagreements in their threads, keep one summary comment
-// per PR edited in place, and set or clear the review-blocking label.
+// Turn 3: settle disagreements in their threads, tally each reviewer's GO or
+// NO-GO into a consensus, keep one summary comment per PR edited in place,
+// set the Review consensus status, and set or clear the review-blocking label.
 async function postTurn3({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = Number(process.env.RELAY_PR);
   const headSha = process.env.RELAY_HEAD_SHA;
   const { known, output } = readTurn(process.env.RELAY_OUTPUT, 'The moderator');
-  const blocking = output.blocking === true;
   const replies = validate(output, known, { maxReplies: 3, maxFindings: 0 }).replies;
   const impact = IMPACTS.includes(output.consensus_impact) ? output.consensus_impact : 'unclear';
+
+  // The moderator reports turn 1 and the review apps; turn 2's own verdict
+  // comes straight from its output, not through the moderator.
+  const verdicts = (output.verdicts || [])
+    .filter((v) => v && String(v.reviewer || '').trim() && VERDICTS.includes(v.verdict))
+    .filter((v) => !/turn 2/i.test(v.reviewer))
+    .slice(0, 10)
+    .map((v) => ({
+      reviewer: String(v.reviewer).trim(),
+      verdict: v.verdict,
+      // A refutation must say why, or it doesn't count.
+      refuted: v.verdict === 'NO-GO' && v.refuted === true && Boolean(String(v.note || '').trim()),
+      note: String(v.note || ''),
+    }));
+  const t2 = process.env.RELAY_TURN2_VERDICT;
+  verdicts.push({
+    reviewer: 'Relay turn 2 (second opinion)',
+    verdict: VERDICTS.includes(t2) ? t2 : 'NONE',
+    refuted: false,
+    note: '',
+  });
+  const { consensus, why } = tally(verdicts, Number(process.env.RELAY_MIN_GO || 2));
+  const blocking = consensus !== 'GO';
+
+  const table = [
+    '| Reviewer | Verdict | Note |',
+    '| --- | --- | --- |',
+    ...verdicts.map((v) => `| ${cell(v.reviewer)} | ${v.refuted ? 'NO-GO, refuted' : v.verdict} | ${cell(v.note)} |`),
+  ].join('\n');
   const state = [
-    `**Blocking:** ${blocking ? 'yes, an open critical, high or medium finding is not refuted' : 'no'}`,
+    `**Consensus: ${consensus}** (${why})`,
     `**Consensus impact:** ${impact}`,
     `**Determinism:** ${defuse(cap(output.determinism, 600)) || 'not assessed'}`,
+    '',
+    table,
     '',
     defuse(cap(output.summary_markdown, MAX_SUMMARY_CHARS)),
   ].join('\n');
@@ -598,6 +679,7 @@ async function postTurn3({ github, context, core }) {
   }
   const posted = await postReplies(github, owner, repo, pr, 'turn 3 (moderator)', replies);
 
+  const overridden = await hasOverride(github, owner, repo, pr);
   const turn2 = cap(process.env.RELAY_TURN2_SUMMARY, MAX_BODY_CHARS);
   const body = [
     RELAY_MARKER,
@@ -609,7 +691,9 @@ async function postTurn3({ github, context, core }) {
     state,
     turn2 ? `\n<details><summary>Turn 2 (second opinion)</summary>\n\n${defuse(turn2)}\n\n</details>` : '',
     '',
-    '_The relay reports findings; it does not approve. The merge decision is the maintainer\'s._',
+    overridden
+      ? `_The \`${OVERRIDE_LABEL}\` label is on this PR, so the ${CONSENSUS_CONTEXT} check passes whatever the verdict. Remove it to restore the gate._`
+      : `_GO means no reviewer has a standing objection. It is a gate, not an approval: the merge decision is the maintainer's, and the \`${OVERRIDE_LABEL}\` label overrides it._`,
     FOOTER,
   ].join('\n');
 
@@ -620,7 +704,53 @@ async function postTurn3({ github, context, core }) {
     await github.rest.issues.createComment({ owner, repo, issue_number: pr, body });
   }
   await setBlockingLabel(github, owner, repo, pr, blocking);
-  core.info(`Turn 3: ${posted} replies; summary ${sticky ? 'updated' : 'created'}; blocking: ${blocking}.`);
+  if (overridden) {
+    await setConsensus(github, owner, repo, headSha, 'success', `Overridden by label (relay says ${consensus})`);
+  } else {
+    await setConsensus(github, owner, repo, headSha, blocking ? 'failure' : 'success', `${consensus}: ${why}`);
+  }
+  core.info(`Turn 3: ${posted} replies; summary ${sticky ? 'updated' : 'created'}; consensus: ${consensus}.`);
 }
 
-module.exports = { gate, collect, postTurn2, postTurn3, validate, clean, defuse, makeTrust, rightLines, tag, DOCS_ONLY };
+// A relay job failed: the head gets no verdict, so say so instead of leaving
+// the status pending.
+async function reportFailure({ github, context }) {
+  const { owner, repo } = context.repo;
+  const pr = Number(process.env.RELAY_PR);
+  const headSha = process.env.RELAY_HEAD_SHA;
+  if (await headMoved(github, owner, repo, pr, headSha)) return;
+  await setConsensus(github, owner, repo, headSha, 'error', `Relay failed; re-run it, or a maintainer adds ${OVERRIDE_LABEL}`);
+}
+
+// The consensus-override label was added or removed. Only a person with
+// write access can use it; anyone else's label is taken off again.
+async function override({ github, context, core }) {
+  const { owner, repo } = context.repo;
+  const pr = context.payload.pull_request;
+  if (!context.payload.label || context.payload.label.name !== OVERRIDE_LABEL) return;
+  const sender = context.payload.sender && context.payload.sender.login;
+  const allowed = await makeTrust(github, owner, repo)(sender, false);
+  const added = context.payload.action === 'labeled';
+  if (added && !allowed) {
+    await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: OVERRIDE_LABEL });
+    core.warning(`${sender} has no write access; ${OVERRIDE_LABEL} removed.`);
+    return;
+  }
+  if (added) {
+    await setConsensus(github, owner, repo, pr.head.sha, 'success', `Overridden by ${sender}`);
+    core.info(`${OVERRIDE_LABEL} added by ${sender}.`);
+    return;
+  }
+  // Removed: go back to the relay's own verdict for this commit, if it has one.
+  const sticky = await findSticky(github, owner, repo, pr.number);
+  const current = sticky && sticky.body.includes(headMarker(pr.head.sha));
+  if (current && sticky.body.includes('**Consensus: GO**')) {
+    await setConsensus(github, owner, repo, pr.head.sha, 'success', `Override removed; the relay's verdict is GO`);
+  } else {
+    await setConsensus(github, owner, repo, pr.head.sha, 'failure',
+      current ? `Override removed; the relay's verdict is NO-GO` : `Override removed by ${sender}; re-run the relay for a verdict`);
+  }
+  core.info(`${OVERRIDE_LABEL} removed by ${sender}.`);
+}
+
+module.exports = { gate, collect, postTurn2, postTurn3, reportFailure, override, validate, tally, clean, defuse, makeTrust, rightLines, tag, DOCS_ONLY };

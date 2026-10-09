@@ -32,6 +32,14 @@ On the default branch (`main`):
   | TruffleHog Secret Scan | `TruffleHog` |
   | Versioning | `Version consistency` |
   | Dependency Review | `Dependency Review` |
+  | Review Relay | `Review consensus` (a commit status, not a check run) |
+
+  `Review consensus` is the reviewers' GO or NO-GO from the review relay
+  ([review-relay.md](review-relay.md)). It passes on GO, on docs-only PRs,
+  and when a maintainer adds the `consensus-override` label. Apply the
+  ruleset with it only after the relay has run cleanly on a PR or two. PRs
+  the relay never reaches (forks, Dependabot, a release PR whose audit
+  can't run) don't get the status and need the override label to merge.
 
   Each check is pinned to the GitHub Actions app (`integration_id` 15368),
   so another app cannot satisfy it by posting a status with the same name.
@@ -46,10 +54,9 @@ Deliberately not required:
 
 - **Cargo Audit** and **Workflow Security**: they run only when certain
   paths change. A required check that never starts blocks the PR forever.
-- **Claude audit**, **Review Relay** and **Codex review**: they need
-  secrets and are skipped for forks; they are review aids, not gates. The
-  relay's `review-blocking` label is information for whoever merges, not
-  a required check.
+- **Claude audit** and **Codex review**: they need secrets and are
+  skipped for forks; they are review aids, not gates. The relay's verdict
+  reaches the gate only through `Review consensus`.
 - **Code Coverage**, **CodeQL**, **rust-clippy analyze**, **Scorecard**:
   reporting jobs. The tests and Clippy already gate through `Rust checks`.
 

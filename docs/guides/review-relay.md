@@ -19,10 +19,9 @@ pile of separate verdicts.
 The summary comment is edited in place on each push, so a PR has one. It
 gives:
 
-- **Blocking**: whether a critical, high or medium finding is open and not
-  refuted. While one is, the PR carries the `review-blocking` label, so it
-  shows in the PR list before anyone merges. The label is removed when the
-  findings are fixed or refuted.
+- **Consensus: GO or NO-GO**, with a table of each reviewer's verdict (see
+  below). On NO-GO the PR carries the `review-blocking` label, so it shows
+  in the PR list before anyone merges.
 - **Consensus impact**: `breaking` (a node with and a node without the PR
   compute different state for the same blocks), `adjacent` (touches
   consensus code, results unchanged), `none`, or `unclear`. Turn 1 gives the
@@ -34,8 +33,36 @@ gives:
   signal in the review, so the relay counts it instead of leaving three
   threads. Low findings are marked `nit:`.
 
-The relay reports; it never approves. Whether to merge stays with the
-maintainer.
+## GO / NO-GO consensus
+
+Each reviewer gets a verdict:
+
+- **Turn 1** (Claude audit) ends its summary with `Verdict: GO` or
+  `Verdict: NO-GO`.
+- **Turn 2** returns its own verdict.
+- **CodeRabbit, Greptile and Devin** don't give one, so the moderator
+  infers it: NO-GO if the app has an open critical, high or medium finding,
+  GO if it reviewed the commit and has none, NONE if it didn't review it.
+
+**Consensus is GO** when no reviewer's NO-GO stands and at least two
+reviewers (`RELAY_MIN_GO`) said GO. One reviewer can block; none can pass
+a PR alone. A NO-GO stops counting only when the moderator marks it
+refuted *and* gives the file:line evidence, which the summary table shows.
+
+The relay puts the result on the PR's head commit as the **`Review
+consensus`** status: pending while the relay runs, success on GO (and on
+docs-only PRs), failure on NO-GO, error if a relay job fails. It's in
+`.github/rulesets/main.json`, so once the ruleset is applied, a PR can't
+merge without GO ([branch-protection.md](branch-protection.md)).
+
+**Override:** a maintainer adds the `consensus-override` label and the
+status passes whatever the verdict (`review-consensus-override.yml`). The
+label only works for people with write access. Removing it restores the
+relay's verdict for the current commit.
+
+GO is a gate, not an approval: it means no reviewer has a standing
+objection. A person still decides to merge, and the override keeps that
+decision with them.
 
 Turn 2 waits until the `CodeRabbit` and `Devin Review` commit statuses on
 the head commit are no longer pending and Greptile has reviewed the PR once
@@ -93,8 +120,8 @@ go-ethereum, Agave, the TON monorepo and the Cosmos SDK.
 - Every project surveyed keeps consensus risk and design judgment with
   people and leaves bots the mechanical work. Cosmos and Agave make
   consensus-breaking changes a declared category; Cosmos makes determinism
-  the first question asked. The relay summarises and declares; it doesn't
-  approve.
+  the first question asked. So the relay's GO can block a merge but never
+  makes one: a maintainer merges, and can override a NO-GO.
 
 ## Changing it
 

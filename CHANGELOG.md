@@ -44,6 +44,12 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   impact and determinism verdicts, keeps one summary comment per PR, and
   labels the PR `review-blocking` while a critical, high or medium finding
   is open. Docs-only PRs, drafts and forks skip it.
+- Review consensus: each reviewer's GO or NO-GO (turn 1, turn 2, and one
+  inferred per review app) is tallied into a consensus, GO only with no
+  standing NO-GO and at least two GOs. The relay sets it as the `Review
+  consensus` commit status, now listed in `.github/rulesets/main.json`.
+  The `consensus-override` label (`review-consensus-override.yml`) lets a
+  maintainer pass it.
 - `.coderabbit.yaml`: keeps CodeRabbit's findings and commit status and
   turns off its walkthrough extras and pre-merge checks.
 - `README.md` status block: the development phase (development until the

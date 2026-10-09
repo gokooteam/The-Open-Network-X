@@ -95,7 +95,9 @@ jobs:
               `Determinism:` whether this could behave differently on two
               honest nodes given the same inputs. Then the findings by
               severity, or a plain statement that no issues were found and
-              what you checked. Do not post any other top-level comment.
+              what you checked. End with one line, `Verdict: GO` or
+              `Verdict: NO-GO`: NO-GO when any critical, high or medium
+              finding stands. Do not post any other top-level comment.
           claude_args: |
             --model claude-opus-5-5
             --effort medium
