@@ -1,9 +1,6 @@
 <p align="center">
   <img src="docs/assets/onx-logo-spin.gif" alt="ONX logo — a faceted black onyx mark with glowing blue edges, spinning" width="200">
 </p>
-<p align="center">
-  <img src="docs/assets/onx-logo-tall.png" alt="ONX logo, tall variant" width="130">
-</p>
 
 # Open Network X
 
