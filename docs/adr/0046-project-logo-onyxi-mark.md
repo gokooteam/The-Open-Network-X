@@ -1,4 +1,4 @@
-# ADR-0046 — Project logo: the onyx mark
+# ADR-0046 — Project logo: the Onyxi mark
 
 **Status:** Accepted (2026-10-09).
 **Decider:** Amethyst.
@@ -16,7 +16,7 @@ a glowing blue edge light.
 
 ## Decision
 
-**The official ONX logo is the faceted black onyx mark with blue
+**The official logo is the Onyxi mark: a faceted black onyx stone with blue
 glowing edges.** The compact variant is the primary mark (the "spinning"
 one); the tall variant is the secondary mark. Both are centered at the
 top of `README.md`, with the primary mark featured.
@@ -36,8 +36,10 @@ Placement:
 
 ## Consequences
 
-- The placeholder `#mark` SVG symbol and the explorer's gradient `.mark`
-  styling are retired with this change.
+- The placeholder `#mark` SVG symbol is redefined to embed the Onyxi mark
+  (a data-URI `<image>`), so the existing `<use href="#mark"/>` call sites —
+  rail logo, feed header, post avatars — pick it up with no further changes.
+  The explorer's gradient `.mark` styling is retired.
 - The sites stay single-file and tracker-free: the marks are data URIs,
   no external image requests.
 - If an animated version of the primary mark is produced later, it
