@@ -390,7 +390,9 @@ async function collect({ github, context, core }) {
     JSON.stringify({
       comment_ids: commentIds,
       roots,
-      lines: Object.fromEntries(files.map((f) => [f.filename, rightLines(f.patch)])),
+      // null: GitHub sent no patch (large or binary file), so lines can't be
+      // checked; findings there are posted as a comment, not inline.
+      lines: Object.fromEntries(files.map((f) => [f.filename, f.patch ? rightLines(f.patch) : null])),
     }),
   );
   core.setOutput('open_threads', String(openThreads));
@@ -398,10 +400,17 @@ async function collect({ github, context, core }) {
 }
 
 // Keep only what may be posted: replies to known open-thread comments,
-// findings on lines inside the diff, bounded counts and lengths.
+// findings on changed files, inline only on lines inside the diff, bounded
+// counts and lengths.
 function validate(output, known, { maxReplies, maxFindings }) {
   const ids = new Set(known.comment_ids);
-  const inDiff = (p, line) => Array.isArray(known.lines && known.lines[p]) && known.lines[p].includes(line);
+  const fileLines = known.lines || {};
+  // true: inline on a diff line; false: changed file without a patch; null: reject.
+  const placement = (p, line) => {
+    if (!Object.prototype.hasOwnProperty.call(fileLines, p)) return null;
+    if (fileLines[p] === null) return false;
+    return fileLines[p].includes(line) ? true : null;
+  };
   const replies = (output.replies || [])
     .filter((r) => Number.isInteger(r.comment_id) && ids.has(r.comment_id) && String(r.body || '').trim())
     .slice(0, maxReplies)
@@ -412,11 +421,12 @@ function validate(output, known, { maxReplies, maxFindings }) {
     }));
   const agree = [...new Set((output.agree || []).filter((id) => Number.isInteger(id) && ids.has(id)))];
   const findings = (output.new_findings || [])
-    .filter((f) => Number.isInteger(f.line) && inDiff(f.path, f.line) && String(f.body || '').trim())
+    .filter((f) => Number.isInteger(f.line) && f.line > 0 && placement(f.path, f.line) !== null && String(f.body || '').trim())
     .slice(0, maxFindings)
     .map((f) => ({
       path: f.path,
       line: f.line,
+      inline: placement(f.path, f.line),
       severity: ['critical', 'high', 'medium', 'low'].includes(f.severity) ? f.severity : 'low',
       body: defuse(cap(f.body, MAX_BODY_CHARS)),
     }));
@@ -454,13 +464,18 @@ async function setBlockingLabel(github, owner, repo, pr, blocking) {
   }
 }
 
-function readTurn(env) {
+function readTurn(env, turn) {
+  if (!env) {
+    // The model step succeeded but returned nothing: fail, so the relay isn't
+    // green while the PR's summary still describes an older review.
+    throw new Error(`${turn} returned no structured output; nothing was posted and the summary and label are unchanged.`);
+  }
   const known = JSON.parse(
     fs.readFileSync(path.join(process.env.GITHUB_WORKSPACE, 'relay', 'known.json'), 'utf8'),
   );
-  let output = {};
+  let output;
   try {
-    output = JSON.parse(env || '{}');
+    output = JSON.parse(env);
   } catch (err) {
     throw new Error(`The model turn did not return valid JSON: ${err.message}`);
   }
@@ -488,7 +503,7 @@ async function postTurn2({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = Number(process.env.RELAY_PR);
   const headSha = process.env.RELAY_HEAD_SHA;
-  const { known, output } = readTurn(process.env.RELAY_OUTPUT);
+  const { known, output } = readTurn(process.env.RELAY_OUTPUT, 'Turn 2');
   const { replies, agree, findings } = validate(output, known, { maxReplies: 5, maxFindings: 5 });
   const label = 'turn 2 (second opinion)';
   if (await headMoved(github, owner, repo, pr, headSha)) {
@@ -512,32 +527,41 @@ async function postTurn2({ github, context, core }) {
   if (findings.length > 0) {
     const summary = defuse(cap(output.summary, MAX_BODY_CHARS));
     const heading = `**Review relay · ${label}**: ${findings.length} finding(s) the other reviewers did not raise.\n\n${summary}`;
-    try {
-      await github.rest.pulls.createReview({
-        owner,
-        repo,
-        pull_number: pr,
-        commit_id: headSha,
-        event: 'COMMENT',
-        body: `${heading}${FOOTER}`,
-        comments: findings.map((f) => ({
-          path: f.path,
-          line: f.line,
-          side: 'RIGHT',
-          body: `${tag(f.severity)}${f.body}`,
-        })),
-      });
-      inline = findings.length;
-    } catch (err) {
-      // validate() keeps findings on diff lines, so this is rare (e.g. the
-      // API rejecting the review); post them as one comment instead.
-      core.warning(`Inline review failed (${err.message}); posting the findings as a comment.`);
-      const list = findings.map((f) => `- ${tag(f.severity)}\`${f.path}:${f.line}\`: ${f.body}`).join('\n');
+    const onDiff = findings.filter((f) => f.inline);
+    let asComment = findings.filter((f) => !f.inline);
+    if (onDiff.length > 0) {
+      try {
+        await github.rest.pulls.createReview({
+          owner,
+          repo,
+          pull_number: pr,
+          commit_id: headSha,
+          event: 'COMMENT',
+          body: `${heading}${FOOTER}`,
+          comments: onDiff.map((f) => ({
+            path: f.path,
+            line: f.line,
+            side: 'RIGHT',
+            body: `${tag(f.severity)}${f.body}`,
+          })),
+        });
+        inline = onDiff.length;
+      } catch (err) {
+        // validate() keeps inline findings on diff lines, so this is rare
+        // (e.g. the API rejecting the review); post them as a comment instead.
+        core.warning(`Inline review failed (${err.message}); posting the findings as a comment.`);
+        asComment = findings;
+      }
+    }
+    // Findings on files GitHub sent no patch for (or that the inline review
+    // couldn't take) go in one comment.
+    if (asComment.length > 0) {
+      const list = asComment.map((f) => `- ${tag(f.severity)}\`${f.path}:${f.line}\`: ${f.body}`).join('\n');
       await github.rest.issues.createComment({
         owner,
         repo,
         issue_number: pr,
-        body: `${heading}\n\n${list}${FOOTER}`,
+        body: `${inline ? `**Review relay · ${label}**: findings on files without a diff from the API.` : heading}\n\n${list}${FOOTER}`,
       });
     }
   }
@@ -554,13 +578,7 @@ async function postTurn3({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = Number(process.env.RELAY_PR);
   const headSha = process.env.RELAY_HEAD_SHA;
-  if (!process.env.RELAY_OUTPUT) {
-    // Without a verdict, leave the summary and label as they are rather than
-    // claiming nothing blocks.
-    core.warning('The moderator returned no output; the summary and label are unchanged.');
-    return;
-  }
-  const { known, output } = readTurn(process.env.RELAY_OUTPUT);
+  const { known, output } = readTurn(process.env.RELAY_OUTPUT, 'The moderator');
   const blocking = output.blocking === true;
   const replies = validate(output, known, { maxReplies: 3, maxFindings: 0 }).replies;
   const impact = IMPACTS.includes(output.consensus_impact) ? output.consensus_impact : 'unclear';

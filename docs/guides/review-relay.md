@@ -65,8 +65,10 @@ to run again on a commit the relay already covered.
 - The model turns run with read-only tools (`Read`, `Grep`, `Glob`) and
   return JSON. `.github/scripts/review-relay.cjs` posts it, taken from the
   default branch rather than the PR. It replies only to comments in open
-  threads, comments only on lines inside the diff, caps lengths, and breaks
-  `@mentions` so nobody is pinged.
+  threads, comments inline only on lines inside the diff (findings on a
+  changed file the API sends no diff for go in one comment), caps lengths,
+  and breaks `@mentions` so nobody is pinged. A model turn that returns
+  nothing fails its job instead of leaving an old summary looking current.
 - The models see comments only from people with write access (looked up,
   not inferred from their association with the repo) and from the review
   apps listed in `RELAY_TRUSTED_BOTS`. Anyone else's comment on a public PR
