@@ -655,7 +655,7 @@ this section is the index.
 | # | Directive | Record |
 | --- | --- | --- |
 | SD1 | **Milestone task chain.** The remaining exit criteria are worked one at a time, each as a GitHub issue labeled `gokoo-task`, each merged task starting the next. The issue timeline is the merge→start ledger. No new scheduler was built: the 30-minute plan driver is the scheduler, the 90-second PR event watch is the merge trigger. | ADR-0046, `docs/guides/task-chain.md` |
-| SD2 | **Direction is part of the trusted record.** Work is only trustworthy if the direction behind it is documented. Every task issue carries the direction that commissioned it; her prompts and decisions are kept in `docs/conductors-score.md`. | ADR-0046 |
+| SD2 | **Direction is part of the trusted record.** Work is only trustworthy if the direction behind it is documented. Every task issue carries the direction that commissioned it; her prompts and decisions are kept verbatim in `docs/conductors-score.md`. | ADR-0046 |
 | SD3 | **Bring in human contributors.** The solo build got ONX this far — that is in the git log — but the best systems are not built by one person. The project is made ready for expert human contributors *before* they arrive (branch protection, review gates, contributor docs), the intent is signaled publicly, and the existing work stays protected behind the same gates that guard it now. | ADR-0047, `docs/planning/contributor-strategy.md` |
 
 ## Parking lot (post-1.0 or undecided)
