@@ -203,7 +203,6 @@ fn canonical_validators(
     Ok(refs)
 }
 
-
 pub struct ProducerConfig {
     pub fee_collector: AccountId,
     pub poll_interval: Duration,
