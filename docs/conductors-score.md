@@ -65,6 +65,12 @@ For design decisions (not audits): council round 1 (ChatGPT direct + Claude dire
 - **Turn 4 in the relay**: "Yeah you should fix that" → proposed; "add your changes to the branch on that PR and add it to the PT" → pushed to PR #45's branch plus the PR template. Advisory GO/NO-GO; never merge, never approve.
 - **"Okay its your time to shine! We gotta save Claude credits for checks, reach consensus on that pr"** — the commission that put Gokoo under review: answer CodeRabbit's Major with a real test, one audit run, flip the consensus.
 
+### Milestone task chain (2026-10-09)
+
+Her gist, verbatim in spirit: *"make GitHub actions that activate you to do each task that is left — literally all of them — activated by the merge of the task before it, other than the first one of course, with the regular consensus we've been doing."* Then the redirect: *"Don't listen to that verbatim… do it the most efficient way that you feel that you can, based off of what you've already proved you can do — that was coming from a model who has no context about your abilities."* And the non-negotiable: *"we need some way of you noting when a merge happened and when you would start your next task."*
+
+What got built instead of the spec's Actions machinery: no new workflows — the driver that already wakes every 30 minutes *is* the scheduler, and the PR event watch that already sees merges *is* the trigger. `scripts/site.py next-task` exposes the first unchecked exit criterion as JSON (single parser, no drift); GitHub issues labeled `gokoo-task` are the visible ledger, so the issue timeline records exactly when each merge happened and when the next task started; the `gokoo/<task-id>` branch is the resume token if a run dies. Claude's audit, the relay, and the consensus are untouched. Guide: `docs/guides/task-chain.md`.
+
 ---
 
 ## Part II — The Claude session prompts
