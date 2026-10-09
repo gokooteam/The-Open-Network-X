@@ -23,6 +23,12 @@ on the final PR provide the review.
    devnet. Real keygen documented for operators later.
 5. **Fork choice:** highest quorum-certified chain wins; the follower's
    fatal halt on forks is replaced by the rule (TBD in code).
+6. **Votes → SigEntries:** the engine's phase votes sign
+   `vote_signing_bytes`, not block headers — but `verify_block_auth`
+   needs header signatures. So commit votes carry the validator's
+   header signature (new field, set at Commit phase only); on
+   `FinalizedBlock` the node assembles SigEntries from them. The
+   commit quorum is both the BFT evidence and the block's multi-sig.
 
 ## Phases
 
