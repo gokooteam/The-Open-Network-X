@@ -166,6 +166,10 @@ textarea {
   background: var(--sunk); border: 1px solid var(--rule); border-radius: 6px;
 }
 .hint { font-size: 13px; color: var(--ink-3); }
+.about { padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.about p, .about li { font-size: 14px; color: var(--ink-2); max-width: 72ch; margin: 0; }
+.about ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.about b { color: var(--ink); }
 .filelist { display: flex; flex-direction: column; gap: 6px; }
 .fileerr { display: flex; gap: 8px; align-items: baseline; font-size: 13px; flex-wrap: wrap; }
 .fileerr b { font-family: var(--font-mono); font-weight: 600; font-size: var(--fs-data); word-break: break-all; }
@@ -326,6 +330,18 @@ footer { margin-top: 28px; font-size: 12.5px; color: var(--ink-3); display: flex
       <button type="button" id="net-mainnet" data-net="mainnet" aria-pressed="false">Mainnet</button>
     </div>
   </header>
+
+  <section class="panel about" id="about" aria-labelledby="about-title">
+    <h2 class="label" id="about-title">What this is</h2>
+    <p>A block explorer for <a href="https://on-x.live/">Open Network X</a>. It reads the block files a node publishes and checks them in your browser before showing anything: file structure, hashes, the link from each block to the one before it, message signatures and nonces, all against the pinned genesis hash. You do not have to trust the server the files come from.</p>
+    <ul>
+      <li><b>Testnet</b> shows devnet-1: a development chain with one producer run by the project. There is no public testnet yet.</li>
+      <li><b>Mainnet</b> does not exist yet, so it shows nothing.</li>
+      <li>Use the tabs to browse blocks, messages, accounts and genesis, or search by block number, hash or account. Select a row to see every check and field.</li>
+      <li>You can also open block files from your own node; they never leave your browser.</li>
+    </ul>
+    <p>Block producer signatures are shown but not verified here yet, and balances and state roots need <code>onx replay</code>. <a href="#method">How this page verifies</a> lists exactly what is and is not checked.</p>
+  </section>
 
   <section class="band" id="band" data-kind="testnet" aria-live="polite"></section>
 
