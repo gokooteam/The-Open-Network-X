@@ -31,6 +31,10 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   on-x-scan.com serve with `main` and keeps a `site-drift` issue current.
 - `scripts/site-pull-deploy.sh`: cron deploy for the web hosts; installs a
   site file from `main` only after its `site-and-docs` check passed.
+- `docs/guides/hosting.md`: hosting runbook: which server serves which
+  domain, the DNS fix for on-x-scan.com, the cPanel cron jobs that deploy
+  both sites, and what is known about the devnet VM. `scripts/onx-hosting.sh`
+  does the same over SSH from your own device.
 - `MILESTONES.md`: completed milestones M0–M3, exit criteria for M4–M7,
   and the maintenance gate that defines `1.0.0`.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
