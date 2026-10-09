@@ -358,12 +358,16 @@ under *Known bugs* below.
       `WrongChainId`.
 
 *CI you can rely on*
-- [ ] Require CI to pass before merging (branch protection). CI runs only on
+- [x] Require CI to pass before merging (branch protection). CI runs only on
       PRs and pushes to `main`, and a run takes about 7–8 minutes. These PRs
       were merged within about a minute of being opened, so their CI could
       not have finished: #2, #5, #7, #9, #17, #18, #20, #23. #28 and #29
       were merged after their own `Fuzz` run had already failed.
-- [ ] Get `main` green and keep it green. Before `d907e2c`, 6 of the 7 most
+      **Done (PR #34, 2026-10-08):** ruleset `main: require CI` is active —
+      13 required status checks with strict policy
+      (`.github/rulesets/main.json`). Verified live 2026-10-09: PR #51 sits
+      merge-blocked until its checks pass.
+- [x] Get `main` green and keep it green. Before `d907e2c`, 6 of the 7 most
       recent completed CI runs on `main` failed (runs #40–#55). Target: the
       last 10 merges to `main` are green on every required workflow
       _(proposed)_. **Progress:** at `29b5d1a` three workflows were red on
@@ -393,6 +397,10 @@ under *Known bugs* below.
       `.github/rulesets/main.json`. Counting every workflow, the run of
       green merges restarts at #36 (1 of 10). Counting required checks only,
       #38, #35 and #36 are green and #40 has no completed `CI` run.
+      **Done 2026-10-09:** 10 consecutive merges green on all 13 required
+      checks — #36, #42, #43, #44, #46, #45, #48, #47, #49, #50 (verified
+      per-commit via the check-runs API; #40 merged 24 s before #36 and sits
+      outside the window).
 - [x] Add a finite fuzz regression run per target to CI, so all three
       targets in `fuzz/` run on every PR. **Done:** `.github/workflows/fuzz.yml`
       runs `boc_parser`, `tvm_execution` and `block_header` for 60 s each
@@ -407,12 +415,10 @@ under *Known bugs* below.
       24-hour criterion.
 
 *Release hygiene*
-- [ ] Add a `SECURITY.md` with a way to report vulnerabilities privately.
-      devnet-1 is public. **Progress:** `SECURITY.md` exists and points to
-      GitHub private vulnerability reporting. That channel only works once a
-      repo admin enables it (Settings → Code security → Private vulnerability
-      reporting). Tick this box when the "Report a vulnerability" button
-      appears on the Security tab.
+- [x] Add a `SECURITY.md` with a way to report vulnerabilities privately.
+      devnet-1 is public. **Done 2026-10-09:** `SECURITY.md` exists and
+      GitHub private vulnerability reporting is enabled (verified via the
+      API) — the "Report a vulnerability" button is live on the Security tab.
 - [ ] Publish the GitHub Release for `v0.2.0`. The tag exists and
       `release.yml` creates a *draft*, but no published release exists yet.
 - [ ] Tag `v0.3.0` through the Version Bump workflow.
