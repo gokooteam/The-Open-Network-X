@@ -49,10 +49,10 @@ top of `review-relay.yml`; edit them if a review app is added or removed.
   turn 1 is enough.
 - **Drafts and fork PRs**: the same rules as turn 1.
 - **A newer push**: the relay for the older commit is cancelled or skips.
+  Each posting step checks the PR head again first, so an older run never
+  overwrites the summary or label for a newer commit.
 - **Turn 1 failed or was cancelled.**
 - **Already ran for this commit** (for example when turn 1 is re-run).
-- **Nothing to moderate**: if no review thread is open and turn 2 posted
-  nothing, turn 3 records that in the summary comment without a model run.
 
 To run it by hand, for example on a PR opened before the relay existed:
 Actions → **Review Relay** → Run workflow, with the PR number. Tick *force*
@@ -65,10 +65,14 @@ to run again on a commit the relay already covered.
 - The model turns run with read-only tools (`Read`, `Grep`, `Glob`) and
   return JSON. `.github/scripts/review-relay.cjs` posts it, taken from the
   default branch rather than the PR. It replies only to comments in open
-  threads, comments only on changed files, caps lengths, and breaks
+  threads, comments only on lines inside the diff, caps lengths, and breaks
   `@mentions` so nobody is pinged.
-- The models see comments only from accounts with write access and from
-  installed apps. Anyone else's comment on a public PR is left out.
+- The models see comments only from people with write access (looked up,
+  not inferred from their association with the repo) and from the review
+  apps listed in `RELAY_TRUSTED_BOTS`. Anyone else's comment on a public PR
+  is left out. Add an app to that list when you install one.
+- The `review-blocking` label is created the first time it's needed. If it
+  can't be set or removed, the job fails rather than leaving a wrong label.
 - Nothing the relay posts can start another relay run: it posts with
   `GITHUB_TOKEN` and is only triggered by turn 1 finishing.
 
@@ -96,6 +100,12 @@ go-ethereum, Agave, the TON monorepo and the Cosmos SDK.
 default branch. Changes to it take effect after they merge to `main`, and
 can't be tested from the PR that makes them. Test on a throwaway PR
 afterwards, or with a manual run.
+
+The Claude action also refuses to run a workflow file that differs from
+the one on `main`. On a PR that edits `claude-review.yml` or
+`review-relay.yml`, turn 1 reports success without reviewing ("Skipping
+action due to workflow validation" in its log). The relay may still run
+turns 2 and 3, from the copy on `main`.
 
 The prompts for turns 2 and 3 are in `review-relay.yml`. The rules for what
 may be posted are in `validate()` in `review-relay.cjs`.

@@ -50,7 +50,9 @@ async function byId(github, owner, repo, state) {
 }
 
 // Create or update one GitHub milestone per row of MILESTONES.md. Done ones
-// are closed. No due dates: a milestone is done when its criteria are.
+// are closed. No due dates: a milestone is done when its criteria are, so a
+// due date set by hand is cleared. An open "M<n> …" milestone that is no
+// longer in MILESTONES.md is closed, so new PRs aren't put in it.
 async function sync({ github, context, core }) {
   const { owner, repo } = context.repo;
   const { milestones } = JSON.parse(fs.readFileSync(process.env.MILESTONES_JSON, 'utf8'));
@@ -61,9 +63,22 @@ async function sync({ github, context, core }) {
     if (!have) {
       await github.rest.issues.createMilestone({ owner, repo, ...want });
       core.info(`Created ${want.title}`);
-    } else if (have.title !== want.title || (have.description || '') !== want.description || have.state !== want.state) {
-      await github.rest.issues.updateMilestone({ owner, repo, milestone_number: have.number, ...want });
+    } else if (
+      have.title !== want.title ||
+      (have.description || '') !== want.description ||
+      have.state !== want.state ||
+      have.due_on
+    ) {
+      const clear = have.due_on ? { due_on: null } : {};
+      await github.rest.issues.updateMilestone({ owner, repo, milestone_number: have.number, ...want, ...clear });
       core.info(`Updated ${want.title}`);
+    }
+  }
+  const planned = new Set(milestones.map((m) => m.id));
+  for (const [id, ms] of existing) {
+    if (!planned.has(id) && ms.state === 'open') {
+      await github.rest.issues.updateMilestone({ owner, repo, milestone_number: ms.number, state: 'closed' });
+      core.info(`Closed ${ms.title}: no longer in MILESTONES.md`);
     }
   }
 }

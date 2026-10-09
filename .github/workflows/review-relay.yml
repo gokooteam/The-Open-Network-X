@@ -50,6 +50,8 @@ env:
   RELAY_WAIT_STATUSES: CodeRabbit,Devin Review
   # Review apps without a status; waited for until each has reviewed the PR once.
   RELAY_WAIT_REVIEWERS: greptile-apps[bot]
+  # Apps whose comments the models read; people need write access instead.
+  RELAY_TRUSTED_BOTS: claude,coderabbitai,greptile-apps,devin-ai-integration,github-actions
   RELAY_MAX_WAIT_SECONDS: "600"
 
 jobs:
@@ -125,6 +127,7 @@ jobs:
           persist-credentials: false
 
       - name: Collect the review so far
+        id: collect
         uses: actions/github-script@v7
         with:
           script: |
@@ -133,6 +136,7 @@ jobs:
 
       - name: Second opinion
         id: claude
+        if: steps.collect.outputs.stale == 'false'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -188,6 +192,7 @@ jobs:
 
       - name: Post turn 2
         id: post
+        if: steps.collect.outputs.stale == 'false'
         uses: actions/github-script@v7
         env:
           RELAY_OUTPUT: ${{ steps.claude.outputs.structured_output }}
@@ -234,10 +239,11 @@ jobs:
             const relay = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/review-relay.cjs`);
             await relay.collect({ github, context, core });
 
-      # Skipped when no thread is open and turn 2 posted nothing.
+      # Always runs: findings can sit in review bodies and comments, not only
+      # in open threads, so zero open threads doesn't mean nothing blocks.
       - name: Moderate
         id: claude
-        if: steps.collect.outputs.open_threads != '0' || needs.turn2.outputs.activity != '0'
+        if: steps.collect.outputs.stale == 'false'
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -294,6 +300,7 @@ jobs:
             --json-schema '{"type":"object","properties":{"consensus_impact":{"type":"string","enum":["breaking","adjacent","none","unclear"]},"determinism":{"type":"string"},"blocking":{"type":"boolean"},"summary_markdown":{"type":"string"},"replies":{"type":"array","items":{"type":"object","properties":{"comment_id":{"type":"integer"},"body":{"type":"string"}},"required":["comment_id","body"]}}},"required":["consensus_impact","determinism","blocking","summary_markdown","replies"]}'
 
       - name: Post turn 3 and update the summary comment
+        if: steps.collect.outputs.stale == 'false'
         uses: actions/github-script@v7
         env:
           RELAY_OUTPUT: ${{ steps.claude.outputs.structured_output }}

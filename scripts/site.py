@@ -239,6 +239,33 @@ def milestone_map() -> list[dict]:
     return rows
 
 
+def milestone_problems(rows: list[dict]) -> list[str]:
+    """A milestone with exit criteria is done exactly when all are checked,
+    and the last row (the maintenance gate) must have criteria. Otherwise the
+    README's phase and map could contradict MILESTONES.md."""
+    problems = []
+    if not rows[-1]["total"]:
+        problems.append(f"MILESTONES.md: {rows[-1]['id']} (the maintenance gate) has no exit-criteria checkboxes")
+    for r in rows:
+        if not r["total"]:
+            continue
+        complete = r["met"] == r["total"]
+        if r["done"] and not complete:
+            problems.append(f"MILESTONES.md: {r['id']} is marked ✅ but {r['total'] - r['met']} of its exit criteria are unchecked")
+        if complete and not r["done"]:
+            problems.append(f"MILESTONES.md: every {r['id']} exit criterion is checked; mark its 'At a glance' row ✅ Done")
+    return problems
+
+
+def readme_marker_problems(text: str) -> list[str]:
+    opens = text.count("<!--gen:readme_status-->")
+    closes = text.count("<!--/gen:readme_status-->")
+    if opens == 1 and closes == 1 and text.index("<!--gen:readme_status-->") < text.index("<!--/gen:readme_status-->"):
+        return []
+    return [f"README.md: needs exactly one <!--gen:readme_status-->…<!--/gen:readme_status--> region "
+            f"(found {opens} opening, {closes} closing)"]
+
+
 def explorer_network(name: str) -> dict:
     m = re.search(rf"{name}:\s*\{{[^}}]*chainId:\s*'([0-9a-f]{{64}})'[^}}]*files:\s*'([^']+)'", read(EXPLORER))
     if not m:
@@ -429,7 +456,7 @@ def render_readme(d: dict) -> dict[str, str]:
     rows = d["map"]
     gate = rows[-1]
     current = next((r for r in rows if r["current"]), next((r for r in rows if not r["done"]), gate))
-    if gate["done"]:
+    if gate["done"] and gate["total"] and gate["met"] == gate["total"]:
         phase = ("**Phase: maintenance.** The maintenance gate (M8) is passed: the scope "
                  "is finished and changes are fixes, security, and compatible improvements.")
     else:
@@ -696,7 +723,12 @@ def cmd_build(args) -> int:
         print("No value for generated region(s): " + ", ".join(missing), file=sys.stderr)
         return 1
     SITE.write_text(page, encoding="utf-8")
-    readme, missing = apply(read(README), render_readme(derived()))
+    d = derived()
+    bad = readme_marker_problems(read(README)) + milestone_problems(d["map"])
+    if bad:
+        print("\n".join(bad), file=sys.stderr)
+        return 1
+    readme, missing = apply(read(README), render_readme(d))
     if missing:
         print("README.md: no value for generated region(s): " + ", ".join(missing), file=sys.stderr)
         return 1
@@ -715,8 +747,8 @@ def cmd_check(_args) -> int:
     if fresh != page:
         problems.append("site/index.html is out of date with the repository. Run: python3 scripts/site.py build")
     readme = read(README)
-    if "<!--gen:readme_status-->" not in readme:
-        problems.append("README.md: the <!--gen:readme_status--> region is missing")
+    problems += readme_marker_problems(readme)
+    problems += milestone_problems(d["map"])
     fresh_readme, missing = apply(readme, render_readme(d))
     if missing:
         problems.append("README.md: no value for generated region(s): " + ", ".join(missing))
