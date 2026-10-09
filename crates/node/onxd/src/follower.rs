@@ -42,10 +42,10 @@ use onx::auth::{verify_block_auth, GenesisValidatorRef};
 use onx::blockfile::decode_block_file;
 use onx_networking::{KeyDescription, SyncClient, SyncConfig, SyncError, SyncPeer, SyncTransport};
 use onx_primitives::PublicKey;
-use onx_storage::ChainStore;
+use onx_storage::{ChainStore, StorageError};
 use onx_telemetry::TelemetryHandle;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -159,6 +159,10 @@ impl FollowerContext {
 /// Parse a static peer descriptor (ADR-0043, as amended for the ADNL
 /// channel): `<ed25519-pubkey-hex>@<host:port>`.
 ///
+/// `host` is a numeric IP (v4, or bracketed v6) or a DNS name, resolved
+/// once here at startup — callers must not call this on the hot path, and
+/// the daemon parses the whole peer list inside `spawn_blocking`.
+///
 /// The abstract address is DERIVED from the key
 /// (`KeyDescription::compute_abstract_address`) and pinned — a peer
 /// presenting a different key computes a different address and its
@@ -183,9 +187,27 @@ pub fn parse_sync_peer(s: &str) -> Result<SyncPeer, String> {
     // peer key is a config error, caught here rather than mid-handshake.
     let public_key =
         PublicKey::decode_exact(&key_arr).map_err(|e| format!("bad peer descriptor: {e}"))?;
-    let endpoint: SocketAddr = endpoint
+    // The documented format is <host:port>, not just numeric SocketAddrs:
+    // split the port off, then resolve (numeric IPs pass through,
+    // hostnames resolve via DNS once, here).
+    let (host, port_str) = endpoint.rsplit_once(':').ok_or_else(|| {
+        format!("bad peer descriptor: bad endpoint (want <host:port>): {endpoint}")
+    })?;
+    let port: u16 = port_str
         .parse()
-        .map_err(|e| format!("bad peer descriptor: bad endpoint: {e}"))?;
+        .map_err(|_| format!("bad peer descriptor: bad port: {port_str}"))?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.is_empty() {
+        return Err(format!("bad peer descriptor: empty host: {endpoint}"));
+    }
+    let endpoint: SocketAddr = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("bad peer descriptor: cannot resolve {host}:{port}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("bad peer descriptor: no address for {host}:{port}"))?;
     let address = KeyDescription::new_ed25519(public_key).compute_abstract_address();
     Ok(SyncPeer {
         public_key,
@@ -319,10 +341,21 @@ pub async fn follow_next_block<T: SyncTransport>(
     //    (fail-closed: seqno, prev-hash, msgs_root, claimed state root…),
     //    then commits state/body/sigs/head in one transaction. Never
     //    wrapped: a panic here halts the node (ADR-0029).
+    //
+    //    Error classification is load-bearing: an STF rejection means the
+    //    PEER served a bad block (retryable — a Byzantine peer must not kill
+    //    us), but any other `StorageError` means OUR store is failing
+    //    (disk, backend, corruption) and the follower must halt loudly
+    //    instead of spinning behind a healthy PID. (Review finding, PR #50.)
     store
         .commit_block(&state, &block, &signed.sig_entries)
-        .map_err(|e| {
-            FollowError::Retryable(format!("follower: block {next}: STF rejected: {e}"))
+        .map_err(|e| match e {
+            StorageError::Stf(_) => {
+                FollowError::Retryable(format!("follower: block {next}: STF rejected: {e}"))
+            }
+            _ => FollowError::Fatal(format!(
+                "follower: block {next}: local store failed, halting: {e}"
+            )),
         })?;
 
     // 7. Emit the canonical block file, atomically. The fetched bytes

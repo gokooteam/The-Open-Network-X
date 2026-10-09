@@ -966,6 +966,13 @@ fn peer_descriptor_parsing() {
         onx_networking::KeyDescription::new_ed25519(secret.public_key()).compute_abstract_address();
     assert_eq!(peer.address, expected);
 
+    // Hostnames resolve once at startup (localhost is in every /etc/hosts).
+    let peer_host =
+        parse_sync_peer(&format!("{pubkey_hex}@localhost:9001")).expect("hostname resolves");
+    assert_eq!(peer_host.public_key, secret.public_key());
+    assert_eq!(peer_host.endpoint.port(), 9001);
+    assert!(peer_host.endpoint.ip().is_loopback());
+
     // Bad shapes fail closed.
     assert!(parse_sync_peer("no-at-sign").is_err());
     assert!(parse_sync_peer("zz@127.0.0.1:9001").is_err(), "non-hex key");

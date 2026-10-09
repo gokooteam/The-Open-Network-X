@@ -85,9 +85,12 @@ fn load_key_seed(path: &str, what: &str) -> Result<[u8; 32], String> {
 /// must match a genesis validator's pubkey. Any violation is a startup
 /// refusal, never a warning.
 fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String> {
-    let seed = load_key_seed(path, "signing key")?;
+    let mut seed = load_key_seed(path, "signing key")?;
     let secret =
         SecretKey::from_seed(&seed).map_err(|e| format!("signing key {path}: bad seed: {e}"))?;
+    // The seed has served its purpose; wipe it now that the key is derived.
+    // (SecretKey manages its own material from here.)
+    zeroize(&mut seed);
     let pubkey = secret.public_key().encode();
 
     // The key must belong to a genesis validator.
@@ -112,8 +115,12 @@ fn load_signing_key(path: &str, store: &ChainStore) -> Result<SecretKey, String>
 /// network identity is separate from its block-signing key (different
 /// keys, different jobs — the signing key never touches the network).
 fn load_node_key(path: &str) -> Result<SecretKey, String> {
-    let seed = load_key_seed(path, "node key")?;
-    SecretKey::from_seed(&seed).map_err(|e| format!("node key {path}: bad seed: {e}"))
+    let mut seed = load_key_seed(path, "node key")?;
+    let key = SecretKey::from_seed(&seed).map_err(|e| format!("node key {path}: bad seed: {e}"))?;
+    // Same wipe discipline as the signing key: the seed must not linger in
+    // memory after the key is derived.
+    zeroize(&mut seed);
+    Ok(key)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -495,6 +502,19 @@ pub async fn run_daemon(config: OnxdConfig) -> Result<(), String> {
         .await;
     }
 
+    // A follower with networking disabled would fall through to the
+    // single-node producer below and panic on the missing producer
+    // credentials (`expect("checked above")`). There is no offline follower
+    // mode — following means fetching blocks from a peer over the network —
+    // so refuse loudly at startup instead of panicking.
+    if config.follower {
+        return Err(
+            "follower=true requires network_enabled=true: a follower fetches blocks from its \
+             configured peer over the network; there is no offline follower mode"
+                .to_string(),
+        );
+    }
+
     run_single_node(
         config,
         store,
@@ -553,10 +573,17 @@ async fn run_networked(
                 .to_string(),
         );
     }
-    let mut peers = Vec::with_capacity(config.peers.len());
-    for p in &config.peers {
-        peers.push(parse_sync_peer(p)?);
-    }
+    // Parse + resolve the static peer list off the async worker:
+    // `parse_sync_peer` resolves DNS hostnames (blocking) once at startup.
+    let peer_strs = config.peers.clone();
+    let peers = tokio::task::spawn_blocking(move || {
+        peer_strs
+            .iter()
+            .map(|p| parse_sync_peer(p))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|e| format!("peer list parse task failed: {e}"))??;
 
     // Pre-establish an ADNL channel with every configured peer. `send_datagram`
     // creates the sender's session on demand, but `recv_datagram` can only

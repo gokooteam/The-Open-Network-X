@@ -417,50 +417,100 @@ impl AdnlTransportNode {
     /// fail the receiver — that would be an unauthenticated remote DoS
     /// (`printf x | nc -u <addr> <port>` killing the node). Only a failure
     /// of our own socket is returned as an error.
+    ///
+    /// Attribution note: for a channel (FastPacket) datagram the returned
+    /// sender address is the channel's PINNED peer address (derived from the
+    /// public key passed to [`Self::connect_peer`]), NOT the packet's
+    /// plaintext `sender_address` field. The channel's shared secret (X25519
+    /// with the pinned key) authenticates the peer; the plaintext field does
+    /// not, so a malicious configured peer cannot impersonate another peer
+    /// by lying in it. FullPacket datagrams keep the claimed address —
+    /// anyone holding our public key can forge one (see
+    /// [`Self::recv_channel_datagram`]); callers that need peer
+    /// authentication must use the channel path.
     pub async fn recv_datagram(&self) -> Result<(Uint256, Vec<u8>, SocketAddr), NetworkError> {
         loop {
-            let mut buf = [0u8; 65535];
-            let (len, src_addr) = self
-                .socket
-                .recv_from(&mut buf)
-                .await
-                .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
-
-            let wire = &buf[..len];
-            if wire.len() < 32 {
-                continue; // garbage: skip
+            match self.recv_one().await {
+                Ok((addr, payload, src, _)) => return Ok((addr, payload, src)),
+                Err(NetworkError::TransportIo(e)) => return Err(NetworkError::TransportIo(e)),
+                // Junk / undecryptable / unknown channel: skip.
+                Err(_) => continue,
             }
-
-            let mut id_bytes = [0u8; 32];
-            id_bytes.copy_from_slice(&wire[..32]);
-            let header_id = Uint256(id_bytes);
-
-            // First check if header_id matches our abstract address (FullPacket)
-            if header_id == self.abstract_address {
-                if let Ok(full_pkt) = FullPacket::decode(wire, &self.secret_key) {
-                    return Ok((full_pkt.sender_address, full_pkt.payload, src_addr));
-                }
-                continue; // undecryptable full packet: skip
-            }
-
-            // Check if header_id matches an active session channel_id
-            let session_opt = {
-                let channel_map = self.channel_to_peer.lock().unwrap();
-                let peer_addr = channel_map.get(&header_id).cloned();
-                if let Some(peer_addr) = peer_addr {
-                    let sessions = self.sessions.lock().unwrap();
-                    sessions.get(&peer_addr).cloned()
-                } else {
-                    None
-                }
-            };
-
-            if let Some(session) = session_opt {
-                if let Ok(pkt) = FastPacket::decode(wire, &session.shared_secret) {
-                    return Ok((pkt.sender_address, pkt.payload, src_addr));
-                }
-            }
-            // Unknown channel or failed integrity check: skip the datagram.
         }
+    }
+
+    /// Receive the next datagram that arrived over an authenticated ADNL
+    /// channel (FastPacket), attributed to the channel's pinned peer.
+    ///
+    /// FullPacket datagrams are SKIPPED, not returned: anyone holding our
+    /// public key can encrypt one with an arbitrary claimed sender address,
+    /// so they are not peer traffic. Packet-level faults (truncated,
+    /// undecryptable, unknown channel) are skipped the same way — port
+    /// scanners and junk packets must not disturb the caller. Only our own
+    /// socket failing returns `Err`.
+    pub async fn recv_channel_datagram(
+        &self,
+    ) -> Result<(Uint256, Vec<u8>, SocketAddr), NetworkError> {
+        loop {
+            match self.recv_one().await {
+                Ok((addr, payload, src, true)) => return Ok((addr, payload, src)),
+                // Forgeable FullPacket: not peer traffic.
+                Ok((_, _, _, false)) => continue,
+                Err(NetworkError::TransportIo(e)) => return Err(NetworkError::TransportIo(e)),
+                // Junk / undecryptable / unknown channel: skip.
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Receive and classify one UDP datagram. The bool is true when the
+    /// datagram arrived over an authenticated channel (FastPacket).
+    async fn recv_one(&self) -> Result<(Uint256, Vec<u8>, SocketAddr, bool), NetworkError> {
+        let mut buf = [0u8; 65535];
+        let (len, src_addr) = self
+            .socket
+            .recv_from(&mut buf)
+            .await
+            .map_err(|e| NetworkError::TransportIo(e.to_string()))?;
+
+        let wire = &buf[..len];
+        if wire.len() < 32 {
+            return Err(NetworkError::TruncatedPacket);
+        }
+
+        let mut id_bytes = [0u8; 32];
+        id_bytes.copy_from_slice(&wire[..32]);
+        let header_id = Uint256(id_bytes);
+
+        // First check if header_id matches our abstract address (FullPacket)
+        if header_id == self.abstract_address {
+            if let Ok(full_pkt) = FullPacket::decode(wire, &self.secret_key) {
+                return Ok((full_pkt.sender_address, full_pkt.payload, src_addr, false));
+            }
+            // Undecryptable full packet: skip.
+            return Err(NetworkError::DecryptionFailed);
+        }
+
+        // Check if header_id matches an active session channel_id
+        let session_opt = {
+            let channel_map = self.channel_to_peer.lock().unwrap();
+            let peer_addr = channel_map.get(&header_id).cloned();
+            if let Some(peer_addr) = peer_addr {
+                let sessions = self.sessions.lock().unwrap();
+                sessions.get(&peer_addr).cloned()
+            } else {
+                None
+            }
+        };
+
+        if let Some(session) = session_opt {
+            let pkt = FastPacket::decode(wire, &session.shared_secret)?;
+            // Attribute to the channel's pinned peer address, not the
+            // packet's claimed sender_address (see the note on
+            // `recv_datagram`).
+            return Ok((session.peer_address, pkt.payload, src_addr, true));
+        }
+
+        Err(NetworkError::DecryptionFailed)
     }
 }

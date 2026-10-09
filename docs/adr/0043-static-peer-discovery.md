@@ -66,3 +66,28 @@ unchanged; only the descriptor encoding moved to carry what the channel
 needs. Parsed by `onxd::follower::parse_sync_peer`, which enforces the
 strict key predicate (canonical, on-curve, large-order) at config load —
 a malformed peer key is a startup refusal, not a mid-handshake surprise.
+
+## Amendment 2 (2026-10-09) — channel-bound attribution, FullPackets skipped
+
+Review (PR #50) found the amendment above overstated: `recv_datagram`
+returned the packet's *claimed* sender address, and `FullPacket` datagrams
+— which anyone holding our public key can forge with an arbitrary claimed
+sender — were accepted as peer traffic. Two changes make the claim true
+for the sync path:
+
+1. `recv_datagram`'s channel (FastPacket) path now attributes the datagram
+   to the channel's PINNED peer address (derived from the public key passed
+   to `connect_peer`), not the packet's plaintext sender field. The
+   channel's shared secret (X25519 with the pinned key) is what
+   authenticates the peer; the plaintext field does not.
+2. The sync layer (`AdnlSyncTransport` / `SharedAdnlTransport`) uses the new
+   `AdnlTransportNode::recv_channel_datagram`, which skips `FullPacket`
+   datagrams and undecryptable junk entirely — port scanners and forged
+   packets never reach the sync layer, and only our own socket failing
+   surfaces as an error.
+
+A malicious configured peer therefore cannot impersonate another peer at
+the sync layer, and an outsider's forged packets never reach it.
+`verify_block_auth` remains the content gate; this is the authentication
+floor beneath it. `recv_datagram`'s legacy behavior (claimed address,
+FullPackets accepted) is unchanged for non-sync callers.

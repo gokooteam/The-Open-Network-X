@@ -142,7 +142,7 @@ earned.
 | `onxd` block-production loop | ✅ | ✅ | ✅ | ✅ spool mempool, demand blocks, replay-to-identical-roots |
 | VM / TVM execution | ✅ | ✅ | ✅ | ⚠️ partial — `LDREF` child-cell bug fixed (#7, `vm_child_cells.rs`), checked arithmetic (#8), `tvm_execution` fuzzed in CI, `JMPREF`/`CALLREF` work from real contracts (#32, `callref_stf.rs`); open: nested calls after an implicit return, padding bits of bit-granular code cells (M4) |
 | Consensus | ✅ | ❌ scaffold | ❌ | ❌ — frozen |
-| Networking (ADNL/DHT) | ✅ | ❌ scaffold | ❌ | ❌ — unfrozen per ADR-0042, not yet built |
+| Networking (ADNL/DHT) | ✅ | ⚠️ partial | ⚠️ partial | ⚠️ partial — block-sync wire protocol + ADNL datagram transport + follower sync loop (M5, `follower_sync.rs`, `multinode-sync-test.sh`); open: peer discovery/DHT, mempool gossip, broadcast overlay (M6+) |
 | Sharding | ✅ | ❌ | ❌ | ❌ — frozen |
 | Payment channels | ✅ | ❌ | ❌ | ❌ — frozen |
 | RPC / telemetry | ✅ | partial | ❌ | ❌ — frozen |

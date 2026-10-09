@@ -61,10 +61,16 @@ cargo run -p onx -- replay --genesis config/genesis.toml --blocks ./onx-data/blo
 The roots must match the producer's. Kill -9 the daemon mid-block and
 resume: replay converges on the same state root.
 
-## When multi-node arrives
+## Multi-node (M5)
 
-Validator networking and peer discovery are specified but not yet implemented
-(unfrozen per ADR-0042, M5 in progress); consensus is still frozen (M6, see
-the README status table). This guide will grow a real
-"launch N nodes" section when the network scaffold is replaced —
-tracked in `ROADMAP.md`, not here.
+Follower sync is implemented: a follower fetches block files from a static
+peer over ADNL, verifies them (`ONXBLK05` auth + STF re-execution) and
+applies them, polling `head + 1`. Launch two nodes with
+`scripts/multinode-sync-test.sh` (producer + follower, faucet transfers,
+kill -9 resume, roots checked by independent replays). The config keys are
+`network_enabled`, `network_bind`, `node_key_path` (the node's ADNL
+identity, separate from the block-signing key), `peers` (a list of
+`<ed25519-pubkey-hex>@<host:port>` descriptors, ADR-0043; hostnames resolve
+once at startup), and `follower = true` on the follower. Consensus is still
+frozen (M6, see the README status table); peer discovery/DHT, mempool
+gossip and the broadcast overlay are M6+ work.

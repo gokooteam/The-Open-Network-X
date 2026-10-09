@@ -154,6 +154,8 @@ pub struct RldpSender {
     transfer_id: Uint256,
     acknowledged: HashSet<u16>,
     last_ack_seq: u32,
+    /// Previous ack mask, for delta computation in [`Self::apply_ack`].
+    last_ack_mask: Vec<u8>,
     config: RldpConfig,
     cursor: usize,
 }
@@ -200,6 +202,7 @@ impl RldpSender {
             transfer_id,
             acknowledged: HashSet::new(),
             last_ack_seq: 0,
+            last_ack_mask: Vec::new(),
             config,
             cursor: 0,
         })
@@ -207,7 +210,23 @@ impl RldpSender {
     pub fn is_complete(&self) -> bool {
         self.acknowledged.len() == self.frames.len()
     }
+    /// Whether the frame with this sequence number has been acknowledged.
+    /// Used by pipelined senders to start the next round as soon as the
+    /// outstanding frames are acked, instead of waiting out the round
+    /// timeout.
+    pub fn is_acknowledged(&self, seq_no: u16) -> bool {
+        self.acknowledged.contains(&seq_no)
+    }
     pub fn next_round(&mut self) -> Vec<Vec<u8>> {
+        self.next_round_seq()
+            .into_iter()
+            .map(|(_, packet)| packet)
+            .collect()
+    }
+    /// Like [`Self::next_round`], but also returns each packet's frame
+    /// sequence number so the sender can tell when the round's frames are
+    /// all acknowledged.
+    pub fn next_round_seq(&mut self) -> Vec<(u16, Vec<u8>)> {
         let mut packets = Vec::with_capacity(self.config.packets_per_round);
         let mut inspected = 0;
         while packets.len() < self.config.packets_per_round && inspected < self.frames.len() {
@@ -222,7 +241,7 @@ impl RldpSender {
                 if packets.len() == self.config.packets_per_round {
                     break;
                 }
-                packets.push(frame.encode().expect("validated frame"));
+                packets.push((frame.seq_no, frame.encode().expect("validated frame")));
             }
         }
         packets
@@ -235,11 +254,35 @@ impl RldpSender {
             return Err(NetworkError::MalformedRldpFrame);
         }
         self.last_ack_seq = ack.ack_seq;
-        for (i, byte) in ack.received_mask.iter().enumerate() {
+        // Insert only newly-set bits: masks are cumulative and ack_seqs
+        // increase, so XOR against the previous mask isolates the delta.
+        // Re-scanning the whole mask per ack is O(frames) per ack and
+        // O(frames^2) per round — at 2048 frames that dominates debug-build
+        // round time and defeats pipelining.
+        if self.last_ack_mask.len() != ack.received_mask.len() {
+            self.last_ack_mask = vec![0; ack.received_mask.len()];
+        }
+        for (i, (old, new)) in self
+            .last_ack_mask
+            .iter_mut()
+            .zip(ack.received_mask.iter())
+            .enumerate()
+        {
+            // Bits the receiver reports as newly set since the last ack.
+            // (Clears cannot happen from our receiver — masks only grow —
+            // but syncing `old` unconditionally keeps the delta exact even
+            // if they did.)
+            let newly = *new & !*old;
+            *old = *new;
+            if newly == 0 {
+                continue;
+            }
             for bit in 0..8 {
-                let seq = i * 8 + bit;
-                if seq < self.frames.len() && byte & (1 << bit) != 0 {
-                    self.acknowledged.insert(seq as u16);
+                if newly & (1 << bit) != 0 {
+                    let seq = i * 8 + bit;
+                    if seq < self.frames.len() {
+                        self.acknowledged.insert(seq as u16);
+                    }
                 }
             }
         }
@@ -260,6 +303,11 @@ pub struct RldpReceiver {
     chunk_count: usize,
     chunks: BTreeMap<u16, Vec<u8>>,
     ack_seq: u32,
+    /// Incrementally maintained ack bitmap (bit `i` = chunk `i` received).
+    /// Rebuilt-from-scratch on every `ack()` would be O(chunks) per ack and
+    /// O(chunks^2) per round — at 2048 chunks that alone costs ~100 ms per
+    /// round in debug builds, defeating the pipelined sender.
+    ack_mask: Vec<u8>,
 }
 
 impl RldpReceiver {
@@ -273,6 +321,7 @@ impl RldpReceiver {
             chunk_count: frame.chunk_count as usize,
             chunks: BTreeMap::new(),
             ack_seq: 0,
+            ack_mask: vec![0; (frame.chunk_count as usize).div_ceil(8)],
         })
     }
     pub fn ingest(&mut self, frame: RldpDataFrame) -> Result<Option<Vec<u8>>, NetworkError> {
@@ -284,7 +333,10 @@ impl RldpReceiver {
         {
             return Err(NetworkError::MalformedRldpFrame);
         }
-        self.chunks.entry(frame.seq_no).or_insert(frame.chunk_data);
+        if !self.chunks.contains_key(&frame.seq_no) {
+            self.ack_mask[frame.seq_no as usize / 8] |= 1 << (frame.seq_no as usize % 8);
+            self.chunks.insert(frame.seq_no, frame.chunk_data);
+        }
         if self.chunks.len() != self.chunk_count {
             return Ok(None);
         }
@@ -304,14 +356,10 @@ impl RldpReceiver {
     }
     pub fn ack(&mut self) -> RldpAckFrame {
         self.ack_seq = self.ack_seq.wrapping_add(1);
-        let mut mask = vec![0; self.chunk_count.div_ceil(8)];
-        for seq in self.chunks.keys() {
-            mask[*seq as usize / 8] |= 1 << (*seq as usize % 8);
-        }
         RldpAckFrame {
             transfer_id: self.transfer_id,
             ack_seq: self.ack_seq,
-            received_mask: mask,
+            received_mask: self.ack_mask.clone(),
         }
     }
 }
