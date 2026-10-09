@@ -3,11 +3,11 @@
 **Criterion:** The consensus engine (`onx-consensus`) is wired into `onxd`.
 At least 4 validators come from the genesis set.
 **Branch:** `gokoo/M6-336ed3b863ff`
-**Kicked:** 2026-10-09 by Amethyst (direct, in chat — Issues are disabled on
-the repo, so the issue-ledger kick was bypassed).
-**Note:** Amethyst said "begin" — council deferred; design decisions below
-are Gokoo's, documented for her review at the PR. The relay + Claude audit
-on the final PR provide the review.
+**Kicked:** 2026-10-09 via chat (the issue ledger was unavailable — Issues
+are disabled on the repo — so the kick came through direct instruction).
+**Note:** Implementation was authorized to begin before the council round;
+design decisions below are the implementer's, documented for review at the
+PR. The relay + audit on the final PR provide the review.
 
 ## Design decisions
 
