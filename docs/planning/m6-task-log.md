@@ -73,3 +73,10 @@ on the final PR provide the review.
   REMAINING: tick-loop integration (driver in run_tick), RLDP transport
   for proposal/vote broadcast (P4), fork-choice rule (P5), multinode
   integration test (P6).
+- 2026-10-09: Tick-loop integration done — run_tick drives the
+  ConsensusDriver (timeouts, inbound, leader proposal, finalize->commit).
+  run_producer_loop builds the driver from genesis + key. Single validator
+  completes the full BFT round via local loopback (P4 stub). Producer
+  tests ported to BFT ticks; 16/16 onxd lib green, clippy clean.
+  REMAINING: P4 real network broadcast (RLDP vs ADNL datagram decision),
+  P5 fork-choice rule, P6 multinode integration test.
