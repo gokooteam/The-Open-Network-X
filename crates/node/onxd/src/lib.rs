@@ -1,5 +1,6 @@
 pub mod blockfiles;
 pub mod consensus_driver;
+pub mod consensus_net;
 pub mod follower;
 pub mod mempool;
 pub mod producer;
@@ -173,6 +174,13 @@ pub struct OnxdConfig {
     /// Required when `network_enabled` is true: the node binds its ADNL
     /// transport under this identity, and peers pin it from config.
     pub node_key_path: Option<String>,
+    /// Consensus gossip bind address (M6, e.g. "127.0.0.1:9002"). If set,
+    /// the validator gossips proposals/votes over TCP; if None, runs in
+    /// single-validator loopback mode.
+    pub consensus_bind: Option<String>,
+    /// Consensus gossip peers: other validators' `consensus_bind`
+    /// addresses, comma-separated in config.
+    pub consensus_peers: Vec<String>,
 }
 
 impl Default for OnxdConfig {
@@ -192,6 +200,8 @@ impl Default for OnxdConfig {
             signing_key_path: None,
             follower: false,
             node_key_path: None,
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         }
     }
 }
@@ -218,6 +228,8 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
     let mut signing_key_path: Option<String> = None;
     let mut follower = false;
     let mut node_key_path: Option<String> = None;
+    let mut consensus_bind: Option<String> = None;
+    let mut consensus_peers = Vec::new();
 
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -239,6 +251,14 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
                 "network_bind" => network_bind = value.to_string(),
                 "peers" => {
                     peers = value
+                        .split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect();
+                }
+                "consensus_bind" => consensus_bind = Some(value.to_string()),
+                "consensus_peers" => {
+                    consensus_peers = value
                         .split(',')
                         .map(|p| p.trim().to_string())
                         .filter(|p| !p.is_empty())
@@ -292,7 +312,31 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
         signing_key_path,
         follower,
         node_key_path,
+        consensus_bind,
+        consensus_peers,
     })
+}
+
+
+fn parse_consensus_addrs(
+    bind: &Option<String>,
+    peers: &[String],
+) -> Result<(Option<std::net::SocketAddr>, Vec<std::net::SocketAddr>), String> {
+    let bind_addr = bind
+        .as_deref()
+        .map(|s| {
+            s.parse::<std::net::SocketAddr>()
+                .map_err(|e| format!("invalid consensus_bind {s}: {e}"))
+        })
+        .transpose()?;
+    let peer_addrs = peers
+        .iter()
+        .map(|s| {
+            s.parse::<std::net::SocketAddr>()
+                .map_err(|e| format!("invalid consensus_peers entry {s}: {e}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((bind_addr, peer_addrs))
 }
 
 pub fn parse_cli_args(args: &[String]) -> Result<OnxdConfig, String> {
@@ -730,6 +774,7 @@ async fn run_networked(
             config.tx_pool_dir
         )
     })?;
+    let consensus_addrs = parse_consensus_addrs(&config.consensus_bind, &config.consensus_peers)?;
     let producer_cfg = ProducerConfig {
         fee_collector: fee_collector.expect("checked above"),
         poll_interval: Duration::from_millis(config.block_poll_interval_ms),
@@ -737,6 +782,8 @@ async fn run_networked(
         blocks_dir,
         telemetry: Some(metrics),
         signing_key,
+        consensus_bind: consensus_addrs.0,
+        consensus_peers: consensus_addrs.1,
     };
     let producer_shutdown = shutdown.clone();
     let mut producer_task = tokio::task::spawn_blocking(move || {
@@ -846,6 +893,7 @@ async fn run_single_node(
             config.tx_pool_dir
         )
     })?;
+    let consensus_addrs = parse_consensus_addrs(&config.consensus_bind, &config.consensus_peers)?;
     let producer_cfg = ProducerConfig {
         fee_collector,
         poll_interval: Duration::from_millis(config.block_poll_interval_ms),
@@ -853,6 +901,8 @@ async fn run_single_node(
         blocks_dir: Path::new(&config.storage_path).join("blocks"),
         telemetry: Some(metrics),
         signing_key: Some(signing_key),
+        consensus_bind: consensus_addrs.0,
+        consensus_peers: consensus_addrs.1,
     };
     let shutdown = Arc::new(AtomicBool::new(false));
     let producer_shutdown = shutdown.clone();

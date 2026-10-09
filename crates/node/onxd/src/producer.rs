@@ -250,6 +250,11 @@ pub struct ProducerConfig {
     /// (ONXBLK05); the key's pubkey must match a genesis validator
     /// (checked at startup — TRAP 4).
     pub signing_key: Option<onx_primitives::SecretKey>,
+    /// Consensus gossip bind address (M6). If None, the node runs in
+    /// single-validator loopback mode.
+    pub consensus_bind: Option<std::net::SocketAddr>,
+    /// Consensus gossip peers (other validators' bind addresses).
+    pub consensus_peers: Vec<std::net::SocketAddr>,
 }
 
 #[derive(Debug, Default)]
@@ -441,12 +446,21 @@ pub fn run_producer_loop(
     // node's signing key (already validated as a member at startup).
     let mut driver = build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap())
         .map_err(|e| format!("producer: consensus driver init failed: {e}"))?;
-    // Consensus message queues. P4: the network task drains `outbound`
-    // (broadcast) and feeds `inbound`; until then they loop locally.
+    // Consensus message queues. If the gossip network is configured,
+    // spawn it; otherwise run in single-validator loopback mode.
     let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
     let mut outbound: Vec<crate::consensus_driver::DriverEvent> = Vec::new();
+    let net = cfg.consensus_bind.map(|bind| {
+        crate::consensus_net::spawn_consensus_net(bind, cfg.consensus_peers.clone())
+    });
 
     while !shutdown.load(Ordering::Relaxed) {
+        // Drain the network's inbound channel (non-blocking).
+        if let Some((inbound_rx, _)) = &net {
+            while let Ok(msg) = inbound_rx.try_recv() {
+                inbound.push(msg);
+            }
+        }
         match run_tick(
             &store,
             &mut mempool,
@@ -471,19 +485,35 @@ pub fn run_producer_loop(
                 eprintln!("producer: tick failed, retrying next tick: {e}");
             }
         }
-        // P4 stub: loop outbound broadcasts back locally so a single
-        // validator's self-votes flow through the driver. The network task
-        // will replace this with real peer broadcast.
-        for event in outbound.drain(..) {
-            match event {
-                crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
-                    inbound.push(InboundConsensusMsg::Vote(v));
+        // Ship outbound broadcasts: to the network, or loop back locally
+        // in single-validator mode.
+        if let Some((_, outbound_tx)) = &net {
+            for event in outbound.drain(..) {
+                let msg = match event {
+                    crate::consensus_driver::DriverEvent::BroadcastProposal {
+                        proposal,
+                        block,
+                    } => crate::consensus_net::OutboundConsensusMsg::Proposal(proposal, block),
+                    crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
+                        crate::consensus_net::OutboundConsensusMsg::Vote(v)
+                    }
+                    crate::consensus_driver::DriverEvent::Finalized { .. } => continue,
+                };
+                if outbound_tx.send(msg).is_err() {
+                    eprintln!("producer: consensus network channel closed");
                 }
-                crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
-                    inbound.push(InboundConsensusMsg::Proposal(proposal, block));
-                }
-                crate::consensus_driver::DriverEvent::Finalized { .. } => {
-                    // Handled inside run_tick; never re-queued.
+            }
+        } else {
+            // Single-validator loopback.
+            for event in outbound.drain(..) {
+                match event {
+                    crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
+                        inbound.push(InboundConsensusMsg::Vote(v));
+                    }
+                    crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
+                        inbound.push(InboundConsensusMsg::Proposal(proposal, block));
+                    }
+                    crate::consensus_driver::DriverEvent::Finalized { .. } => {}
                 }
             }
         }
@@ -1605,6 +1635,8 @@ mod tests {
             blocks_dir: root.join("blocks"),
             telemetry: None,
             signing_key: Some(validator_key),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         };
         std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
         let mut mempool =
@@ -1832,6 +1864,8 @@ mod tests {
             blocks_dir: root.join("blocks"),
             telemetry: None,
             signing_key: Some(validator_key),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         };
         std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
         let mut mempool = Mempool::new(&tx_pool_dir, 1000, state.chain_id, fee_collector).unwrap();
