@@ -60,3 +60,7 @@ on the final PR provide the review.
   devin-47 concern answered in code comment + test
   `sig_section_budget_covers_genesis_set`. BLS aggregation deferred
   past M6.
+- 2026-10-09: P4 (wire) done — onx-consensus/src/wire.rs: proposal/vote
+  tag-prefixed codec; commit votes carry the validator's header
+  signature at the transport layer (engine untouched); 16 tests green.
+  Design decision 6 recorded above. Next: P3 engine driver in onxd.
