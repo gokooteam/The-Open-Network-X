@@ -21,6 +21,10 @@ sentry = { version = "0.49", default-features = false, features = ["backtrace", 
 # transport (same 0.13 line sentry uses; unified by cargo).
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 onx-telemetry = { path = "../onx-telemetry" }
+# The producer's block-size bound is the sync layer's servable-file cap:
+# never commit a block followers cannot fetch (ADR-0045). Depending on
+# the constant rather than duplicating it keeps the two in agreement.
+onx-networking = { path = "../onx-networking" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-data-structures = { path = "../../protocol/onx-data-structures" }
 onx-primitives = { path = "../../protocol/onx-primitives" }

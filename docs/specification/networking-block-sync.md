@@ -43,7 +43,7 @@ partial parse.
 - **BlockAnnouncement** (`0x01`): `seq_no:uint32be | block_hash:[uint8;32]
   | state_root:[uint8;32]` (exactly 68 bytes). The producer broadcasts
   one per committed block to every configured peer. `block_hash` is the
-  `BlockHeader::block_hash()` of the committed block; `state_root` is
+  `onx_stf::BlockHeader::hash()` of the committed block; `state_root` is
   informational until the block verifies.
 - **BlockRequest** (`0x02`): `seq_no:uint32be` (exactly 4 bytes). The
   follower asks a peer for one block's bytes.
@@ -62,14 +62,17 @@ total, not the datagram.
 
 Trust boundary: the sync layer guarantees framing integrity only. The
 follower MUST, for every fetched block, in order: check the
-`ONXBLK05` magic, strict-decode the file, run `verify_block_auth`
-against the genesis validator set with the chain-bound preimage
-(ADR-0032 §5), confirm the recomputed block hash matches the
-announcement, then apply through the same deterministic path as
-`onx replay`. A peer that serves corrupted, forged, out-of-order, or
-wrong-chain blocks is rejected at the first failing check, and the
-follower moves on to the next peer. Network reachability, timing, and
-duplicate arrival never alter validity.
+`ONXBLK05` magic, strict-decode the file, confirm the recomputed block
+hash (`onx_stf::BlockHeader::hash()`) matches the announcement, then run
+`verify_block_auth` against the genesis validator set with the
+chain-bound preimage (ADR-0032 §5), and only then apply through the same
+deterministic path as `onx replay`. The hash check comes before
+signature verification deliberately: it is a cheap filter against a
+mismatched or stale response, and the signature check remains the gate
+before anything is applied. A peer that serves corrupted, forged,
+out-of-order, or wrong-chain blocks is rejected at the first failing
+check, and the follower moves on to the next peer. Network reachability,
+timing, and duplicate arrival never alter validity.
 
 ## 4. Serialization
 
@@ -87,7 +90,9 @@ Reject: envelope shorter than 6 bytes; `version != 1`; unknown
 total over 8 MiB; announcement/request payloads of the wrong fixed
 length; response with `block_len` disagreeing with trailing bytes;
 response seqno not matching the request; request for a seqno with no
-block file; block file over the 8 MiB cap. All rejections are
+block file; block file over `MAX_BLOCK_FILE_BYTES` (8 MiB minus the
+14-byte response framing overhead — a larger file would encode to a
+response no follower can decode). All rejections are
 deterministic and carry no partial state.
 
 ## 6. Test plan

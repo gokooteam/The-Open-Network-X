@@ -84,10 +84,12 @@
 //! block file is regenerated from it at startup.
 
 use crate::mempool::Mempool;
-use onx::blockfile::{block_file_name, decode_block_file, encode_block_file};
+use onx::blockfile::{block_file_name, decode_block_file, encode_block_file, BLOCK_FILE_MAGIC};
 use onx_data_structures::AccountId;
-use onx_stf::block::{Block, PROTOCOL_VERSION};
+use onx_networking::block_sync::MAX_BLOCK_FILE_BYTES;
+use onx_stf::block::{Block, BLOCK_HEADER_BYTE_LEN, PROTOCOL_VERSION, SIG_ENTRY_BYTE_LEN};
 use onx_stf::{propose_block, ExternalMessage, SigEntry, State, StfError};
+use onx_storage::encoding::{BODY_COUNT_LEN, MSG_LEN_PREFIX};
 use onx_storage::ChainStore;
 use onx_telemetry::TelemetryHandle;
 use std::any::Any;
@@ -526,12 +528,22 @@ fn run_tick(
             })?
             .block_time
     };
+    // Canonical validator set, loaded once: its size bounds the worst-case
+    // signature section for the block-size check (ADR-0045), and the set
+    // itself is needed for signing and self-verification below.
+    let validators = canonical_validators(store)?;
+    // Worst case: every validator signs this block (4-byte entry count +
+    // SIG_ENTRY_BYTE_LEN per entry). The real section is never larger, so
+    // a block that fits under this bound always fits on the wire.
+    let max_sig_section_bytes =
+        4usize.saturating_add(validators.len().saturating_mul(SIG_ENTRY_BYTE_LEN));
     let block = match propose_robust(
         &state,
         candidates,
         lt,
         cfg.fee_collector,
         parent_block_time,
+        max_sig_section_bytes,
         mempool,
         stats,
     )? {
@@ -550,7 +562,6 @@ fn run_tick(
     //
     // ONXBLK05: sign the block (if a signing key is configured), then
     // commit block+signatures atomically (TRAP 2).
-    let validators = canonical_validators(store)?;
     let sig_entries = sign_block(
         &block,
         &state.chain_id,
@@ -620,6 +631,51 @@ fn run_tick(
 /// loop: without containment, the poison message sits in the drop dir and
 /// kills the process on every tick.
 ///
+/// Worst-case encoded `.blk` file size for these messages: magic +
+/// header + the full signature section (`max_sig_section_bytes`: every
+/// validator signing) + the length-prefixed body. Deterministic — the
+/// same messages always give the same size, so every honest producer
+/// agrees on the bound. Must match `onx::blockfile::encode_block_file`'s
+/// layout exactly: magic(8) || header(160) || sig section ||
+/// msg_count(u32be) || [msg_len(u32be) || msg_bytes]*.
+fn worst_case_block_file_bytes(
+    messages: &[ExternalMessage],
+    max_sig_section_bytes: usize,
+) -> usize {
+    BLOCK_FILE_MAGIC
+        .len()
+        .saturating_add(BLOCK_HEADER_BYTE_LEN)
+        .saturating_add(max_sig_section_bytes)
+        .saturating_add(BODY_COUNT_LEN)
+        .saturating_add(
+            messages
+                .iter()
+                .map(|m| MSG_LEN_PREFIX.saturating_add(m.to_bytes().len()))
+                .fold(0usize, |a, b| a.saturating_add(b)),
+        )
+}
+
+/// Largest prefix of `candidates` whose worst-case encoded file fits
+/// [`MAX_BLOCK_FILE_BYTES`]. Single linear pass — the size function is
+/// monotone in the prefix length, so the first overflow point is the
+/// answer. Callers truncate the tail; the held messages keep their
+/// mempool order for the next block.
+fn largest_fitting_prefix(candidates: &[ExternalMessage], max_sig_section_bytes: usize) -> usize {
+    let mut acc = BLOCK_FILE_MAGIC
+        .len()
+        .saturating_add(BLOCK_HEADER_BYTE_LEN)
+        .saturating_add(max_sig_section_bytes)
+        .saturating_add(BODY_COUNT_LEN);
+    let mut k = 0usize;
+    for msg in candidates {
+        acc = acc.saturating_add(MSG_LEN_PREFIX.saturating_add(msg.to_bytes().len()));
+        if acc > MAX_BLOCK_FILE_BYTES {
+            break;
+        }
+        k = k.saturating_add(1);
+    }
+    k
+}
 /// Gas-cap path (ADR-0034): if the first failing prefix fails with
 /// `BlockGasExceeded`, its last message is valid but doesn't fit. The
 /// candidates are cut just before it (a prefix the bisection already saw
@@ -630,16 +686,46 @@ fn run_tick(
 ///
 /// A second full failure after isolation is a genuine STF bug: loud log,
 /// skip the tick, mempool intact. There is deliberately no bulk quarantine.
+// 8 params: mirrors the existing #[allow] on try_execute_contract/deliver;
+// bundling would obscure the call sites.
+#[allow(clippy::too_many_arguments)]
 fn propose_robust(
     state: &State,
     candidates: Vec<ExternalMessage>,
     lt: u64,
     fee_collector: AccountId,
     parent_block_time: u64,
+    max_sig_section_bytes: usize,
     mempool: &mut Mempool,
     stats: &mut ProducerStats,
 ) -> Result<Option<Block>, TickError> {
     let mut candidates = candidates;
+    // Block-size bound (ADR-0045): never propose a block the sync layer
+    // cannot serve. A committed block whose encoded file exceeds
+    // MAX_BLOCK_FILE_BYTES strands every follower at that height — the
+    // server refuses it and no peer can deliver it. Trim the tail (held
+    // for the next block, never rejected) until the worst-case encoded
+    // file — every validator signing — fits. This is a pure size check,
+    // no STF involved; it mirrors the BlockGasExceeded arm in the loop
+    // below.
+    let fitting = largest_fitting_prefix(&candidates, max_sig_section_bytes);
+    if fitting < candidates.len() {
+        eprintln!(
+            "producer: block file size bound reached ({} > {}); holding {} message(s) for a later block",
+            worst_case_block_file_bytes(&candidates, max_sig_section_bytes),
+            MAX_BLOCK_FILE_BYTES,
+            candidates.len() - fitting,
+        );
+        candidates.truncate(fitting);
+    }
+    if candidates.is_empty() {
+        // Unreachable in practice: a single max-size message encodes to
+        // ~66 KiB against an 8 MiB budget. If it ever happens the size
+        // model is wrong — fail loudly, never spin on an empty set.
+        return Err(TickError::Fatal(
+            "producer: block-size budget exceeded by a single message (size-model bug)".to_string(),
+        ));
+    }
     loop {
         if candidates.is_empty() {
             return Ok(None);
@@ -1109,6 +1195,9 @@ mod tests {
             state.last_lt + 1,
             fee_collector,
             0,
+            // One validator in the test genesis: the sig-section bound is
+            // exact, and two small transfers are far under the file cap.
+            4 + SIG_ENTRY_BYTE_LEN,
             &mut mempool,
             &mut stats,
         )
@@ -1122,6 +1211,122 @@ mod tests {
             stats.txs_rejected, 1,
             "exactly the panicking message is dropped"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ADR-0045: the producer's size model must mirror
+    /// `encode_block_file`'s layout byte-for-byte — the trim decision is
+    /// only sound if the model and the encoder agree.
+    #[test]
+    fn size_model_matches_encode_block_file_exactly() {
+        let state = State::from_genesis(&test_genesis());
+        let fee_collector = test_fee_collector();
+        let msgs = vec![
+            signed_transfer(&state, 0, 0),
+            signed_transfer(&state, 1, 0),
+            signed_transfer(&state, 0, 1),
+        ];
+        let block = propose_block(
+            &state,
+            msgs,
+            state.last_lt + 1,
+            fee_collector,
+            PROTOCOL_VERSION,
+            0,
+        )
+        .expect("propose_block succeeds on valid transfers");
+        assert_eq!(block.body.messages.len(), 3);
+        // One validator in the test genesis: worst-case == actual section.
+        let sig_entries = vec![SigEntry {
+            validator_index: 0,
+            sig: [0x77; 64],
+        }];
+        let encoded = encode_block_file(&block, &sig_entries);
+        let sig_section_bytes = 4 + sig_entries.len() * SIG_ENTRY_BYTE_LEN;
+        assert_eq!(
+            encoded.len(),
+            worst_case_block_file_bytes(&block.body.messages, sig_section_bytes),
+            "size model diverged from encode_block_file",
+        );
+    }
+
+    /// ADR-0045: a candidate set bigger than the sync servable bound is
+    /// trimmed (tail held for the next block), never committed as a block
+    /// no follower can fetch — and never rejected as invalid.
+    ///
+    /// The messages are ContractCalls with near-max payloads to an account
+    /// without code: they bounce on delivery (a normal outcome — the
+    /// message is still included in the block) and burn ~0 gas, so the
+    /// size trim fires instead of the gas cap, with only ~160 signatures
+    /// to compute instead of ~27,000 small transfers.
+    #[test]
+    fn oversize_candidate_set_is_trimmed_not_rejected() {
+        let state = State::from_genesis(&test_genesis());
+        let fee_collector = test_fee_collector();
+        // One validator in the test genesis.
+        let max_sig_section_bytes = 4 + SIG_ENTRY_BYTE_LEN;
+        let payload = vec![0x5au8; 60_000];
+        let mut candidates = Vec::new();
+        let mut nonces = [0u64; 8];
+        for i in 0..160 {
+            let from_idx = (i % 8) as u8;
+            let from = test_account(from_idx);
+            let secret = test_secret_key(&from);
+            candidates.push(ExternalMessage::new_signed(
+                state.chain_id,
+                MsgKind::ContractCall,
+                from,
+                nonces[from_idx as usize],
+                test_account(0x99),
+                1_000,
+                10,
+                payload.clone(),
+                [0u8; 32],
+                &secret,
+            ));
+            nonces[from_idx as usize] += 1;
+        }
+        assert!(
+            worst_case_block_file_bytes(&candidates, max_sig_section_bytes) > MAX_BLOCK_FILE_BYTES,
+            "test setup must actually exceed the cap"
+        );
+        let expected_kept = largest_fitting_prefix(&candidates, max_sig_section_bytes);
+        assert!(expected_kept < candidates.len());
+        assert!(expected_kept > 0);
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("onxd-sizetest-{nanos}-{}", std::process::id()));
+        let mut mempool = Mempool::new(&dir, 1000, state.chain_id, fee_collector).expect("mempool");
+        let mut stats = ProducerStats::default();
+        let block = propose_robust(
+            &state,
+            candidates,
+            state.last_lt + 1,
+            fee_collector,
+            0,
+            max_sig_section_bytes,
+            &mut mempool,
+            &mut stats,
+        )
+        .expect("propose_robust succeeds on an oversize set")
+        .expect("a block is still produced");
+        assert_eq!(
+            block.body.messages.len(),
+            expected_kept,
+            "the size trim keeps exactly the fitting prefix"
+        );
+        assert!(
+            worst_case_block_file_bytes(&block.body.messages, max_sig_section_bytes)
+                <= MAX_BLOCK_FILE_BYTES,
+            "committed block is servable"
+        );
+        // Nothing was rejected: the held tail stays in the mempool for
+        // the next block.
+        assert_eq!(stats.txs_rejected, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
