@@ -96,7 +96,7 @@ ONX follows several principles:
 <!--gen:readme_status-->
 **Phase: development.** ONX is being built, not maintained. It switches to maintenance when every box in the [maintenance gate](MILESTONES.md#part-3--the-maintenance-gate-m8-100) (M8, `1.0.0`) is checked.
 
-**Now:** M4, *Pay down debt: a single node you'd trust* (`0.3.0`): 16 of 21 exit criteria met.
+**Now:** M4, *Pay down debt: a single node you'd trust* (`0.3.0`): 19 of 21 exit criteria met.
 
 ```text
 M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ✅ ── M6 ○ ── M7 ○ ── M8 🏁
@@ -108,7 +108,7 @@ M0 ✅ ── M1 ✅ ── M2 ✅ ── M3 ✅ ── M4 ▶ ── M5 ✅ ─
 | ✅ | M1 · Deterministic replay | in 0.2.0 | done 2026-10-05 |
 | ✅ | M2 · Single-node chain: TVM, message model, hardening | in 0.2.0 | done 2026-10-07 |
 | ✅ | M3 · Authenticated blocks, devnet-1, release engineering | `v0.2.0` tag | done 2026-10-08 |
-| ▶ | **M4 · Pay down debt: a single node you'd trust** | 0.3.0 | `████████░░` 16/21 |
+| ▶ | **M4 · Pay down debt: a single node you'd trust** | 0.3.0 | `█████████░` 19/21 |
 | ✅ | M5 · Networking: nodes find each other and stay in sync | 0.4.0 | done 2026-10-09 |
 | ○ | M6 · Consensus: more than one validator | 0.5.0 | `░░░░░░░░░░` 0/6 |
 | ○ | M7 · A public testnet other people can use | 0.6.0 – 0.9.x | `░░░░░░░░░░` 0/8 |
