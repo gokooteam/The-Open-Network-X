@@ -45,6 +45,7 @@ Usage:
     python3 scripts/site.py build [--tests-log FILE] [--replay-log FILE] [--reviewed]
     python3 scripts/site.py check
     python3 scripts/site.py live [--attempts N] [--json FILE]
+    python3 scripts/site.py milestones     (JSON for the Milestones workflow)
 
 Only the Python standard library is used.
 """
@@ -736,6 +737,13 @@ def cmd_check(_args) -> int:
     return 0
 
 
+def cmd_milestones(_args) -> int:
+    """Print the milestone map as JSON; milestones.yml syncs GitHub
+    milestones from it."""
+    print(json.dumps({"milestones": milestone_map()}, indent=2, ensure_ascii=False))
+    return 0
+
+
 def cmd_live(args) -> int:
     report, failures = live(args.attempts)
     if args.json:
@@ -764,8 +772,10 @@ def main() -> int:
     lv = sub.add_parser("live", help="compare the deployed sites with this checkout")
     lv.add_argument("--attempts", type=int, default=4, help="fetches per URL (default 4)")
     lv.add_argument("--json", help="also write the report as JSON")
+    sub.add_parser("milestones", help="print the milestone map from MILESTONES.md as JSON")
     args = ap.parse_args()
-    return {"build": cmd_build, "check": cmd_check, "live": cmd_live}[args.cmd](args)
+    return {"build": cmd_build, "check": cmd_check, "live": cmd_live,
+            "milestones": cmd_milestones}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -50,6 +50,10 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
   M8 maintenance gate passes) and a milestone map with exit-criteria
   progress and no target dates. `scripts/site.py build` writes it from
   `MILESTONES.md`; `site.py check` fails CI when it falls behind.
+- `Milestones` workflow (`milestones.yml`): mirrors `MILESTONES.md` into
+  GitHub milestones, titled with exit-criteria progress (e.g.
+  `M4 · 16/21 · …`), finished ones closed and no due dates; and gives each
+  new PR the milestone its title names (`M5: …`), else the current one.
 - PR template: a *Consensus impact* section (breaking, adjacent or none)
   and the determinism question.
 - `onx-cli wallet address --wallet <file>`: print a wallet's public key and
