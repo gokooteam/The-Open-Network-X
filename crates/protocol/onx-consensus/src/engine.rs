@@ -169,6 +169,17 @@ impl ConsensusEngine {
     pub fn round(&self) -> u32 {
         self.round
     }
+    pub fn height(&self) -> u64 {
+        self.height
+    }
+    pub fn proposal(&self) -> Option<&ConsensusProposal> {
+        self.proposal.as_ref()
+    }
+    /// Validator stakes in canonical validator-id order (for rebuilding
+    /// the driver at the next height).
+    pub fn stakes(&self) -> Vec<u64> {
+        self.validators.values().map(|v| v.actual_stake.0).collect()
+    }
     pub fn finalized(&self) -> Option<&FinalizedBlock> {
         self.finalized.as_ref()
     }

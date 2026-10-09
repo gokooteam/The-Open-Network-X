@@ -1,4 +1,5 @@
 pub mod blockfiles;
+pub mod consensus_driver;
 pub mod follower;
 pub mod mempool;
 pub mod producer;
