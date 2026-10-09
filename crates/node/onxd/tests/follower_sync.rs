@@ -176,6 +176,8 @@ impl ProducerHarness {
             blocks_dir: self.blocks_dir(),
             telemetry: None,
             signing_key: Some(test_secret(self.validator_byte)),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         };
         let pool_dir = self.tx_pool_dir.clone();
         let chain_id = self.chain_id;

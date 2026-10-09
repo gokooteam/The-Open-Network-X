@@ -488,7 +488,7 @@ mod tests {
 
         let mut drivers: Vec<ConsensusDriver> = keys
             .into_iter()
-            .map(|k| ConsensusDriver::new(chain_id, shard.clone(), 1, &validators, k, 0).unwrap())
+            .map(|k| ConsensusDriver::new(chain_id, shard, 1, &validators, k, 0).unwrap())
             .collect();
 
         // Round 0 leader is validator 0 (round-robin over sorted ids).
@@ -582,7 +582,7 @@ mod tests {
         let mut drivers: Vec<ConsensusDriver> = keys
             .into_iter()
             .take(3)
-            .map(|k| ConsensusDriver::new(chain_id, shard.clone(), 1, &validators, k, 0).unwrap())
+            .map(|k| ConsensusDriver::new(chain_id, shard, 1, &validators, k, 0).unwrap())
             .collect();
 
         let block = test_block(1);
