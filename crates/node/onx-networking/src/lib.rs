@@ -15,7 +15,7 @@ pub use adnl_transport::{
 pub use block_sync::{
     decode_announcement, decode_request, decode_response, encode_announcement, encode_request,
     encode_response, BlockAnnouncement, BlockRequest, BlockResponse, BlockServer, SyncError,
-    MAX_SYNC_MESSAGE_BYTES, SYNC_PROTOCOL_VERSION,
+    MAX_BLOCK_FILE_BYTES, MAX_SYNC_MESSAGE_BYTES, SYNC_PROTOCOL_VERSION,
 };
 pub use dht_daemon::{DhtContact, DhtDaemon, DhtRpc, DhtRpcResponse, DhtTransport};
 use onx_primitives::{

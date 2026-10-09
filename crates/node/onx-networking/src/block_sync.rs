@@ -13,11 +13,14 @@
 //!   ADNL channel. Responses larger than one ADNL datagram (~64KB) MUST
 //!   be chunked through RLDP; the codec only bounds the total size.
 //!
-//! Trust boundary: NOTHING received here is trusted. The follower verifies
-//! every fetched block with `verify_block_auth` (ONXBLK05 signatures
-//! against the genesis validator set, chain-bound preimage) before
-//! applying it — that check lives in the `onxd` follower loop, not here.
-//! This module guarantees framing integrity only: a peer that sends
+//! Trust boundary: NOTHING received here is trusted. For every fetched
+//! block the follower checks, in order: the `ONXBLK05` magic, strict
+//! decode of the file, that `onx_stf::BlockHeader::hash()` of the decoded
+//! block matches the announcement (cheap filter before the expensive
+//! check), then `verify_block_auth` (ONXBLK05 signatures against the
+//! genesis validator set, chain-bound preimage) — and only then applies
+//! it. The verification order lives in the `onxd` follower loop, not
+//! here. This module guarantees framing integrity only: a peer that sends
 //! garbage gets a deterministic rejection, never a partial parse.
 
 use crate::NetworkError;
@@ -33,6 +36,21 @@ pub const SYNC_PROTOCOL_VERSION: u8 = 1;
 /// `payload_len`. Block bodies above this are a protocol violation, not
 /// a transport problem — real M5 blocks are kilobytes.
 pub const MAX_SYNC_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+
+/// Wire framing added around the raw block file bytes in a
+/// [`BlockResponse`]: the 6-byte envelope plus the 8-byte response
+/// prefix (`seq_no:u32be` + `block_len:u32be`).
+const RESPONSE_FRAMING_OVERHEAD: usize = 6 + 8;
+
+/// Largest block file the sync server will serve. This is the decoder's
+/// message cap minus the response framing overhead: a file of exactly
+/// [`MAX_SYNC_MESSAGE_BYTES`] would encode to a message no follower can
+/// decode (the 14 framing bytes push the total over the cap), so the
+/// server fails closed here and every served response is guaranteed
+/// decodable. The producer never commits a block whose worst-case
+/// encoded file exceeds this (ADR-0045), so the refusal is unreachable
+/// on an honest chain — it is the backstop, not the mechanism.
+pub const MAX_BLOCK_FILE_BYTES: usize = MAX_SYNC_MESSAGE_BYTES - RESPONSE_FRAMING_OVERHEAD;
 
 /// Message type tags. Unknown tags are rejected; the tag space is not
 /// extensible by convention — a new message means a version bump.
@@ -67,8 +85,9 @@ pub struct BlockRequest {
 }
 
 /// A producer's answer: the raw `.blk` file bytes for the requested
-/// sequence number. The caller MUST verify these bytes (magic, decode,
-/// `verify_block_auth`) before use — see the module docs.
+/// sequence number. The caller MUST verify these bytes — magic, strict
+/// decode, announcement-hash match, `verify_block_auth` — before use;
+/// see the module docs. Framing integrity is not content validity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockResponse {
     pub seq_no: u32,
@@ -100,7 +119,7 @@ pub enum SyncError {
     SeqNoMismatch { expected: u32, got: u32 },
     /// No block file for this sequence number.
     UnknownBlock(u32),
-    /// Block file exceeds [`MAX_SYNC_MESSAGE_BYTES`].
+    /// Block file exceeds [`MAX_BLOCK_FILE_BYTES`].
     BlockTooLarge { seq_no: u32, len: u64 },
     /// Block file could not be read.
     BlockReadFailed { seq_no: u32, reason: String },
@@ -323,8 +342,8 @@ pub fn encode_response(resp: &BlockResponse) -> Vec<u8> {
 /// Decode a [`BlockResponse`] and check it answers `expected_seq_no`.
 ///
 /// Returns the raw block bytes. The caller MUST still verify them
-/// (magic, strict decode, `verify_block_auth`) before use — framing
-/// integrity is not content validity.
+/// (magic, strict decode, announcement-hash match, `verify_block_auth`)
+/// before use — framing integrity is not content validity.
 pub fn decode_response(bytes: &[u8], expected_seq_no: u32) -> Result<Vec<u8>, SyncError> {
     let (msg_type, payload) = decode_envelope(bytes)?;
     if msg_type != MSG_RESPONSE {
@@ -376,7 +395,11 @@ impl BlockServer {
         let req = decode_request(request_bytes)?;
         let path = Path::new(&self.blocks_dir).join(block_file_name(req.seq_no));
         let metadata = std::fs::metadata(&path).map_err(|_| SyncError::UnknownBlock(req.seq_no))?;
-        if metadata.len() > MAX_SYNC_MESSAGE_BYTES as u64 {
+        // The cap is MAX_BLOCK_FILE_BYTES, not MAX_SYNC_MESSAGE_BYTES:
+        // encode_response adds 14 framing bytes, so a file between the
+        // two caps would produce a response the follower's decoder
+        // rejects with MessageTooLarge — served but never syncable.
+        if metadata.len() > MAX_BLOCK_FILE_BYTES as u64 {
             return Err(SyncError::BlockTooLarge {
                 seq_no: req.seq_no,
                 len: metadata.len(),
@@ -572,6 +595,50 @@ mod tests {
         ));
         // Garbage is not a request.
         assert!(server.handle_request(b"not a message").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn framing_overhead_arithmetic_is_exact() {
+        // The servable-file cap plus the response framing must reconstruct
+        // the decoder's message cap exactly — no off-by-one in either
+        // direction.
+        assert_eq!(
+            MAX_BLOCK_FILE_BYTES + RESPONSE_FRAMING_OVERHEAD,
+            MAX_SYNC_MESSAGE_BYTES
+        );
+    }
+
+    #[test]
+    fn server_serves_file_at_exact_cap_and_it_decodes() {
+        // Regression test for the 14-byte gap the review bots caught: a
+        // file of exactly MAX_BLOCK_FILE_BYTES must be served AND the
+        // response must decode. (Before the fix the server accepted files
+        // up to MAX_SYNC_MESSAGE_BYTES, whose responses the follower's
+        // decoder rejects with MessageTooLarge — served but never
+        // syncable.)
+        let dir = test_blocks_dir("cap-exact");
+        let body = vec![0x42u8; MAX_BLOCK_FILE_BYTES];
+        std::fs::write(dir.join("block-00000011.blk"), &body).unwrap();
+        let server = BlockServer::new(dir.clone());
+        let req = encode_request(&BlockRequest { seq_no: 11 });
+        let resp_bytes = server.handle_request(&req).unwrap();
+        let got = decode_response(&resp_bytes, 11).unwrap();
+        assert_eq!(got, body);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn server_rejects_file_one_byte_over_cap() {
+        let dir = test_blocks_dir("cap-over");
+        let body = vec![0x42u8; MAX_BLOCK_FILE_BYTES + 1];
+        std::fs::write(dir.join("block-00000012.blk"), &body).unwrap();
+        let server = BlockServer::new(dir.clone());
+        let req = encode_request(&BlockRequest { seq_no: 12 });
+        assert!(matches!(
+            server.handle_request(&req),
+            Err(SyncError::BlockTooLarge { seq_no: 12, .. })
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
