@@ -16,6 +16,17 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-09
+
+### Fixed
+
+- `onxd` did not compile at `v0.2.0`: `src/main.rs` builds a
+  `reqwest::Client` for Sentry's transport, but `reqwest` was missing from
+  `crates/node/onxd/Cargo.toml` (lost in the PR #21 merge). Added
+  `reqwest = { version = "0.13", default-features = false, features = ["rustls"] }`,
+  the same line `main` has had since #22. No other code, consensus or
+  format change.
+
 ## [0.2.0] - 2026-10-08
 
 First tagged release. Rolls up everything merged since the 0.1.0 protocol
@@ -73,5 +84,6 @@ Untagged baseline: protocol library crates (primitives, data structures,
 state model, transactions, blocks, execution/TVM, payment channels,
 consensus, sharding, economics, networking). See `ROADMAP.md` for detail.
 
-[Unreleased]: https://github.com/gokooteam/The-Open-Network-X/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/gokooteam/The-Open-Network-X/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/gokooteam/The-Open-Network-X/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/gokooteam/The-Open-Network-X/releases/tag/v0.2.0
