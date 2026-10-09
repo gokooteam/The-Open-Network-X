@@ -1,0 +1,84 @@
+name: Milestones
+
+# Mirrors MILESTONES.md into GitHub milestones, so the Milestone box in each
+# PR's sidebar shows the ONX milestone and its exit-criteria progress
+# (e.g. "M4 · 16/21 · Pay down debt: a single node you'd trust").
+#
+#  - sync: on a push to main that changes MILESTONES.md (or the code that
+#    reads it), or by hand. Creates or updates one GitHub milestone per row
+#    of MILESTONES.md's 'At a glance', closes finished ones, and sets no due
+#    dates.
+#  - assign: when a PR is opened or edited and has no milestone, sets the
+#    one its title names ("M5: …"), otherwise the current milestone.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - MILESTONES.md
+      - scripts/site.py
+      - .github/scripts/milestones.cjs
+      - .github/workflows/milestones.yml
+  workflow_dispatch:
+  # Runs the default branch's version of this file with a token that can set
+  # a milestone, also for fork PRs. It never checks out or runs PR code: it
+  # reads the PR title from the event and loads its script from main.
+  pull_request_target:  # zizmor: ignore[dangerous-triggers]
+    types: [opened, reopened, edited, ready_for_review]
+
+permissions: {}
+
+jobs:
+  sync:
+    name: Sync milestones
+    if: github.event_name != 'pull_request_target' && github.repository == 'gokooteam/The-Open-Network-X'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: milestones-sync
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read MILESTONES.md
+        run: python3 scripts/site.py milestones > "$RUNNER_TEMP/milestones.json"
+
+      - name: Update GitHub milestones
+        uses: actions/github-script@v7
+        env:
+          MILESTONES_JSON: ${{ runner.temp }}/milestones.json
+        with:
+          script: |
+            const ms = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/milestones.cjs`);
+            await ms.sync({ github, context, core });
+
+  assign:
+    name: Assign milestone
+    if: github.event_name == 'pull_request_target' && github.repository == 'gokooteam/The-Open-Network-X'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: milestones-assign-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Check out milestone script (default branch)
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Set the PR's milestone
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const ms = require(`${process.env.GITHUB_WORKSPACE}/.github/scripts/milestones.cjs`);
+            await ms.assign({ github, context, core });

@@ -33,6 +33,22 @@ On the default branch (`main`):
   | Versioning | `Version consistency` |
   | Dependency Review | `Dependency Review` |
 
+## Review consensus ruleset
+
+A second, separate ruleset,
+[`.github/rulesets/review-consensus.json`](../../.github/rulesets/review-consensus.json)
+("main: require review consensus"), requires the `Review consensus` status:
+the reviewers' merge / don't-merge verdict from the review relay
+([review-relay.md](review-relay.md)). It is separate so it can be turned
+on, or disabled in Settings → Rules → Rulesets, without touching the CI
+ruleset.
+
+The status passes on GO, on docs-only PRs, and when someone with write
+access adds the `consensus-override` label. Apply this ruleset only after
+the relay has run cleanly on a PR or two. PRs the relay never reaches
+(forks, Dependabot, a release PR whose audit can't run) don't get the
+status and need the override label to merge.
+
   Each check is pinned to the GitHub Actions app (`integration_id` 15368),
   so another app cannot satisfy it by posting a status with the same name.
 - No force-pushes to `main`, and `main` cannot be deleted.
@@ -46,8 +62,9 @@ Deliberately not required:
 
 - **Cargo Audit** and **Workflow Security**: they run only when certain
   paths change. A required check that never starts blocks the PR forever.
-- **Claude audit** and **Codex review**: they need secrets and are skipped
-  for forks; they are review aids, not gates.
+- **Claude audit** and **Codex review**: they need secrets and are
+  skipped for forks; they are review aids, not gates. The relay's verdict
+  reaches the gate only through `Review consensus`.
 - **Code Coverage**, **CodeQL**, **rust-clippy analyze**, **Scorecard**:
   reporting jobs. The tests and Clippy already gate through `Rust checks`.
 
@@ -65,9 +82,11 @@ it. Either:
 
 - run `scripts/apply-branch-protection.sh` while logged in to `gh` as a
   repo admin (it creates the ruleset, or updates it if one with the same
-  name exists), or
+  name exists). For the consensus ruleset:
+  `scripts/apply-branch-protection.sh gokooteam/The-Open-Network-X .github/rulesets/review-consensus.json`.
+  Or:
 - in GitHub: Settings → Rules → Rulesets → New ruleset → Import a ruleset,
-  and pick `.github/rulesets/main.json`.
+  and pick `.github/rulesets/main.json` (or `review-consensus.json`).
 
 Check it took effect: Settings → Rules → Rulesets should list
 "main: require CI" as Active, and a new PR's merge box should list the

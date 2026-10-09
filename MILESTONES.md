@@ -27,7 +27,12 @@ notes. This file is the forward plan and the finish line.
   the point where you promise compatibility, which is the same point where
   you stop developing and start maintaining.
 - **Tick boxes in the same PR that earns them.** If you can't link the
-  evidence, leave the box unticked.
+  evidence, leave the box unticked. Then run `python3 scripts/site.py build`
+  to update the README's milestone map (CI fails otherwise). After the
+  merge, the Milestones workflow updates the GitHub milestones (the
+  Milestone box in each PR's sidebar shows e.g. `M4 · 16/21 · …`). Edit
+  progress here, never on GitHub; the workflow overwrites it there. New PRs
+  get the milestone their title names (`M5: …`), else the current one.
 - **New ideas go to the [Parking lot](#parking-lot-post-10-or-undecided)**
   unless they block the current milestone. Most "while I'm in here" work
   belongs there.
