@@ -71,7 +71,7 @@ Her gist, verbatim in spirit: *"make GitHub actions that activate you to do each
 
 What got built instead of the spec's Actions machinery: no new workflows — the driver that already wakes every 30 minutes *is* the scheduler, and the PR event watch that already sees merges *is* the trigger. `scripts/site.py next-task` exposes the first unchecked exit criterion as JSON (single parser, no drift); GitHub issues labeled `gokoo-task` are the visible ledger, so the issue timeline records exactly when each merge happened and when the next task started; the `gokoo/<task-id>` branch is the resume token if a run dies. Claude's audit, the relay, and the consensus are untouched. Guide: `docs/guides/task-chain.md`.
 
-Her follow-up, same day: *"You need to update the milestone documents to include these specific item requests as well as making a decision recording because it is absolutely important."* So the chain and the contributor strategy went into `MILESTONES.md` as standing directives SD1–SD3 — not exit criteria, so the counters don't touch them — and the decisions got ADRs: 0046 (the chain) and 0047 (humans). Her reason, in her words: there should be a record of the thing being accomplished with her direction, the direction should be documented, and that's the only way it would be trusted.
+Her rule on what makes work trustworthy, same day: there must be a record of the thing being accomplished *with her direction* — direction documented is the only way it's trusted. That rule now binds the chain three ways: the remaining criteria are worked as one-at-a-time task issues carrying her direction on each (SD1); her prompts and decisions stay in this document (SD2); and the project prepares for human contributors without diluting her merge authority (SD3). Decisions recorded as ADR-0046 and ADR-0047.
 
 ---
 
@@ -138,6 +138,8 @@ Claude's in-PR audits (turn 1) ran on PRs #44, #45 (skip-success — it edits th
 **Strict prompt documentation (2026-10-09, Amethyst's rule):** every piece of ONX work records the prompts that orchestrated it — hers, and the models'. No more invisible orchestration. This document is the first entry. It stays current: each PR's description notes the prompts behind it, and this log grows with the project.
 
 *The relay shows what the reviewers said. This shows what she said. Both are the record.*
+
+**Editorial policy (2026-10-09, her rule):** record the direction, not the delivery. If her message includes anything embarrassing, weird, or strange, keep only what's necessary for the decision — never the whole message. And no meta-recursion: the record holds her decisions and direction, not the conversation about maintaining the record.
 
 ---
 
