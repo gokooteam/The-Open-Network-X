@@ -86,20 +86,19 @@ impl ConsensusDriver {
             .enumerate()
             .map(|(i, (pk, stake))| ValidatorSetEntry {
                 validator_id: i as u32,
-                public_key: *pk,
+                public_key: pk.clone(),
                 actual_stake: Uint64(*stake),
             })
             .collect();
-        // M6 timeouts: generous for devnet (block building itself can take
-        // seconds on big batches; the timeout is for dead leaders, not slow
-        // builders). Tune with real network measurements later.
+        // M6 timeouts: 5s proposal, 5s per vote phase. Generous for devnet;
+        // tune with real network measurements later.
         let timeouts = RoundTimeouts {
-            proposal: 60_000,
-            prevote: 60_000,
-            precommit: 60_000,
-            commit: 60_000,
+            proposal: 5_000,
+            prevote: 5_000,
+            precommit: 5_000,
+            commit: 5_000,
         };
-        let engine = ConsensusEngine::new(shard, height, entries, now, timeouts)
+        let engine = ConsensusEngine::new(shard.clone(), height, entries, now, timeouts)
             .map_err(|e| format!("consensus: engine init failed: {e}"))?;
         Ok(Self {
             engine,
@@ -107,7 +106,7 @@ impl ConsensusDriver {
             chain_id,
             own_id,
             signing_key,
-            validator_pubkeys: validators.iter().map(|(pk, _)| *pk).collect(),
+            validator_pubkeys: validators.iter().map(|(pk, _)| pk.clone()).collect(),
             blocks: BTreeMap::new(),
             header_sigs: BTreeMap::new(),
             voted: BTreeSet::new(),
@@ -124,11 +123,6 @@ impl ConsensusDriver {
     /// Current engine step (for the tick loop's decisions).
     pub fn step(&self) -> ConsensusStep {
         self.engine.step()
-    }
-
-    /// Current round (for view-change logging).
-    pub fn round(&self) -> u32 {
-        self.engine.round()
     }
 
     /// Should this node propose now? True when it is the round leader,
@@ -156,11 +150,7 @@ impl ConsensusDriver {
 
     /// Propose `block` as this round's leader. Builds the proposal,
     /// feeds it to the engine, votes PreVote, and returns the broadcast.
-    pub fn propose(
-        &mut self,
-        block: Block,
-        block_bytes: Vec<u8>,
-    ) -> Result<Vec<DriverEvent>, String> {
+    pub fn propose(&mut self, block: Block, block_bytes: Vec<u8>) -> Result<Vec<DriverEvent>, String> {
         if !self.should_propose() {
             return Err("consensus: propose called when not leader".to_string());
         }
@@ -213,34 +203,11 @@ impl ConsensusDriver {
         // a fork or a future height we cannot validate yet. (Fork-choice
         // across heights is P5; for M6, heights advance in lockstep.)
         self.blocks.insert(proposal.block_hash.0, block);
-        match self.engine.receive_proposal(proposal.clone()) {
+        match self.engine.receive_proposal(proposal) {
             Ok(()) => {}
-            Err(onx_consensus::ConsensusError::ConflictingProposal) => {
-                // EQUIVOCATION: the round leader signed two different
-                // proposals for the same height+round. This is slashable
-                // misconduct (D3: detection now, enforcement later). Log
-                // the evidence loudly and keep the first proposal — the
-                // BFT fork-choice rule is "first quorum-certified wins",
-                // and a conflicting proposal can never reach quorum
-                // without >1/3 Byzantine stake.
-                eprintln!(
-                    "consensus: EQUIVOCATION evidence: leader {} double-proposed height {} round {}: {} vs {}",
-                    proposal.proposer_id,
-                    proposal.height,
-                    proposal.round,
-                    hex::encode(proposal.block_hash.0),
-                    hex::encode(
-                        self.engine
-                            .proposal()
-                            .map(|p| p.block_hash.0)
-                            .unwrap_or([0u8; 32])
-                    ),
-                );
-                return Err(
-                    "consensus: conflicting proposal (equivocation evidence logged)".to_string(),
-                );
-            }
             Err(e) => {
+                // A conflicting proposal at the same height+round is
+                // equivocation evidence (P5). For now, refuse it loudly.
                 return Err(format!("consensus: proposal rejected: {e}"));
             }
         }
@@ -399,27 +366,6 @@ impl ConsensusDriver {
         Ok(vec![DriverEvent::Finalized { block, sig_entries }])
     }
 
-    /// Advance to the next height's engine in place. Call after handling
-    /// `Finalized`.
-    pub fn advance_height(&mut self, now: u64) -> Result<(), String> {
-        let height = self.engine.height() + 1;
-        let validators: Vec<(PublicKey, u64)> = self
-            .validator_pubkeys
-            .iter()
-            .zip(self.engine.stakes())
-            .map(|(pk, stake)| (*pk, stake))
-            .collect();
-        *self = Self::new(
-            self.chain_id,
-            self.shard,
-            height,
-            &validators,
-            self.signing_key.clone(),
-            now,
-        )?;
-        Ok(())
-    }
-
     /// The engine for the next height. Call after handling `Finalized`.
     pub fn next_height(self, now: u64) -> Result<Self, String> {
         let height = self.engine.height() + 1;
@@ -427,11 +373,11 @@ impl ConsensusDriver {
             .validator_pubkeys
             .iter()
             .zip(self.engine.stakes())
-            .map(|(pk, stake)| (*pk, stake))
+            .map(|(pk, stake)| (pk.clone(), stake))
             .collect();
         Self::new(
             self.chain_id,
-            self.shard,
+            self.shard.clone(),
             height,
             &validators,
             self.signing_key.clone(),
@@ -483,8 +429,10 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> =
-            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
+        let validators: Vec<(PublicKey, u64)> = keys
+            .iter()
+            .map(|k| (k.public_key(), 1_000_000))
+            .collect();
 
         let mut drivers: Vec<ConsensusDriver> = keys
             .into_iter()
@@ -575,8 +523,10 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> =
-            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
+        let validators: Vec<(PublicKey, u64)> = keys
+            .iter()
+            .map(|k| (k.public_key(), 1_000_000))
+            .collect();
 
         // Validator 3 is offline: only 0..=2 participate.
         let mut drivers: Vec<ConsensusDriver> = keys
@@ -590,10 +540,9 @@ mod tests {
         let mut proposal: Option<(Vec<u8>, Vec<u8>, Block)> = None;
         for e in drivers[0].propose(block.clone(), vec![]).unwrap() {
             match e {
-                DriverEvent::BroadcastProposal {
-                    proposal: p,
-                    block: b,
-                } => proposal = Some((p, b, block.clone())),
+                DriverEvent::BroadcastProposal { proposal: p, block: b } => {
+                    proposal = Some((p, b, block.clone()))
+                }
                 DriverEvent::BroadcastVote(v) => votes.push(v),
                 DriverEvent::Finalized { .. } => panic!("finalized too early"),
             }
