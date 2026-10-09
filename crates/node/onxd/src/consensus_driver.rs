@@ -213,11 +213,32 @@ impl ConsensusDriver {
         // a fork or a future height we cannot validate yet. (Fork-choice
         // across heights is P5; for M6, heights advance in lockstep.)
         self.blocks.insert(proposal.block_hash.0, block);
-        match self.engine.receive_proposal(proposal) {
+        match self.engine.receive_proposal(proposal.clone()) {
             Ok(()) => {}
+            Err(onx_consensus::ConsensusError::ConflictingProposal) => {
+                // EQUIVOCATION: the round leader signed two different
+                // proposals for the same height+round. This is slashable
+                // misconduct (D3: detection now, enforcement later). Log
+                // the evidence loudly and keep the first proposal — the
+                // BFT fork-choice rule is "first quorum-certified wins",
+                // and a conflicting proposal can never reach quorum
+                // without >1/3 Byzantine stake.
+                eprintln!(
+                    "consensus: EQUIVOCATION evidence: leader {} double-proposed height {} round {}: {} vs {}",
+                    proposal.proposer_id,
+                    proposal.height,
+                    proposal.round,
+                    hex::encode(proposal.block_hash.0),
+                    hex::encode(
+                        self.engine
+                            .proposal()
+                            .map(|p| p.block_hash.0)
+                            .unwrap_or([0u8; 32])
+                    ),
+                );
+                return Err("consensus: conflicting proposal (equivocation evidence logged)".to_string());
+            }
             Err(e) => {
-                // A conflicting proposal at the same height+round is
-                // equivocation evidence (P5). For now, refuse it loudly.
                 return Err(format!("consensus: proposal rejected: {e}"));
             }
         }
