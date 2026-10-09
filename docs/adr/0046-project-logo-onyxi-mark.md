@@ -24,15 +24,20 @@ top of `README.md`, with the primary mark featured.
 Placement:
 
 - `README.md` — both variants centered at the top, primary mark
-  featured at 220 px.
-- `site/index.html` (on-x.live) — the primary mark replaces the
-  placeholder SVG avatar, inlined as base64 (the hosts deploy only the
-  single HTML file), with a slow 36 s CSS rotation honoring
-  `prefers-reduced-motion`.
-- `explorer/index.html` (on-x-scan.com) — the primary mark replaces the
-  CSS gradient swatch in the header, inlined as base64, static.
-- Source files live at `docs/assets/onx-logo-compact.jpg` and
-  `docs/assets/onx-logo-tall.jpg`.
+  featured at 200 px as an animated, transparent GIF spinning about its
+  vertical axis; the tall variant is a transparent PNG.
+- `site/index.html` (on-x.live) — the profile avatar is the spinning
+  mark, inlined as a base64 animated WebP (190 px, ~96 KB) generated from
+  `docs/assets/onx-logo-spin.gif` (the hosts deploy only the single HTML
+  file). Visitors with `prefers-reduced-motion` get a still frame through a
+  `<picture>` source. The small marks (rail logo, feed header, post
+  avatars) are a still transparent PNG frame of the same mark.
+- `explorer/index.html` (on-x-scan.com) — the header uses the same still
+  transparent PNG frame, with no black tile behind it.
+- Source files live at `docs/assets/onx-logo-spin.gif` (primary,
+  animated) and `docs/assets/onx-logo-tall.png` (secondary). Both have
+  transparent backgrounds so they sit cleanly on GitHub's light and dark
+  themes; the earlier JPGs rendered as black boxes and were removed.
 
 ## Consequences
 
