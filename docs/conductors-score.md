@@ -141,7 +141,7 @@ Claude's in-PR audits (turn 1) ran on PRs #44, #45 (skip-success — it edits th
 
 **Why the record exists (her strategy, 2026-10-09):** if this is the way software is made now — agents building from instructions — then the record of the actual instructions that created what was made is the only way anybody is going to trust it. The prompts are the new source code; an audit that can't see them is auditing the wrong artifact.
 
-**Editorial policy (2026-10-09, her rule):** record the direction, not the delivery. If her message includes anything embarrassing, weird, or strange, keep only what's necessary for the decision — never the whole message. And no meta-recursion: the record holds her decisions and direction, not the conversation about maintaining the record.
+**Editorial policy (2026-10-09, her rule):** record the direction, not the delivery — keep only what's necessary for the decision, never the whole message. Two tiers: hard secrets (credentials, birthdays, and the like) never go in any record, full stop; everything else gets judgment — if she'd likely be embarrassed for other people to see it, trim it or leave it out. And no meta-recursion: the record holds her decisions and direction, not the conversation about maintaining the record.
 
 ---
 
