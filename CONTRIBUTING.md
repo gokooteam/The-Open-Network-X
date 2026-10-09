@@ -136,6 +136,23 @@ consensus-critical code.
   specification and the ADR trail are meant to be trustworthy audit
   artifacts; a PR that silently diverges from either breaks that.
 
+## Prompt documentation
+
+Every change to this repo was orchestrated by some prompt. Document it.
+
+- **If your change was triggered by a GitHub Action** (relay turns, bots,
+  automation), nothing extra is needed — the workflow file *is* the prompt.
+- **Otherwise, your PR description must include the exact prompt(s) given** —
+  verbatim, not paraphrased — under a `## Prompts` heading: the human's
+  words that directed the work, and any agent-to-agent briefs in the chain.
+  This applies to everyone, including contributors who aren't the maintainer.
+  If you were told "just fix it," write "just fix it."
+- **Why:** the review relay records what the models said to each other; the
+  prompt record shows what was asked of them. Together they make the
+  deliberation reproducible — and reproducible deliberation is what makes
+  this repo's review process worth trusting. See
+  `docs/conductors-score.md` for the project's own prompt history.
+
 ## Picking up work
 
 `MILESTONES.md` holds the prioritized, up-for-grabs work: each milestone's
