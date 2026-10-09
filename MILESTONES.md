@@ -422,9 +422,12 @@ under *Known bugs* below.
 **Goal:** a producer node and a follower node on different machines. The
 follower stays in sync and verifies everything itself.
 
-- [ ] An ADR records the unfreeze. `onxd` says networking is frozen "until the
+- [x] An ADR records the unfreeze. `onxd` says networking is frozen "until the
       deterministic-replay milestone passes", and that milestone has passed.
-      Record the decision rather than just deleting the guard.
+      Record the decision rather than just deleting the guard. **Done:**
+      ADR-0042 (`docs/adr/0042-networking-unfreeze.md`) records the unfreeze;
+      the freeze guard in `crates/node/onxd/src/lib.rs` is replaced with an
+      honest not-yet-implemented refusal until the M5 network loop lands.
 - [ ] `onxd` with `network_enabled = true` carries blocks between nodes over
       ADNL and the overlay layer.
 - [ ] A fresh follower syncs from genesis through peers (`onx-blocks::sync`).
