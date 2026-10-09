@@ -18,7 +18,7 @@ pub const VOTE_TAG: u32 = 0x4f58_4356; // "ONXCV" truncated
 
 fn read_u32_be(bytes: &[u8]) -> Result<(u32, &[u8]), ConsensusError> {
     if bytes.len() < 4 {
-        return Err(ConsensusError::InvalidMessage("truncated u32".into()));
+        return Err(ConsensusError::InvalidMessage("truncated u32"));
     }
     Ok((
         u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
@@ -28,7 +28,7 @@ fn read_u32_be(bytes: &[u8]) -> Result<(u32, &[u8]), ConsensusError> {
 
 fn read_u64_be(bytes: &[u8]) -> Result<(u64, &[u8]), ConsensusError> {
     if bytes.len() < 8 {
-        return Err(ConsensusError::InvalidMessage("truncated u64".into()));
+        return Err(ConsensusError::InvalidMessage("truncated u64"));
     }
     let mut b = [0u8; 8];
     b.copy_from_slice(&bytes[..8]);
@@ -37,7 +37,7 @@ fn read_u64_be(bytes: &[u8]) -> Result<(u64, &[u8]), ConsensusError> {
 
 fn read_hash(bytes: &[u8]) -> Result<(Uint256, &[u8]), ConsensusError> {
     if bytes.len() < 32 {
-        return Err(ConsensusError::InvalidMessage("truncated hash".into()));
+        return Err(ConsensusError::InvalidMessage("truncated hash"));
     }
     let mut h = [0u8; 32];
     h.copy_from_slice(&bytes[..32]);
@@ -46,7 +46,7 @@ fn read_hash(bytes: &[u8]) -> Result<(Uint256, &[u8]), ConsensusError> {
 
 fn read_sig(bytes: &[u8]) -> Result<(Signature, &[u8]), ConsensusError> {
     if bytes.len() < 64 {
-        return Err(ConsensusError::InvalidMessage("truncated signature".into()));
+        return Err(ConsensusError::InvalidMessage("truncated signature"));
     }
     let mut s = [0u8; 64];
     s.copy_from_slice(&bytes[..64]);
@@ -72,7 +72,7 @@ pub fn encode_proposal(p: &ConsensusProposal) -> Vec<u8> {
 pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError> {
     let (tag, rest) = read_u32_be(bytes)?;
     if tag != PROPOSAL_TAG {
-        return Err(ConsensusError::InvalidMessage("bad proposal tag".into()));
+        return Err(ConsensusError::InvalidMessage("bad proposal tag"));
     }
     let (height, rest) = read_u64_be(rest)?;
     let (round, rest) = read_u32_be(rest)?;
@@ -81,7 +81,7 @@ pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError
     let (signature, rest) = read_sig(rest)?;
     if !rest.is_empty() {
         return Err(ConsensusError::InvalidMessage(
-            "trailing bytes in proposal".into(),
+            "trailing bytes in proposal",
         ));
     }
     Ok(ConsensusProposal {
@@ -130,36 +130,34 @@ pub fn encode_vote(v: &ConsensusVote, header_sig: Option<&Signature>) -> Vec<u8>
 pub fn decode_vote(bytes: &[u8]) -> Result<(ConsensusVote, Option<Signature>), ConsensusError> {
     let (tag, rest) = read_u32_be(bytes)?;
     if tag != VOTE_TAG {
-        return Err(ConsensusError::InvalidMessage("bad vote tag".into()));
+        return Err(ConsensusError::InvalidMessage("bad vote tag"));
     }
     let (height, rest) = read_u64_be(rest)?;
     let (round, rest) = read_u32_be(rest)?;
     if rest.is_empty() {
-        return Err(ConsensusError::InvalidMessage("truncated phase".into()));
+        return Err(ConsensusError::InvalidMessage("truncated phase"));
     }
     let phase = match rest[0] {
         1 => VotePhase::PreVote,
         2 => VotePhase::PreCommit,
         3 => VotePhase::Commit,
-        _ => {
-            return Err(ConsensusError::InvalidMessage(
-                "unknown vote phase".into(),
-            ))
-        }
+        _ => return Err(ConsensusError::InvalidMessage("unknown vote phase")),
     };
     let rest = &rest[1..];
     let (block_hash, rest) = read_hash(rest)?;
     let (validator_id, rest) = read_u32_be(rest)?;
     let (signature, rest) = read_sig(rest)?;
     if rest.is_empty() {
-        return Err(ConsensusError::InvalidMessage("truncated header_sig flag".into()));
+        return Err(ConsensusError::InvalidMessage(
+            "truncated header_sig flag",
+        ));
     }
     let (header_sig, rest) = match rest[0] {
         0 => (None, &rest[1..]),
         1 => {
             if rest.len() < 65 {
                 return Err(ConsensusError::InvalidMessage(
-                    "truncated header signature".into(),
+                    "truncated header signature",
                 ));
             }
             let sig = Signature::decode_exact(&rest[1..65])
@@ -169,20 +167,16 @@ pub fn decode_vote(bytes: &[u8]) -> Result<(ConsensusVote, Option<Signature>), C
             // malformed sender cannot smuggle bytes through.
             if phase != VotePhase::Commit {
                 return Err(ConsensusError::InvalidMessage(
-                    "header sig on non-commit vote".into(),
+                    "header sig on non-commit vote",
                 ));
             }
             (Some(sig), &rest[65..])
         }
-        _ => {
-            return Err(ConsensusError::InvalidMessage(
-                "bad header_sig flag".into(),
-            ))
-        }
+        _ => return Err(ConsensusError::InvalidMessage("bad header_sig flag")),
     };
     if !rest.is_empty() {
         return Err(ConsensusError::InvalidMessage(
-            "trailing bytes in vote".into(),
+            "trailing bytes in vote",
         ));
     }
     Ok((

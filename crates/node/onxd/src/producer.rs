@@ -436,8 +436,26 @@ pub fn run_producer_loop(
 
     let mut stats = ProducerStats::default();
 
+    // BFT consensus driver (M6): one per chain height, recreated after
+    // each finalized block. Built from the genesis validator set and this
+    // node's signing key (already validated as a member at startup).
+    let mut driver = build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap())
+        .map_err(|e| format!("producer: consensus driver init failed: {e}"))?;
+    // Consensus message queues. P4: the network task drains `outbound`
+    // (broadcast) and feeds `inbound`; until then they loop locally.
+    let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
+    let mut outbound: Vec<crate::consensus_driver::DriverEvent> = Vec::new();
+
     while !shutdown.load(Ordering::Relaxed) {
-        match run_tick(&store, &mut mempool, &cfg, &mut stats) {
+        match run_tick(
+            &store,
+            &mut mempool,
+            &cfg,
+            &mut stats,
+            &mut driver,
+            &mut inbound,
+            &mut outbound,
+        ) {
             Ok(produced) => {
                 if produced {
                     // Block committed.
@@ -453,12 +471,66 @@ pub fn run_producer_loop(
                 eprintln!("producer: tick failed, retrying next tick: {e}");
             }
         }
+        // P4 stub: loop outbound broadcasts back locally so a single
+        // validator's self-votes flow through the driver. The network task
+        // will replace this with real peer broadcast.
+        for event in outbound.drain(..) {
+            match event {
+                crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
+                    inbound.push(InboundConsensusMsg::Vote(v));
+                }
+                crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
+                    inbound.push(InboundConsensusMsg::Proposal(proposal, block));
+                }
+                crate::consensus_driver::DriverEvent::Finalized { .. } => {
+                    // Handled inside run_tick; never re-queued.
+                }
+            }
+        }
         if let Some(t) = &cfg.telemetry {
             t.set_tx_pool_size(mempool.len() as i64);
         }
         std::thread::sleep(cfg.poll_interval);
     }
     Ok(stats)
+}
+
+/// Build the consensus driver for the next uncommitted height.
+fn build_consensus_driver(
+    store: &ChainStore,
+    signing_key: &onx_primitives::SecretKey,
+) -> Result<crate::consensus_driver::ConsensusDriver, String> {
+    let state: State = store
+        .load_state()
+        .map_err(|e| format!("consensus: load_state failed: {e}"))?
+        .ok_or_else(|| "consensus: no state (genesis not initialized)".to_string())?;
+    let doc = store
+        .genesis_document()
+        .map_err(|e| format!("consensus: cannot load genesis: {e}"))?
+        .ok_or_else(|| "consensus: no genesis in store".to_string())?;
+    let mut validators: Vec<(onx_primitives::PublicKey, u64)> = doc
+        .validators
+        .iter()
+        .map(|v| {
+            let pk = onx_primitives::PublicKey::decode_exact(&v.pubkey)
+                .map_err(|e| format!("consensus: bad genesis pubkey: {e}"))?;
+            Ok((pk, v.stake))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // Canonical pubkey-sorted order: validator_id is the position.
+    validators.sort_by(|a, b| a.0.encode().cmp(&b.0.encode()));
+    let shard = onx_data_structures::ShardIdent {
+        workchain_id: onx_data_structures::WorkchainIdent(onx_primitives::Int32(-1)),
+        shard_prefix_ident: onx_primitives::Uint64(onx_data_structures::ShardIdent::ROOT_PREFIX),
+    };
+    crate::consensus_driver::ConsensusDriver::new(
+        state.chain_id,
+        shard,
+        state.seqno as u64 + 1,
+        &validators,
+        signing_key.clone(),
+        wall_clock_ms(),
+    )
 }
 
 #[derive(Debug)]
@@ -470,12 +542,43 @@ enum TickError {
 }
 
 /// One production tick. Returns Ok(true) if a block was committed.
+/// Inbound consensus message from the network (P4 transport fills this).
+#[derive(Debug)]
+pub enum InboundConsensusMsg {
+    /// Proposal wire bytes + block file bytes (unsigned).
+    Proposal(Vec<u8>, Vec<u8>),
+    /// Vote wire bytes.
+    Vote(Vec<u8>),
+}
+
+/// Wall-clock milliseconds for consensus timeouts. Only drives view
+/// changes; never touches consensus-critical ordering (logical time
+/// still rules block production).
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// One production tick, BFT-driven (M6). Returns Ok(true) if a block was
+/// committed.
+///
+/// Flow: drive the consensus engine (timeouts, inbound messages), propose
+/// when this node leads the round, and commit when the engine finalizes.
+/// A single validator finalizes alone (1/1 >= 2/3), so the old
+/// propose-sign-commit path is the degenerate one-validator case of this.
 fn run_tick(
     store: &ChainStore,
     mempool: &mut Mempool,
     cfg: &ProducerConfig,
     stats: &mut ProducerStats,
+    driver: &mut crate::consensus_driver::ConsensusDriver,
+    inbound: &mut Vec<InboundConsensusMsg>,
+    outbound: &mut Vec<crate::consensus_driver::DriverEvent>,
 ) -> Result<bool, TickError> {
+    use crate::consensus_driver::DriverEvent;
+
     // 1. Intake: sweep the drop directory.
     let intake = mempool
         .scan_drop_dir(&cfg.tx_pool_dir, store)
@@ -490,26 +593,136 @@ fn run_tick(
             TickError::Fatal("producer: no state (genesis not initialized)".to_string())
         })?;
 
-    // 3. Deterministic candidate selection against this exact state.
-    let candidates = mempool
-        .select_candidates(&state)
-        .map_err(TickError::Fatal)?;
-    if candidates.is_empty() {
-        return Ok(false);
+    // 3. Drive consensus timeouts (view changes).
+    if driver.on_tick(wall_clock_ms()) {
+        eprintln!("consensus: view change, now round {}", driver.round());
     }
 
-    // 4. Logical time: strictly increasing, never wall-clock.
-    let lt = state
-        .last_lt
-        .checked_add(1)
-        .ok_or_else(|| TickError::Fatal("producer: logical time overflow".to_string()))?;
+    // 4. Inbound consensus messages from the network.
+    for msg in inbound.drain(..) {
+        let events = match msg {
+            InboundConsensusMsg::Proposal(p, b) => driver
+                .receive_proposal(&p, &b, |bytes| {
+                    onx::blockfile::decode_block_file(bytes)
+                        .map(|sb| sb.block)
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(TickError::Retryable)?,
+            InboundConsensusMsg::Vote(v) => {
+                driver.receive_vote(&v).map_err(TickError::Retryable)?
+            }
+        };
+        outbound.extend(events);
+    }
 
-    // 5. Honest producer path: dry-run through the same apply as validation.
-    // propose_robust drops ONLY messages the STF actually rejects (never
-    // the whole set) if the filtered candidates unexpectedly fail.
-    //
-    // Parent block_time for the monotonicity clamp: genesis (block 1's
-    // parent) has block_time 0; otherwise read the committed parent header.
+    // 5. Propose when this node leads the round and has transactions.
+    // (Block building is the existing honest-producer path; the driver
+    // only decides WHEN to propose, then carries the BFT round.)
+    if driver.should_propose() {
+        // Deterministic candidate selection against this exact state.
+        let candidates = mempool
+            .select_candidates(&state)
+            .map_err(TickError::Fatal)?;
+        if !candidates.is_empty() {
+            // Logical time: strictly increasing, never wall-clock.
+            let lt = state
+                .last_lt
+                .checked_add(1)
+                .ok_or_else(|| TickError::Fatal("producer: logical time overflow".to_string()))?;
+            // Parent block_time for the monotonicity clamp.
+            let parent_block_time = if state.seqno == 0 {
+                0
+            } else {
+                let parent_hash = store
+                    .block_hash_for_seqno(state.seqno)
+                    .map_err(|e| {
+                        TickError::Fatal(format!("producer: parent hash lookup failed: {e}"))
+                    })?
+                    .ok_or_else(|| {
+                        TickError::Fatal(format!(
+                            "producer: parent block {} not committed",
+                            state.seqno
+                        ))
+                    })?;
+                store
+                    .get_block_header(&parent_hash)
+                    .map_err(|e| {
+                        TickError::Fatal(format!("producer: parent header lookup failed: {e}"))
+                    })?
+                    .ok_or_else(|| {
+                        TickError::Fatal(format!(
+                            "producer: parent block {} header missing",
+                            state.seqno
+                        ))
+                    })?
+                    .block_time
+            };
+            let validators = canonical_validators(store)?;
+            let max_sig_section_bytes = producer_sig_section_bytes(validators.len());
+            if let Some(block) = propose_robust(
+                &state,
+                candidates,
+                lt,
+                cfg.fee_collector,
+                parent_block_time,
+                max_sig_section_bytes,
+                mempool,
+                stats,
+            )? {
+                let block_bytes = onx::blockfile::encode_block_file(&block, &[]);
+                let events = driver
+                    .propose(block, block_bytes)
+                    .map_err(TickError::Retryable)?;
+                outbound.extend(events);
+            }
+            // (If propose_robust returned None, everything was dropped;
+            // idle tick — the next round will retry.)
+        }
+    }
+
+    // 6. Handle driver events: broadcasts go to the network queue;
+    // finalization commits the block with its quorum signatures.
+    let mut committed = false;
+    let mut pending_outbound: Vec<DriverEvent> = Vec::new();
+    std::mem::swap(outbound, &mut pending_outbound);
+    for event in pending_outbound {
+        match event {
+            DriverEvent::BroadcastProposal { .. } | DriverEvent::BroadcastVote(_) => {
+                // P4: the network task drains `outbound`. For now, re-queue.
+                outbound.push(event);
+            }
+            DriverEvent::Finalized { block, sig_entries } => {
+                commit_finalized_block(store, mempool, cfg, stats, &state, block, &sig_entries)?;
+                committed = true;
+            }
+        }
+    }
+    if committed {
+        // Advance to the next height's engine.
+        driver
+            .advance_height(wall_clock_ms())
+            .map_err(TickError::Fatal)?;
+    }
+    Ok(committed)
+}
+
+/// Commit a BFT-finalized block: self-verify the quorum signatures, then
+/// the existing atomic commit path (store txn + block file + mempool).
+///
+/// PANIC POLICY (ADR-0029): as in the old direct path, `commit_block`
+/// panics propagate and halt the node — a broken executor must not keep
+/// running and diverge.
+#[allow(clippy::too_many_arguments)]
+fn commit_finalized_block(
+    store: &ChainStore,
+    mempool: &mut Mempool,
+    cfg: &ProducerConfig,
+    stats: &mut ProducerStats,
+    state: &State,
+    block: Block,
+    sig_entries: &[SigEntry],
+) -> Result<(), TickError> {
+    let validators = canonical_validators(store)?;
     let parent_block_time = if state.seqno == 0 {
         0
     } else {
@@ -533,84 +746,39 @@ fn run_tick(
             })?
             .block_time
     };
-    // Canonical validator set, loaded once: needed for signing (the
-    // signer's index in `sign_block`) and self-verification below. The
-    // sig-section budget covers the whole genesis set (M6):
-    // `producer_sig_section_bytes(validators.len())`, not per-quorum.
-    let validators = canonical_validators(store)?;
-    let max_sig_section_bytes = producer_sig_section_bytes(validators.len());
-    let block = match propose_robust(
-        &state,
-        candidates,
-        lt,
-        cfg.fee_collector,
-        parent_block_time,
-        max_sig_section_bytes,
-        mempool,
-        stats,
-    )? {
-        Some(block) => block,
-        None => return Ok(false), // everything was dropped; idle tick
-    };
-
-    // 6. Atomic commit: STF re-validation + state/body/index/head in one txn.
-    //
-    // PANIC POLICY (ADR-0029): this call is deliberately NOT wrapped in
-    // catch_unwind. A panic inside commit_block/apply_block — real block
-    // application — means this node's own execution is broken; it
-    // propagates and halts the node. Mapping it to "invalid block" or
-    // bouncing the message would let a broken node keep running and
-    // silently diverge from honest nodes.
-    //
-    // ONXBLK05: sign the block (if a signing key is configured), then
-    // commit block+signatures atomically (TRAP 2).
-    let sig_entries = sign_block(
-        &block,
-        &state.chain_id,
-        cfg.signing_key.as_ref(),
-        &validators,
-    )
-    .map_err(|e| TickError::Fatal(format!("producer: signing failed: {e}")))?;
-    // Self-verification (audit blocker 2): run the same acceptance check
-    // every verifier runs, BEFORE committing. A block we produced must
-    // never be one our own verifier rejects — fail the tick loudly
-    // instead of committing a block replay would refuse.
+    // Self-verification: the quorum signatures must pass the same check
+    // every verifier runs, BEFORE committing.
     onx::auth::verify_block_auth(
         &state.chain_id,
         &block.header,
         parent_block_time,
-        &sig_entries,
+        sig_entries,
         &validators,
     )
     .map_err(|e| TickError::Fatal(format!("producer: self-verification failed: {e}")))?;
     store
-        .commit_block(&state, &block, &sig_entries)
+        .commit_block(state, &block, sig_entries)
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
-
-    // 7. Emit the canonical block file (feeds `onx replay` directly),
-    // atomically: a crash mid-write must never leave a torn `.blk` file.
     atomic_write_block_file(
         &cfg.blocks_dir,
         block.header.seqno,
-        &encode_block_file(&block, &sig_entries),
+        &encode_block_file(&block, sig_entries),
     )
     .map_err(TickError::Fatal)?;
-
-    // 8. Remove committed transactions from the mempool.
     mempool.remove_committed(&block.body.messages);
-
     stats.blocks_produced += 1;
     stats.msgs_committed += block.body.messages.len() as u64;
     if let Some(t) = &cfg.telemetry {
         t.set_block_height(block.header.seqno as i64);
     }
     eprintln!(
-        "producer: committed block seqno={} msgs={} root={}",
+        "producer: committed block seqno={} msgs={} root={} sigs={}",
         block.header.seqno,
         block.body.messages.len(),
-        hex::encode(block.header.state_root)
+        hex::encode(block.header.state_root),
+        sig_entries.len(),
     );
-    Ok(true)
+    Ok(())
 }
 
 /// Build a block from candidates, dropping ONLY messages the STF rejects
@@ -1028,6 +1196,50 @@ fn find_first_panicking_prefix(
     })
 }
 
+/// Test helper: run BFT ticks with local loopback until a block commits
+/// (single-validator net) or max_ticks elapse.
+#[cfg(test)]
+fn run_bft_ticks(
+    store: &ChainStore,
+    mempool: &mut Mempool,
+    cfg: &ProducerConfig,
+    stats: &mut ProducerStats,
+    driver: &mut crate::consensus_driver::ConsensusDriver,
+    max_ticks: usize,
+) -> bool {
+    use crate::consensus_driver::DriverEvent;
+    let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
+    let mut outbound: Vec<DriverEvent> = Vec::new();
+    for _ in 0..max_ticks {
+        let committed = run_tick(
+            store,
+            mempool,
+            cfg,
+            stats,
+            driver,
+            &mut inbound,
+            &mut outbound,
+        )
+        .unwrap();
+        if committed {
+            return true;
+        }
+        for event in outbound.drain(..) {
+            match event {
+                DriverEvent::BroadcastVote(v) => inbound.push(InboundConsensusMsg::Vote(v)),
+                DriverEvent::BroadcastProposal { proposal, block } => {
+                    inbound.push(InboundConsensusMsg::Proposal(proposal, block))
+                }
+                DriverEvent::Finalized { .. } => {}
+            }
+        }
+        if inbound.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1401,7 +1613,18 @@ mod tests {
 
         // Tick 1: the trim fires — a block commits with the fitting prefix
         // and the tail stays held in the mempool.
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         let hash1 = store.block_hash_for_seqno(1).unwrap().unwrap();
         let header1 = store.get_block_header(&hash1).unwrap().unwrap();
         let body1 = store.get_block_body(&hash1).unwrap().unwrap();
@@ -1438,7 +1661,18 @@ mod tests {
         );
 
         // Tick 2: the held tail commits. Everything lands, nothing rejected.
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.blocks_produced, 2);
         assert_eq!(stats.txs_rejected, 0);
         assert!(mempool.is_empty());
@@ -1603,11 +1837,33 @@ mod tests {
         let mut mempool = Mempool::new(&tx_pool_dir, 1000, state.chain_id, fee_collector).unwrap();
         let mut stats = ProducerStats::default();
 
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.msgs_committed, 10, "ten calls fit under the cap");
         assert_eq!(mempool.len(), 2, "the other two are held, not dropped");
 
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.blocks_produced, 2);
         assert_eq!(stats.msgs_committed, 12, "every call is committed");
         assert_eq!(stats.txs_rejected, 0);
