@@ -353,11 +353,19 @@ under *Known bugs* below.
       `WrongChainId`.
 
 *CI you can rely on*
-- [ ] Require CI to pass before merging (branch protection). CI runs only on
+- [x] Require CI to pass before merging (branch protection). CI runs only on
       PRs and pushes to `main`, and a run takes about 7–8 minutes. These PRs
       were merged within about a minute of being opened, so their CI could
       not have finished: #2, #5, #7, #9, #17, #18, #20, #23. #28 and #29
       were merged after their own `Fuzz` run had already failed.
+      **Done:** the ruleset "main: require CI" (#34's
+      `.github/rulesets/main.json`) was imported and set to *Active* on
+      2026-10-09. It targets the default branch, has an empty bypass list,
+      requires a pull request, blocks force pushes and deletion, and requires
+      the 13 checks with branches up to date. Evidence: ruleset
+      [24761947](https://github.com/gokooteam/The-Open-Network-X/rules/24761947);
+      `GET /repos/gokooteam/The-Open-Network-X/rules/branches/main` returns
+      those rules, and its fields match `main.json`.
 - [ ] Get `main` green and keep it green. Before `d907e2c`, 6 of the 7 most
       recent completed CI runs on `main` failed (runs #40–#55). Target: the
       last 10 merges to `main` are green on every required workflow
