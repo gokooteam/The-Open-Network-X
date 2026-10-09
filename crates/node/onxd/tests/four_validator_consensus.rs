@@ -96,9 +96,7 @@ fn four_validators_finalize_same_block() {
         shutdowns.push(shutdown.clone());
         stores.push(node_dir.join("db"));
 
-        let handle = std::thread::spawn(move || {
-            run_producer_loop(store, mempool, cfg, shutdown)
-        });
+        let handle = std::thread::spawn(move || run_producer_loop(store, mempool, cfg, shutdown));
         handles.push(handle);
     }
 
@@ -134,10 +132,10 @@ fn four_validators_finalize_same_block() {
             [0u8; 32],
             &funder_secret,
         );
-        let tx_path = root.join(format!("node{i}")).join("txpool").join(format!(
-            "{}.msg",
-            hex::encode(msg.hash())
-        ));
+        let tx_path = root
+            .join(format!("node{i}"))
+            .join("txpool")
+            .join(format!("{}.msg", hex::encode(msg.hash())));
         std::fs::write(&tx_path, msg.to_bytes()).unwrap();
     }
 

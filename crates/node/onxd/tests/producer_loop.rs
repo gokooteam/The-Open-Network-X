@@ -229,6 +229,8 @@ impl Harness {
             // The test genesis declares test_secret(0x11) as its validator;
             // the producer refuses to start without a signing key.
             signing_key: Some(test_secret(0x11)),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         }
     }
 

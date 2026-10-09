@@ -317,7 +317,6 @@ pub fn load_config(path: impl AsRef<Path>) -> Result<OnxdConfig, String> {
     })
 }
 
-
 fn parse_consensus_addrs(
     bind: &Option<String>,
     peers: &[String],
