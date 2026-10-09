@@ -418,6 +418,12 @@ under *Known bugs* below.
       vulnerability".
 - [ ] Publish the GitHub Release for `v0.2.0`. The tag exists and
       `release.yml` creates a *draft*, but no published release exists yet.
+      **Found 2026-10-09:** `onxd` does not compile at `v0.2.0` (`E0433`,
+      `reqwest` missing from `crates/node/onxd/Cargo.toml`; lost in the #21
+      merge, restored on `main` by #22). So `v0.2.0` will not be published
+      as is. Instead, `release/v0.2.x` (`31b3407`) carries only that line
+      plus the bump to `0.2.1`, and this box is satisfied by the published
+      `v0.2.1` release, with a note that `v0.2.0` does not build.
 - [ ] Tag `v0.3.0` through the Version Bump workflow.
 
 ### M5 — Networking: nodes find each other and stay in sync (`0.4.0`)
