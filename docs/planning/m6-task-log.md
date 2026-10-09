@@ -64,3 +64,12 @@ on the final PR provide the review.
   tag-prefixed codec; commit votes carry the validator's header
   signature at the transport layer (engine untouched); 16 tests green.
   Design decision 6 recorded above. Next: P3 engine driver in onxd.
+- 2026-10-09: P3 (driver) done — crates/node/onxd/src/consensus_driver.rs:
+  owns ConsensusEngine per height, emits broadcast/finalize events,
+  buffers out-of-order votes, assembles SigEntries from commit-vote
+  header sigs. Engine gained height()/proposal()/stakes() accessors.
+  Tests: 4-validator full round finalizes (quorum sigs); 3-of-4 with
+  one offline still finalizes. 16/16 onxd lib tests green.
+  REMAINING: tick-loop integration (driver in run_tick), RLDP transport
+  for proposal/vote broadcast (P4), fork-choice rule (P5), multinode
+  integration test (P6).
