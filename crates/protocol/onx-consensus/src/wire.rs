@@ -94,9 +94,15 @@ pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError
 }
 
 /// Encode a vote: tag | height u64 | round u32 | phase u8 | block_hash 32B |
-/// validator_id u32 | signature 64B.
-pub fn encode_vote(v: &ConsensusVote) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 8 + 4 + 1 + 32 + 4 + 64);
+/// validator_id u32 | signature 64B | header_sig flag u8 | header_sig 64B?
+///
+/// The trailing header signature is present only on Commit votes (M6): it
+/// is the validator's signature over the block header it validated, so a
+/// finalized block's commit quorum doubles as its multi-signature section.
+/// The engine never sees it — the driver attaches it on send and strips it
+/// on receipt, verifying it against the locally validated block header.
+pub fn encode_vote(v: &ConsensusVote, header_sig: Option<&Signature>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(4 + 8 + 4 + 1 + 32 + 4 + 64 + 1 + 64);
     out.extend_from_slice(&VOTE_TAG.to_be_bytes());
     out.extend_from_slice(&v.height.to_be_bytes());
     out.extend_from_slice(&v.round.to_be_bytes());
@@ -108,11 +114,20 @@ pub fn encode_vote(v: &ConsensusVote) -> Vec<u8> {
     out.extend_from_slice(&v.block_hash.0);
     out.extend_from_slice(&v.validator_id.to_be_bytes());
     out.extend_from_slice(&v.signature.encode());
+    match header_sig {
+        Some(sig) => {
+            out.push(1);
+            out.extend_from_slice(&sig.encode());
+        }
+        None => out.push(0),
+    }
     out
 }
 
-/// Decode a vote. Rejects wrong tags, unknown phases, trailing bytes.
-pub fn decode_vote(bytes: &[u8]) -> Result<ConsensusVote, ConsensusError> {
+/// Decode a vote, returning the engine vote and the optional header
+/// signature. Rejects wrong tags, unknown phases, trailing bytes, and a
+/// header signature on a non-Commit vote.
+pub fn decode_vote(bytes: &[u8]) -> Result<(ConsensusVote, Option<Signature>), ConsensusError> {
     let (tag, rest) = read_u32_be(bytes)?;
     if tag != VOTE_TAG {
         return Err(ConsensusError::InvalidMessage("bad vote tag".into()));
@@ -136,19 +151,51 @@ pub fn decode_vote(bytes: &[u8]) -> Result<ConsensusVote, ConsensusError> {
     let (block_hash, rest) = read_hash(rest)?;
     let (validator_id, rest) = read_u32_be(rest)?;
     let (signature, rest) = read_sig(rest)?;
+    if rest.is_empty() {
+        return Err(ConsensusError::InvalidMessage("truncated header_sig flag".into()));
+    }
+    let (header_sig, rest) = match rest[0] {
+        0 => (None, &rest[1..]),
+        1 => {
+            if rest.len() < 65 {
+                return Err(ConsensusError::InvalidMessage(
+                    "truncated header signature".into(),
+                ));
+            }
+            let sig = Signature::decode_exact(&rest[1..65])
+                .map_err(|_| ConsensusError::InvalidMessage("bad header sig encoding"))?;
+            // A header signature is only meaningful on a Commit vote: it
+            // attests to the finalized block. Refuse it elsewhere so a
+            // malformed sender cannot smuggle bytes through.
+            if phase != VotePhase::Commit {
+                return Err(ConsensusError::InvalidMessage(
+                    "header sig on non-commit vote".into(),
+                ));
+            }
+            (Some(sig), &rest[65..])
+        }
+        _ => {
+            return Err(ConsensusError::InvalidMessage(
+                "bad header_sig flag".into(),
+            ))
+        }
+    };
     if !rest.is_empty() {
         return Err(ConsensusError::InvalidMessage(
             "trailing bytes in vote".into(),
         ));
     }
-    Ok(ConsensusVote {
-        height,
-        round,
-        phase,
-        block_hash,
-        validator_id,
-        signature,
-    })
+    Ok((
+        ConsensusVote {
+            height,
+            round,
+            phase,
+            block_hash,
+            validator_id,
+            signature,
+        },
+        header_sig,
+    ))
 }
 
 #[cfg(test)]
@@ -186,8 +233,27 @@ mod tests {
     #[test]
     fn vote_roundtrip() {
         let v = sample_vote();
-        let rt = decode_vote(&encode_vote(&v)).expect("decodes");
+        let (rt, hs) = decode_vote(&encode_vote(&v, None)).expect("decodes");
         assert_eq!(rt, v);
+        assert!(hs.is_none());
+    }
+
+    #[test]
+    fn vote_roundtrip_with_header_sig() {
+        let mut v = sample_vote();
+        v.phase = VotePhase::Commit;
+        let hs = Signature::decode_exact(&[0xaa; 64]).unwrap();
+        let (rt, rt_hs) = decode_vote(&encode_vote(&v, Some(&hs))).expect("decodes");
+        assert_eq!(rt, v);
+        assert_eq!(rt_hs.unwrap().encode(), hs.encode());
+    }
+
+    #[test]
+    fn header_sig_on_prevote_rejected() {
+        let mut v = sample_vote();
+        v.phase = VotePhase::PreVote;
+        let hs = Signature::decode_exact(&[0xaa; 64]).unwrap();
+        assert!(decode_vote(&encode_vote(&v, Some(&hs))).is_err());
     }
 
     #[test]
@@ -195,7 +261,7 @@ mod tests {
         let mut bad = encode_proposal(&sample_proposal());
         bad[0] ^= 0xff;
         assert!(decode_proposal(&bad).is_err());
-        let mut bad = encode_vote(&sample_vote());
+        let mut bad = encode_vote(&sample_vote(), None);
         bad[0] ^= 0xff;
         assert!(decode_vote(&bad).is_err());
     }
@@ -209,7 +275,7 @@ mod tests {
 
     #[test]
     fn unknown_phase_rejected() {
-        let mut bad = encode_vote(&sample_vote());
+        let mut bad = encode_vote(&sample_vote(), None);
         // phase byte is at offset 4 + 8 + 4 = 16
         bad[16] = 0x09;
         assert!(decode_vote(&bad).is_err());
@@ -217,7 +283,7 @@ mod tests {
 
     #[test]
     fn truncated_rejected() {
-        let enc = encode_vote(&sample_vote());
+        let enc = encode_vote(&sample_vote(), None);
         for len in [0, 3, 16, 50] {
             assert!(decode_vote(&enc[..len]).is_err(), "len {len}");
         }
