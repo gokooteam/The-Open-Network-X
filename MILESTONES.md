@@ -48,9 +48,9 @@ notes. This file is the forward plan and the finish line.
 | M1 | Deterministic replay | in 0.2.0 | ✅ Done 2026-10-05 |
 | M2 | Single-node chain: TVM, message model, hardening | in 0.2.0 | ✅ Done 2026-10-07 |
 | M3 | Authenticated blocks, devnet-1, release engineering | `v0.2.0` tag | ✅ Done 2026-10-08 |
-| **M4** | **Pay down debt: a single node you'd trust** | **0.3.0** | **⏭ Next** |
+| **M4** | **Pay down debt: a single node you'd trust** | **0.3.0** | ✅ Done 2026-10-09 |
 | M5 | Networking: nodes find each other and stay in sync | 0.4.0 | ✅ Done 2026-10-09 |
-| M6 | Consensus: more than one validator | 0.5.0 | Planned |
+| M6 | Consensus: more than one validator | 0.5.0 | ⏭ Next |
 | M7 | A public testnet other people can use | 0.6.0 – 0.9.x | Planned |
 | M8 | **Maintenance gate: stop developing, start maintaining** | **1.0.0** | Finish line |
 | — | Sharding, payment channels, multiple workchains | 2.x | Parked: [decision D1](#decisions-only-the-owner-can-make) |
@@ -426,7 +426,14 @@ under *Known bugs* below.
       slim spec from `8284e3c`) + version bump to 0.2.1. `release.yml` built,
       tested, and drafted it; the release is published:
       https://github.com/gokooteam/The-Open-Network-X/releases/tag/v0.2.1
-- [ ] Tag `v0.3.0` through the Version Bump workflow.
+- [x] Tag `v0.3.0` through the Version Bump workflow. **Done 2026-10-09:**
+      release PR #51 (`release/v0.3.0`) merged 12:32:03Z; tag `v0.3.0`
+      points at the merge commit `0ea6940a` and the draft release
+      (id 407901114) was created by github-actions[bot] at merge time —
+      the designed flow. One wrinkle: `versioning.yml`'s tag job skipped
+      because the tag already existed when it ran; the outcome is the
+      same (tag + draft at the right commit), so no re-run. Draft remains
+      unpublished — publish is a maintainer call.
 
 ### M5 — Networking: nodes find each other and stay in sync (`0.4.0`)
 
