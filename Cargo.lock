@@ -1391,7 +1391,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "onx"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "clap",
  "hex",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "onx-blocks"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1415,7 +1415,7 @@ dependencies = [
 
 [[package]]
 name = "onx-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bip39",
  "clap",
@@ -1428,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "onx-consensus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1437,7 +1437,7 @@ dependencies = [
 
 [[package]]
 name = "onx-data-structures"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-primitives",
@@ -1445,14 +1445,14 @@ dependencies = [
 
 [[package]]
 name = "onx-economics"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
 ]
 
 [[package]]
 name = "onx-execution"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-consensus",
@@ -1464,7 +1464,7 @@ dependencies = [
 
 [[package]]
 name = "onx-genesis"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "onx-data-structures",
  "onx-primitives",
@@ -1475,7 +1475,7 @@ dependencies = [
 
 [[package]]
 name = "onx-networking"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes",
  "ctr",
@@ -1490,7 +1490,7 @@ dependencies = [
 
 [[package]]
 name = "onx-payment-channels"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1502,7 +1502,7 @@ dependencies = [
 
 [[package]]
 name = "onx-primitives"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "onx-rpc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "axum",
  "onx-state-model",
@@ -1524,7 +1524,7 @@ dependencies = [
 
 [[package]]
 name = "onx-sharding"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1534,7 +1534,7 @@ dependencies = [
 
 [[package]]
 name = "onx-state-model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1544,7 +1544,7 @@ dependencies = [
 
 [[package]]
 name = "onx-stf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "onx-data-structures",
  "onx-economics",
@@ -1555,7 +1555,7 @@ dependencies = [
 
 [[package]]
 name = "onx-storage"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "onx-data-structures",
  "onx-primitives",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "onx-system-contracts"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-consensus",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "onx-telemetry"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "assert_cmd",
  "prometheus",
@@ -1584,7 +1584,7 @@ dependencies = [
 
 [[package]]
 name = "onx-transactions"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "onx-data-structures",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "onxd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "libc",
