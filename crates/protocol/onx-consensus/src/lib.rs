@@ -22,6 +22,7 @@ pub enum ConsensusError {
     InvalidRound,
     InvalidStep,
     ConflictingProposal,
+    InvalidMessage(&'static str),
 }
 
 impl fmt::Display for ConsensusError {
@@ -62,18 +63,21 @@ impl fmt::Display for ConsensusError {
             Self::ConflictingProposal => {
                 write!(f, "A different block was proposed for the active round")
             }
+            Self::InvalidMessage(what) => write!(f, "Invalid consensus wire message: {what}"),
         }
     }
 }
 
 pub mod election;
 pub mod engine;
+pub mod wire;
 
 pub use election::{run_election, ElectionConfig, ElectionResult, StakeRefund};
 pub use engine::{
     proposal_signing_bytes, vote_signing_bytes, ConsensusEngine, ConsensusProposal, ConsensusStep,
     ConsensusVote, FinalizedBlock, RoundTimeouts, VotePhase,
 };
+pub use wire::{decode_proposal, decode_vote, encode_proposal, encode_vote, PROPOSAL_TAG, VOTE_TAG};
 
 impl std::error::Error for ConsensusError {}
 

@@ -534,12 +534,11 @@ fn run_tick(
             .block_time
     };
     // Canonical validator set, loaded once: needed for signing (the
-    // signer's index in `sign_block`) and self-verification below. Its
-    // size no longer feeds the block-size check: the producer writes
-    // exactly one signature, so the sig-section budget is
-    // `producer_sig_section_bytes()`, not per-validator (ADR-0045).
+    // signer's index in `sign_block`) and self-verification below. The
+    // sig-section budget covers the whole genesis set (M6):
+    // `producer_sig_section_bytes(validators.len())`, not per-quorum.
     let validators = canonical_validators(store)?;
-    let max_sig_section_bytes = producer_sig_section_bytes();
+    let max_sig_section_bytes = producer_sig_section_bytes(validators.len());
     let block = match propose_robust(
         &state,
         candidates,
@@ -645,11 +644,14 @@ fn run_tick(
 /// `MAX_BLOCK_FILE_BYTES`, so `largest_fitting_prefix` returned zero
 /// and the producer halted on a `Fatal` tick error — even though the
 /// block it would have written carried exactly one 68-byte signature
-/// (devin 🟡 review on PR #47). Revisit when multi-validator quorum
-/// signing lands (M6): the budget must then cover however many
-/// signatures the producer attaches.
-fn producer_sig_section_bytes() -> usize {
-    4usize.saturating_add(SIG_ENTRY_BYTE_LEN)
+/// Worst-case signature-section size: `4 + N·68` for the N validators in the
+/// genesis set (M6). The producer budgets for every genesis validator
+/// signing, not just the quorum it attaches — deterministic (N is fixed in
+/// genesis), fail-closed, and it matches ADR-0045's philosophy. At large N
+/// this linear budget breaks `MAX_BLOCK_FILE_BYTES`; that is the BLS
+/// aggregation follow-up, out of M6 scope (4 validators → 276 bytes).
+fn producer_sig_section_bytes(validator_count: usize) -> usize {
+    4usize.saturating_add(validator_count.saturating_mul(SIG_ENTRY_BYTE_LEN))
 }
 
 /// Worst-case encoded `.blk` file size for these messages: magic + header +
@@ -1105,9 +1107,9 @@ mod tests {
             state.last_lt + 1,
             fee_collector,
             0,
-            // The producer's sig-section budget (one entry: its own
-            // signature); two small transfers are far under the file cap.
-            producer_sig_section_bytes(),
+            // The producer's sig-section budget (test genesis: 1 validator);
+            // two small transfers are far under the file cap.
+            producer_sig_section_bytes(1),
             &mut mempool,
             &mut stats,
         )
@@ -1162,24 +1164,25 @@ mod tests {
         );
     }
 
-    /// Devin 🟡 review on PR #47: the old sig-section budget reserved
-    /// 4 + n·68 bytes for *every* genesis validator. With ~124,000
-    /// validators that reservation alone exceeded `MAX_BLOCK_FILE_BYTES`,
-    /// so `largest_fitting_prefix` returned zero and the producer halted
-    /// with a `Fatal` tick error — even though the block it would have
-    /// written carried exactly one 68-byte signature. The budget is the
-    /// producer's own single signature and must not grow with the
-    /// validator set.
+    /// M6: the sig-section budget covers the whole genesis validator set
+    /// (4 + N·68), not just the producer's own signature. The devin 🟡
+    /// finding on PR #47 (at ~124k validators the reservation alone blew
+    /// `MAX_BLOCK_FILE_BYTES` and halted the producer) does not apply:
+    /// D2 fixes the validator set in genesis, so N is bounded and known
+    /// at genesis time — and fail-closed budgeting must cover the worst
+    /// case the producer can actually attach, or it commits blocks no
+    /// follower can fetch (the exact ADR-0045 failure). Linear scaling
+    /// past modest N is the BLS aggregation follow-up, out of M6 scope.
     #[test]
-    fn sig_section_budget_ignores_validator_set_size() {
-        assert_eq!(producer_sig_section_bytes(), 4 + SIG_ENTRY_BYTE_LEN);
-        // At 130,000 validators the old formula (4 + n·68 ≈ 8.43 MiB)
-        // exceeded the whole sync budget; a small message must still fit
-        // under the production budget.
+    fn sig_section_budget_covers_genesis_set() {
+        assert_eq!(producer_sig_section_bytes(1), 4 + SIG_ENTRY_BYTE_LEN);
+        assert_eq!(producer_sig_section_bytes(4), 4 + 4 * SIG_ENTRY_BYTE_LEN);
+        // At M6's 4 validators the reservation is 276 bytes — trivial
+        // against the sync budget; a small message must still fit.
         let state = State::from_genesis(&test_genesis());
         // seq 0: the account's next expected on-chain nonce, state-derived.
         let msg = signed_transfer(&state, 0, 0);
-        assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes()) > 0);
+        assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes(4)) > 0);
     }
 
     /// ADR-0045: a candidate set bigger than the sync servable bound is
@@ -1195,8 +1198,8 @@ mod tests {
     fn oversize_candidate_set_is_trimmed_not_rejected() {
         let state = State::from_genesis(&test_genesis());
         let fee_collector = test_fee_collector();
-        // The producer's sig-section budget (one entry: its own signature).
-        let max_sig_section_bytes = producer_sig_section_bytes();
+        // The producer's sig-section budget (test genesis: 1 validator).
+        let max_sig_section_bytes = producer_sig_section_bytes(1);
         let payload = vec![0x5au8; 60_000];
         let mut candidates = Vec::new();
         // Per-account sequence offsets. The message nonce is each account's
