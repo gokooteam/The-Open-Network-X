@@ -537,3 +537,43 @@ fn ret_restores_parent_code_refs() {
         other => panic!("expected [10, 20], got {other:?}"),
     }
 }
+
+#[test]
+fn nested_implicit_return_resumes_outermost_caller() {
+    // A -> B -> C. C pushes 30 and falls off its end (implicit return to
+    // B). B then RETs explicitly, which must land back in A — so the
+    // implicit return has to reset c0 to B's own return address (A), not
+    // leave it pointing at B's resume point. A's code after the CALL
+    // (push 10) must run.
+    let c = Cell::new(pushint(30), vec![]).unwrap();
+    let mut b_bytes = vec![0x71, 0x00]; // CALLREF 0 -> C
+    b_bytes.extend(pushint(20));
+    b_bytes.push(0x72); // RET
+    let b = Cell::new(b_bytes, vec![c.hash()]).unwrap();
+    let mut a_bytes = vec![0x71, 0x00]; // CALLREF 0 -> B
+    a_bytes.extend(pushint(10));
+    let mut interp = interpreter_with_code_children(a_bytes, vec![b, c]);
+    let res = interp.run();
+    assert!(
+        matches!(res, ExecutionResult::Success { .. }),
+        "A -> B -> C with C falling off must succeed, got {res:?}"
+    );
+    let ints: Vec<Int257> = interp
+        .stack
+        .iter()
+        .map(|v| match v {
+            StackValue::Integer(n) => *n,
+            other => panic!("expected integers, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        ints,
+        vec![
+            Int257::from_u64(30),
+            Int257::from_u64(20),
+            Int257::from_u64(10)
+        ],
+        "C, then B's tail, then A's tail must each run exactly once"
+    );
+    assert!(interp.call_stack.is_empty());
+}

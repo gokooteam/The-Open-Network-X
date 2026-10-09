@@ -3,7 +3,7 @@
   "exception_outcomes": [
     {
       "exception_kind": "OutOfGas",
-      "outcome": "fatal"
+      "outcome": "bounce"
     },
     {
       "exception_kind": "IntegerOverflow",

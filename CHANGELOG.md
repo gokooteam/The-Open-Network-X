@@ -18,6 +18,8 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Added
 
+- `SECURITY.md`: how to report a vulnerability privately (GitHub private
+  vulnerability reporting), what counts, and response targets.
 - `site/`: the source of on-x.live, imported from the live server and
   corrected. Repository facts on it (spec and ADR lists, version, toolchain,
   block format, current milestone, devnet-1 chain ID, test count, replay
@@ -40,13 +42,20 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Changed
 
+- `CONTRIBUTING.md`: adding a research-logbook entry is optional, no longer
+  required for every PR. The logbook stays.
 - ADRs: the versioning standard is renumbered ADR-0034 → ADR-0040
   (`docs/adr/0040-versioning-standard.md`). Since #32 there had been two
   ADR-0034s, and gas caps keep 0034. ADR-0029 and ADR-0034 to ADR-0040 are
   now *Accepted*, except ADR-0037, which is *Accepted in part*: its rule
-  that out-of-gas is fatal is rejected. The code still implements that rule
-  until the fix tracked in `MILESTONES.md` (M4) lands. No code or consensus
-  bytes changed in this entry.
+  that out-of-gas is fatal is rejected. No code or consensus bytes changed
+  in this entry; the code follows in the out-of-gas entry below.
+- **Consensus:** an out-of-gas contract delivery now bounces, returning its
+  value to the sender (the fee is kept), instead of being fatal and crediting
+  the value to the destination. Bounce receipts still report the burned gas.
+  `reference/vectors/fatal_bounce.json` and `execution.md` §3.4 are updated
+  (ADR-0037 as amended). Nodes on either side of this change disagree on
+  any block containing an out-of-gas delivery.
 - `ShardStateTree` stores account records in its Merkle trie leaves instead
   of a separate `BTreeMap`, so `clone()` is O(1) and the STF no longer
   deep-copies every account on each `propose_block` and `apply_block`. At
@@ -87,6 +96,13 @@ headings Added, Changed, Deprecated, Removed, Fixed, Security. The
 
 ### Fixed
 
+- VM: an implicit return (a callee running off the end of its code) now
+  resets `c0` to the caller's own return address, as `RET` does. Before,
+  in A → B → C, if C fell off its end and B then executed `RET`, B jumped
+  back into itself and A's code after the call never ran. This changes
+  execution results for such contracts. Evidence:
+  `nested_implicit_return_resumes_outermost_caller` in
+  `crates/protocol/onx-execution/tests/execution_tests.rs`.
 - VM: code length is the code cell's exact `bit_len()` (ADR-0036), not
   `8 × data_bytes.len()`. In a bit-granular code cell the completion tag
   and padding bits no longer execute as instructions; trailing bits too

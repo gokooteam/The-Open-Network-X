@@ -435,11 +435,11 @@ fn tvm_vm_exception_bounces() {
 }
 
 #[test]
-fn tvm_out_of_gas_is_fatal() {
-    // ADR-0037: gas exhaustion is fatal, not bounced. The value stays with
-    // the destination (credited like a plain transfer, no data update, no
-    // bounce queued) — returning it would price MAX_GAS_PER_MESSAGE of
-    // reverted work at the fee alone.
+fn tvm_out_of_gas_bounces() {
+    // Gas exhaustion bounces like every other exception kind (ADR-0037's
+    // "OutOfGas is fatal" rule was rejected): the value returns to the
+    // sender, the fee is kept, and the receipt still reports the burned
+    // gas so the block gas cap sees the executed work.
     let (mut state, sender, _contract, collector, secret) = contract_genesis();
     let looper = AccountId::from_bytes([0xD1; 32]);
     // Code: PUSHINT 0 (0x08 0x00 + 32 zero bytes), then UNTIL -36
@@ -484,16 +484,24 @@ fn tvm_out_of_gas_is_fatal() {
     let (next, receipts) = apply_one(&state, msg, collector, 1)
         .expect("block with an out-of-gas contract is still valid");
     let r = &receipts.0[0];
-    assert_eq!(r.deliveries.len(), 1, "fatal: no bounce message queued");
     let d = &r.deliveries[0];
-    assert!(d.fatal, "out-of-gas delivery must be fatal");
-    assert!(!d.bounced, "fatal is not a bounce");
-    assert_eq!(d.gas_used, 1_000_000, "fatal reports the consumed budget");
-    // Sender: debited 1_000 + 1_000, NOT refunded.
-    assert_eq!(balance_of(&next, &sender), 10_000_000 - 2_000);
-    // The looper kept the value (plain-transfer equivalence) but its data
-    // cell is untouched — no state effects from the failed execution.
-    assert_eq!(balance_of(&next, &looper), 1_000);
+    assert!(d.bounced, "out-of-gas delivery must bounce");
+    assert!(!d.fatal, "out-of-gas is not fatal");
+    assert_eq!(d.gas_used, 1_000_000, "bounce reports the consumed budget");
+    // The bounce message carries the value back to the sender.
+    let back = r
+        .deliveries
+        .iter()
+        .find(|b| b.src == looper && b.dest == sender)
+        .expect("a bounce delivery back to the sender");
+    assert_eq!(back.value_nanos, 1_000);
+    assert!(!back.bounced && !back.fatal);
+    // Sender: debited 1_000 + 1_000 at the wallet, refunded the 1_000
+    // value; only the fee is kept.
+    assert_eq!(balance_of(&next, &sender), 10_000_000 - 1_000);
+    // The looper got nothing and its data cell is untouched — no state
+    // effects from the failed execution.
+    assert_eq!(balance_of(&next, &looper), 0);
     match next.tree.get(&looper).expect("looper exists") {
         AccountState::Active { data: Some(d), .. } => {
             assert_eq!(d.data_bytes(), looper_data.data_bytes())

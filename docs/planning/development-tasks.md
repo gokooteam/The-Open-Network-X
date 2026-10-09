@@ -454,7 +454,7 @@ To transition from protocol specifications and standalone libraries to a fully f
 Before submitting PRs implementing any of the tasks above, ensure:
 
 1. [ ] **Specification Reference:** The PR description explicitly cites the corresponding specification file and ADR.
-2. [ ] **Research Logbook:** An entry has been added to `docs/planning/research-logbook.md` containing `[ANSWER]` and `[QUESTION]`.
+2. [ ] **Research Logbook (optional):** If you added an entry to `docs/planning/research-logbook.md`, it contains `[ANSWER]` and `[QUESTION]` (see `CONTRIBUTING.md`).
 3. [ ] **Deterministic Code:** Code contains zero wall-clock dependencies, non-deterministic random calls, or local machine state in consensus logic.
 4. [ ] **Testing:** Unit, round-trip, malformed-input, and boundary tests pass via `cargo test --workspace --all-targets`.
 5. [ ] **Code Quality:** `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D warnings` pass with 0 warnings.
