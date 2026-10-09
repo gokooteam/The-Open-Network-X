@@ -63,7 +63,8 @@ resume: replay converges on the same state root.
 
 ## When multi-node arrives
 
-Validator networking, peer discovery, and consensus are specified but
-frozen (see the README status table). This guide will grow a real
+Validator networking and peer discovery are specified but not yet implemented
+(unfrozen per ADR-0042, M5 in progress); consensus is still frozen (M6, see
+the README status table). This guide will grow a real
 "launch N nodes" section when the network scaffold is replaced —
 tracked in `ROADMAP.md`, not here.
