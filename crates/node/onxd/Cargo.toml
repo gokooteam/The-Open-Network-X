@@ -24,6 +24,8 @@ onx-telemetry = { path = "../onx-telemetry" }
 # The producer's block-size bound is the sync layer's servable-file cap:
 # never commit a block followers cannot fetch (ADR-0045). Depending on
 # the constant rather than duplicating it keeps the two in agreement.
+# M5: the same crate carries block sync over ADNL (follower loop +
+# producer-side sync server).
 onx-networking = { path = "../onx-networking" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-data-structures = { path = "../../protocol/onx-data-structures" }
@@ -36,8 +38,6 @@ onx-genesis = { path = "../../tooling/onx-genesis" }
 # node reuses the tooling crate's implementation rather than duplicating the
 # format (two encoders would drift).
 onx = { path = "../../tooling/onx" }
-# M5: block sync over ADNL (follower loop + producer-side sync server).
-onx-networking = { path = "../onx-networking" }
 
 [dev-dependencies]
 tokio = { version = "1.38", features = ["full"] }
