@@ -48,7 +48,14 @@ on:
         default: false
 
 concurrency:
-  group: review-relay-${{ github.event.workflow_run.pull_requests[0].number || inputs.pr || github.event.workflow_run.head_branch }}
+  # Keyed on the PR number for both triggers; a run whose event names no PR
+  # falls back to its branch, in a separate namespace so a branch called
+  # "42" never shares PR #42's group.
+  group: >-
+    review-relay-${{
+    github.event.workflow_run.pull_requests[0].number && format('pr-{0}', github.event.workflow_run.pull_requests[0].number) ||
+    inputs.pr && format('pr-{0}', inputs.pr) ||
+    format('branch-{0}', github.event.workflow_run.head_branch) }}
   cancel-in-progress: true
 
 permissions: {}
