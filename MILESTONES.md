@@ -27,7 +27,12 @@ notes. This file is the forward plan and the finish line.
   the point where you promise compatibility, which is the same point where
   you stop developing and start maintaining.
 - **Tick boxes in the same PR that earns them.** If you can't link the
-  evidence, leave the box unticked.
+  evidence, leave the box unticked. Then run `python3 scripts/site.py build`
+  to update the README's milestone map (CI fails otherwise). After the
+  merge, the Milestones workflow updates the GitHub milestones (the
+  Milestone box in each PR's sidebar shows e.g. `M4 · 16/21 · …`). Edit
+  progress here, never on GitHub; the workflow overwrites it there. New PRs
+  get the milestone their title names (`M5: …`), else the current one.
 - **New ideas go to the [Parking lot](#parking-lot-post-10-or-undecided)**
   unless they block the current milestone. Most "while I'm in here" work
   belongs there.
@@ -432,10 +437,15 @@ follower stays in sync and verifies everything itself.
 - [ ] Adversarial tests: a peer that serves corrupted, forged, out-of-order,
       or wrong-chain blocks is rejected, and the follower carries on. The same
       holds for a peer that disconnects mid-transfer.
-- [ ] Decide how peers are found for this milestone, either static peer lists
-      or the DHT, and record the choice.
-- [ ] Decide whether messages reach the producer only by direct submission or
-      also by gossip, and record the choice.
+- [x] Decide how peers are found for this milestone, either static peer lists
+      or the DHT, and record the choice. **Done:** ADR-0043
+      (`docs/adr/0043-static-peer-discovery.md`) — static peer list for M5;
+      DHT stays as library code, rewiring deferred to M7.
+- [x] Decide whether messages reach the producer only by direct submission or
+      also by gossip, and record the choice. **Done:** ADR-0044
+      (`docs/adr/0044-direct-submission-no-gossip.md`) — direct submission
+      only for M5; no mempool gossip; the file-drop spool stays the
+      submission path.
 - [ ] A multi-node test of the **real binaries** runs in CI, for example with
       docker-compose. This replaces the Python model in `tests/simulation/`.
 

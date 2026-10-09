@@ -24,6 +24,10 @@ Three layers, each catching what the one before it can't:
    of `MILESTONES.md`), devnet-1's chain ID (from the explorer config), and
    which ADR records the license. These sit between
    `<!--gen:KEY-->…<!--/gen:KEY-->` markers; never edit inside them by hand.
+   The same script writes the status block at the top of the main
+   [`README.md`](../README.md#project-status): the development phase and a
+   milestone map whose progress counts the exit-criteria checkboxes in
+   `MILESTONES.md`.
 
    Facts that need a run are *measured* and stored in
    [`state.json`](state.json) with the commit they were measured at: the
@@ -34,8 +38,9 @@ Three layers, each catching what the one before it can't:
 
 2. **CI on every PR** ([`docs.yml`](../.github/workflows/docs.yml), job
    `site-and-docs`) runs `python3 scripts/site.py check`, which fails when:
-   - a generated region is stale (for example, a PR added an ADR or bumped
-     the version but didn't regenerate the site);
+   - a generated region is stale (for example, a PR added an ADR, bumped
+     the version, or ticked a box in `MILESTONES.md` but didn't run
+     `site.py build`), on the site or in `README.md`;
    - a link on either site into this repository points at a path that
      doesn't exist;
    - a retired term reappears (`Onyx` instead of `Onyxi`,

@@ -2,8 +2,11 @@ name: Claude PR Audit
 
 # Runs an automated Claude Code audit (Opus 5.5, medium effort) on every pull
 # request: when it is opened, reopened, marked ready for review, and on each
-# new push to it. Findings are posted as inline review comments plus one
-# summary comment on the PR.
+# new push to it. Findings are posted as inline review comments, and the
+# progress comment the action creates is the run's one summary comment.
+#
+# This is turn 1 of the review relay: when it succeeds, review-relay.yml
+# starts turns 2 and 3 (see docs/guides/review-relay.md).
 #
 # Requires the repository secret CLAUDE_CODE_OAUTH_TOKEN (generate it with
 # `claude setup-token`; add it under Settings -> Secrets and variables ->
@@ -82,10 +85,20 @@ jobs:
             - Post each finding as an inline comment on the exact line with
               mcp__github_inline_comment__create_inline_comment, prefixed with
               its severity: [critical], [high], [medium], or [low].
-            - Finish with ONE top-level summary comment via `gh pr comment`
-              listing the findings by severity, or stating plainly that no
-              issues were found and what you checked.
+            - Your progress comment is this run's summary. Finish by updating
+              it. Start the summary with two lines:
+              `Consensus impact: breaking | adjacent | none` and one sentence
+              of reason (breaking: a node with and a node without this PR
+              compute different state for the same blocks; adjacent: touches
+              consensus code but results are unchanged), saying whether you
+              agree with the impact the PR description declares; then
+              `Determinism:` whether this could behave differently on two
+              honest nodes given the same inputs. Then the findings by
+              severity, or a plain statement that no issues were found and
+              what you checked. End with one line, `Verdict: GO` or
+              `Verdict: NO-GO`: NO-GO when any critical, high or medium
+              finding stands. Do not post any other top-level comment.
           claude_args: |
             --model claude-opus-5-5
             --effort medium
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Read,Grep,Glob"

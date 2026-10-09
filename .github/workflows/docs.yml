@@ -4,8 +4,9 @@ name: Docs and site
 # repository. Fails a PR when:
 #  - a relative Markdown link (or a github.com/.../blob/main link) is broken,
 #  - a WHITEPAPER.md section citation names a heading that doesn't exist,
-#  - on-x.live's generated facts (site/index.html) no longer match the repo
-#    (fix: python3 scripts/site.py build), a link on either site points at a
+#  - on-x.live's generated facts (site/index.html) or README.md's status
+#    block no longer match the repo (fix: python3 scripts/site.py build), a
+#    link on either site points at a
 #    path that doesn't exist, a retired term reappears, the probe console
 #    names a missing test, or the explorer's protocol constants disagree with
 #    the Rust code.
