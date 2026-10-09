@@ -1,11 +1,17 @@
 #![allow(clippy::disallowed_types)] // Scoped ban: HashMap/HashSet are banned in PROTOCOL crates (workspace clippy.toml) where iteration order could reach consensus encodings. This node crate uses them only for keyed lookup (sessions, caches, metrics) whose iteration order never touches consensus output.
 pub mod adnl_transport;
+pub mod block_sync;
 pub mod dht_daemon;
 pub mod rldp;
 
 pub use adnl_transport::{
     apply_aes256_ctr, derive_symmetric_key_iv, AdnlTransportNode, FastPacket, FullPacket,
     PeerSession,
+};
+pub use block_sync::{
+    decode_announcement, decode_request, decode_response, encode_announcement, encode_request,
+    encode_response, BlockAnnouncement, BlockRequest, BlockResponse, BlockServer, SyncError,
+    MAX_SYNC_MESSAGE_BYTES, SYNC_PROTOCOL_VERSION,
 };
 pub use dht_daemon::{DhtContact, DhtDaemon, DhtRpc, DhtRpcResponse, DhtTransport};
 use onx_primitives::{
