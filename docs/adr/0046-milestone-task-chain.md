@@ -52,9 +52,9 @@ One task in flight at a time. A box is ticked only with linked evidence
 (PR, CI run, or named test). `python3 scripts/site.py build` runs in the PR
 that ticks a box.
 
-The chain operates under her standing directives (SD1–SD3 in `MILESTONES.md`):
-the work proceeds one criterion at a time, and her direction is part of the
-trusted record — every task issue carries the direction that commissioned
-it, and her prompts and decisions stay in `docs/conductors-score.md`, kept
-to what's necessary for each decision. Work is only trustworthy if the
-direction behind it is documented.
+Amethyst's follow-up the same day made two things standing directives
+(SD1–SD3 in `MILESTONES.md`): the chain itself, and the rule that her
+direction is part of the trusted record — every task issue carries the
+direction that commissioned it, and her prompts stay verbatim in
+`docs/conductors-score.md`. Work is only trustworthy if the direction
+behind it is documented.
