@@ -56,6 +56,18 @@ function headMarker(sha) {
   return `<!-- review-relay:head=${sha} -->`;
 }
 
+// The verdict for a commit, in a form only the relay writes: model text in
+// the summary has its HTML comments neutralised (unmark), so it can't forge
+// this, and the override workflow reads the verdict from here, not from the
+// visible text.
+function verdictMarker(sha, consensus) {
+  return `<!-- review-relay:verdict=${sha}:${consensus} -->`;
+}
+
+function unmark(text) {
+  return String(text || '').replace(/<!--/g, '&lt;!--');
+}
+
 // Comments are read by a model, so drop what costs tokens and carries no
 // review content (HTML comments, badges), then cap the length.
 function clean(text) {
@@ -206,7 +218,7 @@ async function findSticky(github, owner, repo, pr) {
     per_page: 100,
   });
   return comments.find(
-    (c) => c.user && c.user.type === 'Bot' && (c.body || '').includes(RELAY_MARKER),
+    (c) => c.user && c.user.login === 'github-actions[bot]' && (c.body || '').includes(RELAY_MARKER),
   );
 }
 
@@ -550,19 +562,21 @@ async function hasOverride(github, owner, repo, pr) {
 // the consensus-override label: success while the label is on, the relay's
 // own state otherwise. The label's workflow can add or remove it while this
 // write is in flight, so it re-reads the label after each write and writes
-// again if it changed; the last write then matches the label as last read.
+// again if it changed. If the label is still flapping after a few rounds, it
+// writes once more for the last value read, so the final write always
+// matches the label as last read.
 async function setRelayStatus(github, owner, repo, pr, sha, state, description) {
+  const write = (overridden) => (overridden
+    ? setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`)
+    : setConsensus(github, owner, repo, sha, state, description));
   let overridden = await hasOverride(github, owner, repo, pr);
-  for (let i = 0; i < 3; i += 1) {
-    if (overridden) {
-      await setConsensus(github, owner, repo, sha, 'success', `Overridden by label (relay: ${description})`);
-    } else {
-      await setConsensus(github, owner, repo, sha, state, description);
-    }
+  for (let i = 0; i < 5; i += 1) {
+    await write(overridden);
     const now = await hasOverride(github, owner, repo, pr);
     if (now === overridden) return overridden;
     overridden = now;
   }
+  await write(overridden);
   return overridden;
 }
 
@@ -702,6 +716,11 @@ async function postTurn2({ github, context, core }) {
 // Turn 3: settle disagreements in their threads, tally each reviewer's GO or
 // NO-GO into a consensus, keep one summary comment per PR edited in place,
 // set the Review consensus status, and set or clear the review-blocking label.
+function rank(v) {
+  if (v.verdict === 'NO-GO') return v.refuted ? 2 : 3;
+  return v.verdict === 'GO' ? 1 : 0;
+}
+
 async function postTurn3({ github, context, core }) {
   const { owner, repo } = context.repo;
   const pr = Number(process.env.RELAY_PR);
@@ -714,7 +733,8 @@ async function postTurn3({ github, context, core }) {
   // comes straight from its output, not through the moderator.
   // One verdict per known reviewer that reviewed this commit. Names the
   // moderator invents, or reviewers that didn't review the head, don't vote;
-  // if it gives one reviewer twice, a NO-GO wins.
+  // if it gives one reviewer twice, the strongest objection wins: a standing
+  // NO-GO over a refuted one, either over GO, GO over NONE.
   const reviewedHead = new Set(known.reviewed || []);
   const byReviewer = new Map();
   for (const v of output.verdicts || []) {
@@ -729,7 +749,7 @@ async function postTurn3({ github, context, core }) {
       note: String(v.note || ''),
     };
     const prev = byReviewer.get(name);
-    if (!prev || (entry.verdict === 'NO-GO' && prev.verdict !== 'NO-GO')) byReviewer.set(name, entry);
+    if (!prev || rank(entry) > rank(prev)) byReviewer.set(name, entry);
   }
   const verdicts = [...byReviewer.values()];
   const t2 = process.env.RELAY_TURN2_VERDICT;
@@ -786,15 +806,16 @@ async function postTurn3({ github, context, core }) {
   const posted = await postReplies(github, owner, repo, pr, 'turn 3 (moderator)', replies);
 
   const overridden = await hasOverride(github, owner, repo, pr);
-  const turn2 = cap(process.env.RELAY_TURN2_SUMMARY, MAX_BODY_CHARS);
+  const turn2 = unmark(cap(process.env.RELAY_TURN2_SUMMARY, MAX_BODY_CHARS));
   const body = [
     RELAY_MARKER,
     headMarker(headSha),
+    verdictMarker(headSha, consensus),
     '## Review relay: state of the review',
     '',
     `_As of \`${headSha.slice(0, 7)}\`. Turn 1 is the Claude audit; turn 2 a second opinion that reads every reviewer; turn 3 this summary. It is edited in place on each push._`,
     '',
-    state,
+    unmark(state),
     turn2 ? `\n<details><summary>Turn 2 (second opinion)</summary>\n\n${defuse(turn2)}\n\n</details>` : '',
     '',
     overridden
@@ -846,6 +867,9 @@ async function override({ github, context, core }) {
   if (added && !allowed) {
     await github.rest.issues.removeLabel({ owner, repo, issue_number: pr.number, name: OVERRIDE_LABEL });
     core.warning(`${sender} has no write access; ${OVERRIDE_LABEL} removed.`);
+    // A run for a maintainer's label may have turned the check green in the
+    // meantime; put back the relay's verdict either way.
+    await restoreRelayStatus(github, owner, repo, pr, sender, core);
     return;
   }
   if (added) {
@@ -853,22 +877,29 @@ async function override({ github, context, core }) {
     core.info(`${OVERRIDE_LABEL} added by ${sender}.`);
     return;
   }
-  // Removed: go back to what the relay would say for this commit. A
-  // docs-only PR passes without a relay run, as the gate does.
+  await restoreRelayStatus(github, owner, repo, pr, sender, core);
+}
+
+// Back to what the relay would say for this commit, read from the verdict
+// marker on its summary. A docs-only PR passes without a relay run, as the
+// gate does; a commit with no relay verdict yet fails until the relay runs.
+async function restoreRelayStatus(github, owner, repo, pr, sender, core) {
+  const sha = pr.head.sha;
   if (await docsOnly(github, owner, repo, pr.number)) {
-    await setConsensus(github, owner, repo, pr.head.sha, 'success', 'Docs-only change: the turn 1 audit covers it');
-    core.info(`${OVERRIDE_LABEL} removed by ${sender}; docs-only PR passes.`);
+    await setConsensus(github, owner, repo, sha, 'success', 'Docs-only change: the turn 1 audit covers it');
+    core.info(`${OVERRIDE_LABEL} removed (${sender}); docs-only PR passes.`);
     return;
   }
   const sticky = await findSticky(github, owner, repo, pr.number);
-  const current = sticky && sticky.body.includes(headMarker(pr.head.sha));
-  if (current && sticky.body.includes('Consensus: GO**')) {
-    await setConsensus(github, owner, repo, pr.head.sha, 'success', `Override removed; the relay's verdict is GO`);
+  const body = (sticky && sticky.body) || '';
+  if (body.includes(verdictMarker(sha, 'GO'))) {
+    await setConsensus(github, owner, repo, sha, 'success', `Override removed; the relay's verdict is GO`);
+  } else if (body.includes(verdictMarker(sha, 'NO-GO'))) {
+    await setConsensus(github, owner, repo, sha, 'failure', `Override removed; the relay's verdict is NO-GO`);
   } else {
-    await setConsensus(github, owner, repo, pr.head.sha, 'failure',
-      current ? `Override removed; the relay's verdict is NO-GO` : `Override removed by ${sender}; re-run the relay for a verdict`);
+    await setConsensus(github, owner, repo, sha, 'failure', `Override removed (${sender}); re-run the relay for a verdict`);
   }
-  core.info(`${OVERRIDE_LABEL} removed by ${sender}.`);
+  core.info(`${OVERRIDE_LABEL} removed (${sender}); relay verdict restored.`);
 }
 
-module.exports = { gate, collect, postTurn2, postTurn3, reportFailure, override, validate, tally, clean, defuse, makeTrust, rightLines, tag, DOCS_ONLY };
+module.exports = { gate, collect, postTurn2, postTurn3, reportFailure, override, validate, tally, clean, defuse, unmark, makeTrust, rightLines, tag, DOCS_ONLY };

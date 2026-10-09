@@ -50,7 +50,7 @@ the reviewer reviewed the head commit itself: a review or inline comment
 on that SHA, its finished status on it, or (for the Claude audit) a
 summary comment linking the audit run for it. Timestamps don't count. A name the moderator invents, or a reviewer that
 didn't review this commit, doesn't vote; one reviewer listed twice keeps
-its NO-GO.
+its strongest objection (a standing NO-GO over a refuted one).
 
 **Consensus is GO (merge)** when no reviewer's NO-GO stands and at least
 two reviewers (`RELAY_MIN_GO`) said GO. Otherwise it is **NO-GO (don't
@@ -70,7 +70,8 @@ applied, a PR can't merge without GO ([branch-protection.md](branch-protection.m
 status passes whatever the verdict (`review-consensus-override.yml`). The
 label only works for people with write access, and it carries over to
 new commits while it stays on. Removing it restores the relay's verdict
-for the current commit.
+for the current commit, read from a marker only the relay writes (model
+text in the summary can't forge it).
 
 GO is a gate, not an approval: it means no reviewer has a standing
 objection. A person still decides to merge, and the override keeps that
