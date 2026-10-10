@@ -176,6 +176,17 @@ impl ConsensusDriver {
         if !self.should_propose() {
             return Err("consensus: propose called when not leader".to_string());
         }
+        // ADR-0049: if locked on a different block, refuse to propose.
+        // The leader must re-propose its locked block; proposing a new one
+        // would violate safety. (Re-proposal with block bytes is TODO: the
+        // driver stores Blocks, not bytes.)
+        if let Some(locked) = self.engine.locked_block() {
+            if locked.0 != block.header.hash() {
+                return Err(
+                    "consensus: locked on different block, cannot propose new block".to_string(),
+                );
+            }
+        }
         let height = self.engine.height();
         let round = self.engine.round();
         let hash = block.header.hash();
@@ -339,26 +350,37 @@ impl ConsensusDriver {
         }
         // A commit vote's header signature attests to the block this node
         // validated. Verify it now, against the stored block, before the
-        // engine counts the vote.
-        if vote.phase == VotePhase::Commit {
+        // engine counts the vote. (Store it only after the engine accepts;
+        // otherwise a rejected vote would poison the sig set.)
+        let verified_header_sig = if vote.phase == VotePhase::Commit {
             if let Some(sig) = header_sig {
                 let hash = vote.block_hash.0;
-                let block = self
-                    .blocks
-                    .get(&hash)
-                    .ok_or_else(|| "consensus: commit vote for unknown block".to_string())?;
+                let block = match self.blocks.get(&hash) {
+                    Some(b) => b,
+                    None => {
+                        // Block not yet received (gossip is unordered). Buffer
+                        // the vote; it will be retried when the block arrives.
+                        self.pending.push(vote_bytes.to_vec());
+                        return Ok(Vec::new());
+                    }
+                };
                 let preimage = block.header.sign_bytes(&self.chain_id);
                 self.validator_pubkeys
                     .get(vote.validator_id as usize)
                     .ok_or_else(|| "consensus: commit vote from unknown validator".to_string())?
                     .verify_raw(&preimage, &sig)
                     .map_err(|_| "consensus: bad header signature on commit vote".to_string())?;
-                self.header_sigs.insert(vote.validator_id, sig);
+                Some((vote.validator_id, sig))
+            } else {
+                None
             }
             // Note: a commit vote WITHOUT a header sig is still a valid
             // engine vote (the engine doesn't know about header sigs), but
             // it contributes no SigEntry at finalization.
-        }
+        } else {
+            None
+        };
+        let vote_round = vote.round;
         match self.engine.receive_vote(vote) {
             Ok(()) => {}
             Err(onx_consensus::ConsensusError::InvalidStep) => {
@@ -366,6 +388,16 @@ impl ConsensusDriver {
                 // for retry. Anything else is a real rejection.
                 self.pending.push(vote_bytes.to_vec());
                 return Ok(Vec::new());
+            }
+            Err(onx_consensus::ConsensusError::InvalidRound) => {
+                // Future round (view change in progress elsewhere). Buffer;
+                // it will be retried after our own view change. Past rounds
+                // are stale and dropped (the `if` guards this).
+                if vote_round > self.engine.round() {
+                    self.pending.push(vote_bytes.to_vec());
+                    return Ok(Vec::new());
+                }
+                return Err(format!("consensus: vote rejected: {:?}", onx_consensus::ConsensusError::InvalidRound));
             }
             Err(onx_consensus::ConsensusError::ConflictingProposal)
                 if self.engine.proposal().is_none() =>
@@ -376,6 +408,10 @@ impl ConsensusDriver {
                 return Ok(Vec::new());
             }
             Err(e) => return Err(format!("consensus: vote rejected: {e}")),
+        }
+        // Engine accepted the vote; now store the verified header sig.
+        if let Some((vid, sig)) = verified_header_sig {
+            self.header_sigs.insert(vid, sig);
         }
         let mut events = Vec::new();
         // The engine may have advanced a phase on quorum; vote the new one.
