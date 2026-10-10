@@ -54,6 +54,11 @@ pub struct ConsensusProposal {
     pub block_hash: Uint256,
     pub proposer_id: u32,
     pub signature: Signature,
+    /// Highest QC round the proposer has seen (ADR-0049). Validators unlock
+    /// only for a QC from a higher round than their lock. (Full QC vote lists
+    /// are future work; for now the round suffices for the locking rule.)
+    pub qc_round: Option<u32>,
+    pub qc_block: Option<Uint256>,
 }
 
 /// A signed phase vote. Signatures cover the phase and round as well as the block hash, so a
@@ -128,6 +133,22 @@ pub struct ConsensusEngine {
     proposal: Option<ConsensusProposal>,
     votes: BTreeMap<VotePhase, BTreeMap<u32, ConsensusVote>>,
     finalized: Option<FinalizedBlock>,
+    /// Tendermint-style lock (ADR-0049): the block this validator is
+    /// locked on, and the round in which it locked. A locked validator
+    /// only votes for the locked block, unless it sees a QC from a higher
+    /// round for a different block.
+    locked_block: Option<Uint256>,
+    locked_round: Option<u32>,
+}
+
+/// Quorum certificate: >2/3 stake of PreCommit votes for a block at a round.
+/// Proposals carry the highest QC the proposer has seen; validators unlock
+/// only for a QC from a higher round than their lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuorumCertificate {
+    pub block_hash: Uint256,
+    pub round: u32,
+    pub votes: Vec<ConsensusVote>,
 }
 
 impl ConsensusEngine {
@@ -161,6 +182,8 @@ impl ConsensusEngine {
             proposal: None,
             votes: BTreeMap::new(),
             finalized: None,
+            locked_block: None,
+            locked_round: None,
         })
     }
     pub fn step(&self) -> ConsensusStep {
@@ -183,6 +206,14 @@ impl ConsensusEngine {
     pub fn finalized(&self) -> Option<&FinalizedBlock> {
         self.finalized.as_ref()
     }
+    /// ADR-0049: the block this validator is locked on (if any).
+    pub fn locked_block(&self) -> Option<Uint256> {
+        self.locked_block
+    }
+    /// ADR-0049: the round in which this validator locked (if any).
+    pub fn locked_round(&self) -> Option<u32> {
+        self.locked_round
+    }
     pub fn leader(&self) -> u32 {
         *self
             .validators
@@ -191,7 +222,10 @@ impl ConsensusEngine {
             .expect("non-empty validator set")
     }
     pub fn has_supermajority(&self, phase: VotePhase) -> bool {
-        (self.vote_stake(phase) as u128) * 3 >= (self.total_stake as u128) * 2
+        // ADR-0049: "more than 2/3", not "at least 2/3". With 3 equal-stake
+        // validators, 2/3 = 2 signers would finalize under >=, but the block
+        // would then fail verify_block_auth (which requires >2/3).
+        (self.vote_stake(phase) as u128) * 3 > (self.total_stake as u128) * 2
     }
 
     pub fn receive_proposal(&mut self, proposal: ConsensusProposal) -> Result<(), ConsensusError> {
@@ -226,6 +260,20 @@ impl ConsensusEngine {
                 return Err(ConsensusError::ConflictingProposal);
             }
             return Ok(());
+        }
+        // ADR-0049 locking: if locked on a different block, only accept if
+        // the proposal carries a QC from a higher round than the lock.
+        if let (Some(locked), Some(locked_r)) = (self.locked_block, self.locked_round) {
+            if proposal.block_hash != locked {
+                match proposal.qc_round {
+                    Some(qc_r) if qc_r > locked_r => {
+                        // Unlock: the QC justifies a different block.
+                        self.locked_block = None;
+                        self.locked_round = None;
+                    }
+                    _ => return Err(ConsensusError::ConflictingProposal),
+                }
+            }
         }
         self.proposal = Some(proposal);
         self.step = ConsensusStep::PreVote;
@@ -309,7 +357,16 @@ impl ConsensusEngine {
     fn advance_after_quorum(&mut self, phase: VotePhase) {
         match phase {
             VotePhase::PreVote => self.step = ConsensusStep::PreCommit,
-            VotePhase::PreCommit => self.step = ConsensusStep::Commit,
+            VotePhase::PreCommit => {
+                // ADR-0049: lock on the block when PreCommit quorum is reached.
+                // A locked validator only votes for this block in future rounds,
+                // unless it sees a QC from a higher round.
+                if let Some(p) = &self.proposal {
+                    self.locked_block = Some(p.block_hash);
+                    self.locked_round = Some(self.round);
+                }
+                self.step = ConsensusStep::Commit;
+            }
             VotePhase::Commit => {
                 let commits = self
                     .votes

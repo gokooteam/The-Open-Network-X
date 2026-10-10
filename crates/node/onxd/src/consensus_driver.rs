@@ -176,6 +176,10 @@ impl ConsensusDriver {
                 &VALIDATOR_SIGN_V1,
                 &proposal_signing_bytes(&self.shard, height, round, &Uint256(hash)),
             ),
+            // ADR-0049: include the highest QC round this validator has seen.
+            // (For now: the locked round, if any. Full QC tracking is future work.)
+            qc_round: self.engine.locked_round(),
+            qc_block: self.engine.locked_block(),
         };
         let proposal_bytes = encode_proposal(&proposal);
         self.blocks.insert(hash, block);

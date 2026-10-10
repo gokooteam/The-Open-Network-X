@@ -58,13 +58,22 @@ fn read_sig(bytes: &[u8]) -> Result<(Signature, &[u8]), ConsensusError> {
 /// Encode a proposal: tag | height u64 | round u32 | block_hash 32B |
 /// proposer_id u32 | signature 64B.
 pub fn encode_proposal(p: &ConsensusProposal) -> Vec<u8> {
-    let mut out = Vec::with_capacity(4 + 8 + 4 + 32 + 4 + 64);
+    let mut out = Vec::with_capacity(4 + 8 + 4 + 32 + 4 + 64 + 1 + 4 + 32);
     out.extend_from_slice(&PROPOSAL_TAG.to_be_bytes());
     out.extend_from_slice(&p.height.to_be_bytes());
     out.extend_from_slice(&p.round.to_be_bytes());
     out.extend_from_slice(&p.block_hash.0);
     out.extend_from_slice(&p.proposer_id.to_be_bytes());
     out.extend_from_slice(&p.signature.encode());
+    // QC: flag byte, then round u32 + block hash 32B if present.
+    match (p.qc_round, p.qc_block) {
+        (Some(r), Some(b)) => {
+            out.push(1);
+            out.extend_from_slice(&r.to_be_bytes());
+            out.extend_from_slice(&b.0);
+        }
+        _ => out.push(0),
+    }
     out
 }
 
@@ -79,6 +88,22 @@ pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError
     let (block_hash, rest) = read_hash(rest)?;
     let (proposer_id, rest) = read_u32_be(rest)?;
     let (signature, rest) = read_sig(rest)?;
+    if rest.is_empty() {
+        return Err(ConsensusError::InvalidMessage("truncated qc flag"));
+    }
+    let (qc_round, qc_block, rest) = match rest[0] {
+        0 => (None, None, &rest[1..]),
+        1 => {
+            if rest.len() < 37 {
+                return Err(ConsensusError::InvalidMessage("truncated qc"));
+            }
+            let r = u32::from_be_bytes([rest[1], rest[2], rest[3], rest[4]]);
+            let mut b = [0u8; 32];
+            b.copy_from_slice(&rest[5..37]);
+            (Some(r), Some(Uint256(b)), &rest[37..])
+        }
+        _ => return Err(ConsensusError::InvalidMessage("bad qc flag")),
+    };
     if !rest.is_empty() {
         return Err(ConsensusError::InvalidMessage("trailing bytes in proposal"));
     }
@@ -88,6 +113,8 @@ pub fn decode_proposal(bytes: &[u8]) -> Result<ConsensusProposal, ConsensusError
         block_hash,
         proposer_id,
         signature,
+        qc_round,
+        qc_block,
     })
 }
 
@@ -195,6 +222,8 @@ mod tests {
             block_hash: Uint256([0xab; 32]),
             proposer_id: 1,
             signature: Signature::decode_exact(&[0xcd; 64]).unwrap(),
+            qc_round: None,
+            qc_block: None,
         }
     }
 
