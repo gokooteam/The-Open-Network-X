@@ -1605,6 +1605,7 @@ dependencies = [
  "hex",
  "libc",
  "onx",
+ "onx-consensus",
  "onx-data-structures",
  "onx-genesis",
  "onx-networking",

@@ -29,6 +29,7 @@ onx-telemetry = { path = "../onx-telemetry" }
 onx-networking = { path = "../onx-networking" }
 onx-state-model = { path = "../../protocol/onx-state-model" }
 onx-data-structures = { path = "../../protocol/onx-data-structures" }
+onx-consensus = { path = "../../protocol/onx-consensus" }
 onx-primitives = { path = "../../protocol/onx-primitives" }
 onx-storage = { path = "../../protocol/onx-storage" }
 onx-stf = { path = "../../protocol/onx-stf" }

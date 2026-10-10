@@ -37,8 +37,10 @@ fn finalize(
         proposer_id: leader as u32,
         signature: keys[leader].sign(
             &VALIDATOR_SIGN_V1,
-            &proposal_signing_bytes(&shard, 42, engine.round(), &hash),
+            &proposal_signing_bytes(&shard, 42, engine.round(), &hash, None, None),
         ),
+        qc_round: None,
+        qc_block: None,
     };
     engine.receive_proposal(proposal).unwrap();
     for phase in [VotePhase::PreVote, VotePhase::PreCommit, VotePhase::Commit] {
@@ -95,4 +97,23 @@ fn seven_nodes_change_view_after_byzantine_leader_and_finalize() {
     finalize(&mut engine, &keys, shard, hash, &[1, 2, 3, 4, 5]);
     assert_eq!(engine.step(), ConsensusStep::Finalized);
     assert_eq!(engine.finalized().unwrap().round, 1);
+}
+
+/// ADR-0049: a validator records its lock when PreCommit quorum is reached.
+/// This is the foundation of the safety property: a locked validator will
+/// not vote for a conflicting block, preventing honest validators from
+/// finalizing different blocks at the same height.
+#[test]
+fn validator_locks_on_precommit_quorum() {
+    let shard = ShardIdent::root(WorkchainIdent::BASIC);
+    let (vals, keys) = validators(4);
+    let mut engine = ConsensusEngine::new(shard, 42, vals, 0, RoundTimeouts::default()).unwrap();
+
+    let b1 = Uint256([1; 32]);
+    // 3 of 4 validators (> 2/3) vote through all phases.
+    finalize(&mut engine, &keys, shard, b1, &[0, 1, 2]);
+
+    // The engine locked on B1 at round 0 when PreCommit quorum was reached.
+    assert_eq!(engine.locked_block(), Some(b1));
+    assert_eq!(engine.locked_round(), Some(0));
 }

@@ -203,41 +203,6 @@ fn canonical_validators(
     Ok(refs)
 }
 
-/// Sign a block with the producer's key (ONXBLK05).
-///
-/// Returns the signature section entries. A signing key is REQUIRED:
-/// an unsigned block would be rejected by every verifier (replay fails
-/// closed on empty/insufficient stake), so producing one is never useful —
-/// fail here with a clear error instead of emitting a dead block.
-///
-/// `validators` is the canonical (pubkey-sorted) genesis validator list;
-/// `validator_index` is the signer's position in it.
-fn sign_block(
-    block: &Block,
-    chain_id: &[u8; 32],
-    signing_key: Option<&onx_primitives::SecretKey>,
-    validators: &[onx::auth::GenesisValidatorRef],
-) -> Result<Vec<SigEntry>, String> {
-    let Some(secret) = signing_key else {
-        return Err(
-            "no signing key configured: block production requires --signing-key \
-             (an unsigned block would be rejected by every verifier)"
-                .to_string(),
-        );
-    };
-    let pubkey = secret.public_key().encode();
-    let index = validators
-        .iter()
-        .position(|v| v.pubkey == pubkey)
-        .ok_or_else(|| "signing key pubkey not in genesis validator list".to_string())?;
-    let preimage = block.header.sign_bytes(chain_id);
-    let sig = secret.sign_raw(&preimage);
-    Ok(vec![SigEntry {
-        validator_index: index as u32,
-        sig: sig.encode(),
-    }])
-}
-
 pub struct ProducerConfig {
     pub fee_collector: AccountId,
     pub poll_interval: Duration,
@@ -250,6 +215,11 @@ pub struct ProducerConfig {
     /// (ONXBLK05); the key's pubkey must match a genesis validator
     /// (checked at startup — TRAP 4).
     pub signing_key: Option<onx_primitives::SecretKey>,
+    /// Consensus gossip bind address (M6). If None, the node runs in
+    /// single-validator loopback mode.
+    pub consensus_bind: Option<std::net::SocketAddr>,
+    /// Consensus gossip peers (other validators' bind addresses).
+    pub consensus_peers: Vec<std::net::SocketAddr>,
 }
 
 #[derive(Debug, Default)]
@@ -436,8 +406,35 @@ pub fn run_producer_loop(
 
     let mut stats = ProducerStats::default();
 
+    // BFT consensus driver (M6): one per chain height, recreated after
+    // each finalized block. Built from the genesis validator set and this
+    // node's signing key (already validated as a member at startup).
+    let mut driver = build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap())
+        .map_err(|e| format!("producer: consensus driver init failed: {e}"))?;
+    // Consensus message queues. If the gossip network is configured,
+    // spawn it; otherwise run in single-validator loopback mode.
+    let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
+    let mut outbound: Vec<crate::consensus_driver::DriverEvent> = Vec::new();
+    let net = cfg
+        .consensus_bind
+        .map(|bind| crate::consensus_net::spawn_consensus_net(bind, cfg.consensus_peers.clone()));
+
     while !shutdown.load(Ordering::Relaxed) {
-        match run_tick(&store, &mut mempool, &cfg, &mut stats) {
+        // Drain the network's inbound channel (non-blocking).
+        if let Some((inbound_rx, _)) = &net {
+            while let Ok(msg) = inbound_rx.try_recv() {
+                inbound.push(msg);
+            }
+        }
+        match run_tick(
+            &store,
+            &mut mempool,
+            &cfg,
+            &mut stats,
+            &mut driver,
+            &mut inbound,
+            &mut outbound,
+        ) {
             Ok(produced) => {
                 if produced {
                     // Block committed.
@@ -453,12 +450,86 @@ pub fn run_producer_loop(
                 eprintln!("producer: tick failed, retrying next tick: {e}");
             }
         }
+        // Ship outbound broadcasts: to the network, or loop back locally
+        // in single-validator mode.
+        if let Some((_, outbound_tx)) = &net {
+            for event in outbound.drain(..) {
+                let msg = match event {
+                    crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
+                        crate::consensus_net::OutboundConsensusMsg::Proposal(proposal, block)
+                    }
+                    crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
+                        crate::consensus_net::OutboundConsensusMsg::Vote(v)
+                    }
+                    crate::consensus_driver::DriverEvent::Finalized { .. } => continue,
+                };
+                if outbound_tx.send(msg).is_err() {
+                    eprintln!("producer: consensus network channel closed");
+                }
+            }
+        } else {
+            // Single-validator loopback.
+            for event in outbound.drain(..) {
+                match event {
+                    crate::consensus_driver::DriverEvent::BroadcastVote(v) => {
+                        inbound.push(InboundConsensusMsg::Vote(v));
+                    }
+                    crate::consensus_driver::DriverEvent::BroadcastProposal { proposal, block } => {
+                        inbound.push(InboundConsensusMsg::Proposal(proposal, block));
+                    }
+                    crate::consensus_driver::DriverEvent::Finalized { .. } => {}
+                }
+            }
+        }
         if let Some(t) = &cfg.telemetry {
             t.set_tx_pool_size(mempool.len() as i64);
         }
         std::thread::sleep(cfg.poll_interval);
     }
     Ok(stats)
+}
+
+/// Build the consensus driver for the next uncommitted height.
+fn build_consensus_driver(
+    store: &ChainStore,
+    signing_key: &onx_primitives::SecretKey,
+) -> Result<crate::consensus_driver::ConsensusDriver, String> {
+    let state: State = store
+        .load_state()
+        .map_err(|e| format!("consensus: load_state failed: {e}"))?
+        .ok_or_else(|| "consensus: no state (genesis not initialized)".to_string())?;
+    let doc = store
+        .genesis_document()
+        .map_err(|e| format!("consensus: cannot load genesis: {e}"))?
+        .ok_or_else(|| "consensus: no genesis in store".to_string())?;
+    let mut validators: Vec<(onx_primitives::PublicKey, u64)> = doc
+        .validators
+        .iter()
+        .map(|v| {
+            let pk = onx_primitives::PublicKey::decode_exact(&v.pubkey)
+                .map_err(|e| format!("consensus: bad genesis pubkey: {e}"))?;
+            Ok((pk, v.stake))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    // Canonical pubkey-sorted order: validator_id is the position.
+    validators.sort_by_key(|(pk, _)| pk.encode());
+    let shard = onx_data_structures::ShardIdent {
+        workchain_id: onx_data_structures::WorkchainIdent(onx_primitives::Int32(-1)),
+        shard_prefix_ident: onx_primitives::Uint64(onx_data_structures::ShardIdent::ROOT_PREFIX),
+    };
+    let driver = crate::consensus_driver::ConsensusDriver::new(
+        state.chain_id,
+        shard,
+        state.seqno as u64 + 1,
+        &validators,
+        signing_key.clone(),
+        wall_clock_ms(),
+    )?;
+    // TODO(ADR-0049): call driver.set_head() with the head hash once the
+    // producer sets block.header.prev_hash correctly. Currently the producer
+    // does not set prev_hash, so enabling the check would reject all blocks.
+    // The check is dead until then.
+    Ok(driver)
 }
 
 #[derive(Debug)]
@@ -470,12 +541,43 @@ enum TickError {
 }
 
 /// One production tick. Returns Ok(true) if a block was committed.
+/// Inbound consensus message from the network (P4 transport fills this).
+#[derive(Debug)]
+pub enum InboundConsensusMsg {
+    /// Proposal wire bytes + block file bytes (unsigned).
+    Proposal(Vec<u8>, Vec<u8>),
+    /// Vote wire bytes.
+    Vote(Vec<u8>),
+}
+
+/// Wall-clock milliseconds for consensus timeouts. Only drives view
+/// changes; never touches consensus-critical ordering (logical time
+/// still rules block production).
+fn wall_clock_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// One production tick, BFT-driven (M6). Returns Ok(true) if a block was
+/// committed.
+///
+/// Flow: drive the consensus engine (timeouts, inbound messages), propose
+/// when this node leads the round, and commit when the engine finalizes.
+/// A single validator finalizes alone (1/1 >= 2/3), so the old
+/// propose-sign-commit path is the degenerate one-validator case of this.
 fn run_tick(
     store: &ChainStore,
     mempool: &mut Mempool,
     cfg: &ProducerConfig,
     stats: &mut ProducerStats,
+    driver: &mut crate::consensus_driver::ConsensusDriver,
+    inbound: &mut Vec<InboundConsensusMsg>,
+    outbound: &mut Vec<crate::consensus_driver::DriverEvent>,
 ) -> Result<bool, TickError> {
+    use crate::consensus_driver::DriverEvent;
+
     // 1. Intake: sweep the drop directory.
     let intake = mempool
         .scan_drop_dir(&cfg.tx_pool_dir, store)
@@ -490,26 +592,142 @@ fn run_tick(
             TickError::Fatal("producer: no state (genesis not initialized)".to_string())
         })?;
 
-    // 3. Deterministic candidate selection against this exact state.
-    let candidates = mempool
-        .select_candidates(&state)
-        .map_err(TickError::Fatal)?;
-    if candidates.is_empty() {
-        return Ok(false);
+    // 3. Drive consensus timeouts (view changes).
+    if driver.on_tick(wall_clock_ms()) {
+        eprintln!("consensus: view change, now round {}", driver.round());
     }
 
-    // 4. Logical time: strictly increasing, never wall-clock.
-    let lt = state
-        .last_lt
-        .checked_add(1)
-        .ok_or_else(|| TickError::Fatal("producer: logical time overflow".to_string()))?;
+    // 4. Inbound consensus messages from the network.
+    // A bad message is not fatal: log it and continue. Aborting the tick
+    // here would drop events (including Finalized) already in `outbound`.
+    for msg in inbound.drain(..) {
+        let events: Option<Vec<DriverEvent>> = match msg {
+            InboundConsensusMsg::Proposal(p, b) => driver
+                .receive_proposal(&p, &b, |bytes| {
+                    onx::blockfile::decode_block_file(bytes)
+                        .map(|sb| sb.block)
+                        .map_err(|e| e.to_string())
+                })
+                .map_err(|e| eprintln!("producer: bad proposal, skipping: {e}"))
+                .ok(),
+            InboundConsensusMsg::Vote(v) => driver
+                .receive_vote(&v)
+                .map_err(|e| eprintln!("producer: bad vote, skipping: {e}"))
+                .ok(),
+        };
+        if let Some(events) = events {
+            outbound.extend(events);
+        }
+    }
 
-    // 5. Honest producer path: dry-run through the same apply as validation.
-    // propose_robust drops ONLY messages the STF actually rejects (never
-    // the whole set) if the filtered candidates unexpectedly fail.
-    //
-    // Parent block_time for the monotonicity clamp: genesis (block 1's
-    // parent) has block_time 0; otherwise read the committed parent header.
+    // 5. Propose when this node leads the round and has transactions.
+    // (Block building is the existing honest-producer path; the driver
+    // only decides WHEN to propose, then carries the BFT round.)
+    if driver.should_propose() {
+        // Deterministic candidate selection against this exact state.
+        let candidates = mempool
+            .select_candidates(&state)
+            .map_err(TickError::Fatal)?;
+        if !candidates.is_empty() {
+            // Logical time: strictly increasing, never wall-clock.
+            let lt = state
+                .last_lt
+                .checked_add(1)
+                .ok_or_else(|| TickError::Fatal("producer: logical time overflow".to_string()))?;
+            // Parent block_time for the monotonicity clamp.
+            let parent_block_time = if state.seqno == 0 {
+                0
+            } else {
+                let parent_hash = store
+                    .block_hash_for_seqno(state.seqno)
+                    .map_err(|e| {
+                        TickError::Fatal(format!("producer: parent hash lookup failed: {e}"))
+                    })?
+                    .ok_or_else(|| {
+                        TickError::Fatal(format!(
+                            "producer: parent block {} not committed",
+                            state.seqno
+                        ))
+                    })?;
+                store
+                    .get_block_header(&parent_hash)
+                    .map_err(|e| {
+                        TickError::Fatal(format!("producer: parent header lookup failed: {e}"))
+                    })?
+                    .ok_or_else(|| {
+                        TickError::Fatal(format!(
+                            "producer: parent block {} header missing",
+                            state.seqno
+                        ))
+                    })?
+                    .block_time
+            };
+            let validators = canonical_validators(store)?;
+            let max_sig_section_bytes = producer_sig_section_bytes(validators.len());
+            if let Some(block) = propose_robust(
+                &state,
+                candidates,
+                lt,
+                cfg.fee_collector,
+                parent_block_time,
+                max_sig_section_bytes,
+                mempool,
+                stats,
+            )? {
+                let block_bytes = onx::blockfile::encode_block_file(&block, &[]);
+                let events = driver
+                    .propose(block, block_bytes)
+                    .map_err(TickError::Retryable)?;
+                outbound.extend(events);
+            }
+            // (If propose_robust returned None, everything was dropped;
+            // idle tick — the next round will retry.)
+        }
+    }
+
+    // 6. Handle driver events: broadcasts go to the network queue;
+    // finalization commits the block with its quorum signatures.
+    let mut committed = false;
+    let mut pending_outbound: Vec<DriverEvent> = Vec::new();
+    std::mem::swap(outbound, &mut pending_outbound);
+    for event in pending_outbound {
+        match event {
+            DriverEvent::BroadcastProposal { .. } | DriverEvent::BroadcastVote(_) => {
+                // P4: the network task drains `outbound`. For now, re-queue.
+                outbound.push(event);
+            }
+            DriverEvent::Finalized { block, sig_entries } => {
+                commit_finalized_block(store, mempool, cfg, stats, &state, block, &sig_entries)?;
+                committed = true;
+            }
+        }
+    }
+    if committed {
+        // Advance to the next height's engine.
+        driver
+            .advance_height(wall_clock_ms())
+            .map_err(TickError::Fatal)?;
+    }
+    Ok(committed)
+}
+
+/// Commit a BFT-finalized block: self-verify the quorum signatures, then
+/// the existing atomic commit path (store txn + block file + mempool).
+///
+/// PANIC POLICY (ADR-0029): as in the old direct path, `commit_block`
+/// panics propagate and halt the node — a broken executor must not keep
+/// running and diverge.
+#[allow(clippy::too_many_arguments)]
+fn commit_finalized_block(
+    store: &ChainStore,
+    mempool: &mut Mempool,
+    cfg: &ProducerConfig,
+    stats: &mut ProducerStats,
+    state: &State,
+    block: Block,
+    sig_entries: &[SigEntry],
+) -> Result<(), TickError> {
+    let validators = canonical_validators(store)?;
     let parent_block_time = if state.seqno == 0 {
         0
     } else {
@@ -533,85 +751,39 @@ fn run_tick(
             })?
             .block_time
     };
-    // Canonical validator set, loaded once: needed for signing (the
-    // signer's index in `sign_block`) and self-verification below. Its
-    // size no longer feeds the block-size check: the producer writes
-    // exactly one signature, so the sig-section budget is
-    // `producer_sig_section_bytes()`, not per-validator (ADR-0045).
-    let validators = canonical_validators(store)?;
-    let max_sig_section_bytes = producer_sig_section_bytes();
-    let block = match propose_robust(
-        &state,
-        candidates,
-        lt,
-        cfg.fee_collector,
-        parent_block_time,
-        max_sig_section_bytes,
-        mempool,
-        stats,
-    )? {
-        Some(block) => block,
-        None => return Ok(false), // everything was dropped; idle tick
-    };
-
-    // 6. Atomic commit: STF re-validation + state/body/index/head in one txn.
-    //
-    // PANIC POLICY (ADR-0029): this call is deliberately NOT wrapped in
-    // catch_unwind. A panic inside commit_block/apply_block — real block
-    // application — means this node's own execution is broken; it
-    // propagates and halts the node. Mapping it to "invalid block" or
-    // bouncing the message would let a broken node keep running and
-    // silently diverge from honest nodes.
-    //
-    // ONXBLK05: sign the block (if a signing key is configured), then
-    // commit block+signatures atomically (TRAP 2).
-    let sig_entries = sign_block(
-        &block,
-        &state.chain_id,
-        cfg.signing_key.as_ref(),
-        &validators,
-    )
-    .map_err(|e| TickError::Fatal(format!("producer: signing failed: {e}")))?;
-    // Self-verification (audit blocker 2): run the same acceptance check
-    // every verifier runs, BEFORE committing. A block we produced must
-    // never be one our own verifier rejects — fail the tick loudly
-    // instead of committing a block replay would refuse.
+    // Self-verification: the quorum signatures must pass the same check
+    // every verifier runs, BEFORE committing.
     onx::auth::verify_block_auth(
         &state.chain_id,
         &block.header,
         parent_block_time,
-        &sig_entries,
+        sig_entries,
         &validators,
     )
     .map_err(|e| TickError::Fatal(format!("producer: self-verification failed: {e}")))?;
     store
-        .commit_block(&state, &block, &sig_entries)
+        .commit_block(state, &block, sig_entries)
         .map_err(|e| TickError::Fatal(format!("producer: commit_block failed: {e}")))?;
-
-    // 7. Emit the canonical block file (feeds `onx replay` directly),
-    // atomically: a crash mid-write must never leave a torn `.blk` file.
     atomic_write_block_file(
         &cfg.blocks_dir,
         block.header.seqno,
-        &encode_block_file(&block, &sig_entries),
+        &encode_block_file(&block, sig_entries),
     )
     .map_err(TickError::Fatal)?;
-
-    // 8. Remove committed transactions from the mempool.
     mempool.remove_committed(&block.body.messages);
-
     stats.blocks_produced += 1;
     stats.msgs_committed += block.body.messages.len() as u64;
     if let Some(t) = &cfg.telemetry {
         t.set_block_height(block.header.seqno as i64);
     }
     eprintln!(
-        "producer: committed block seqno={} msgs={} root={}",
+        "producer: committed block seqno={} msgs={} root={} sigs={}",
         block.header.seqno,
         block.body.messages.len(),
-        hex::encode(block.header.state_root)
+        hex::encode(block.header.state_root),
+        sig_entries.len(),
     );
-    Ok(true)
+    Ok(())
 }
 
 /// Build a block from candidates, dropping ONLY messages the STF rejects
@@ -645,11 +817,14 @@ fn run_tick(
 /// `MAX_BLOCK_FILE_BYTES`, so `largest_fitting_prefix` returned zero
 /// and the producer halted on a `Fatal` tick error — even though the
 /// block it would have written carried exactly one 68-byte signature
-/// (devin 🟡 review on PR #47). Revisit when multi-validator quorum
-/// signing lands (M6): the budget must then cover however many
-/// signatures the producer attaches.
-fn producer_sig_section_bytes() -> usize {
-    4usize.saturating_add(SIG_ENTRY_BYTE_LEN)
+/// Worst-case signature-section size: `4 + N·68` for the N validators in the
+/// genesis set (M6). The producer budgets for every genesis validator
+/// signing, not just the quorum it attaches — deterministic (N is fixed in
+/// genesis), fail-closed, and it matches ADR-0045's philosophy. At large N
+/// this linear budget breaks `MAX_BLOCK_FILE_BYTES`; that is the BLS
+/// aggregation follow-up, out of M6 scope (4 validators → 276 bytes).
+fn producer_sig_section_bytes(validator_count: usize) -> usize {
+    4usize.saturating_add(validator_count.saturating_mul(SIG_ENTRY_BYTE_LEN))
 }
 
 /// Worst-case encoded `.blk` file size for these messages: magic + header +
@@ -1026,6 +1201,50 @@ fn find_first_panicking_prefix(
     })
 }
 
+/// Test helper: run BFT ticks with local loopback until a block commits
+/// (single-validator net) or max_ticks elapse.
+#[cfg(test)]
+fn run_bft_ticks(
+    store: &ChainStore,
+    mempool: &mut Mempool,
+    cfg: &ProducerConfig,
+    stats: &mut ProducerStats,
+    driver: &mut crate::consensus_driver::ConsensusDriver,
+    max_ticks: usize,
+) -> bool {
+    use crate::consensus_driver::DriverEvent;
+    let mut inbound: Vec<InboundConsensusMsg> = Vec::new();
+    let mut outbound: Vec<DriverEvent> = Vec::new();
+    for _ in 0..max_ticks {
+        let committed = run_tick(
+            store,
+            mempool,
+            cfg,
+            stats,
+            driver,
+            &mut inbound,
+            &mut outbound,
+        )
+        .unwrap();
+        if committed {
+            return true;
+        }
+        for event in outbound.drain(..) {
+            match event {
+                DriverEvent::BroadcastVote(v) => inbound.push(InboundConsensusMsg::Vote(v)),
+                DriverEvent::BroadcastProposal { proposal, block } => {
+                    inbound.push(InboundConsensusMsg::Proposal(proposal, block))
+                }
+                DriverEvent::Finalized { .. } => {}
+            }
+        }
+        if inbound.is_empty() {
+            break;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1105,9 +1324,9 @@ mod tests {
             state.last_lt + 1,
             fee_collector,
             0,
-            // The producer's sig-section budget (one entry: its own
-            // signature); two small transfers are far under the file cap.
-            producer_sig_section_bytes(),
+            // The producer's sig-section budget (test genesis: 1 validator);
+            // two small transfers are far under the file cap.
+            producer_sig_section_bytes(1),
             &mut mempool,
             &mut stats,
         )
@@ -1162,24 +1381,25 @@ mod tests {
         );
     }
 
-    /// Devin 🟡 review on PR #47: the old sig-section budget reserved
-    /// 4 + n·68 bytes for *every* genesis validator. With ~124,000
-    /// validators that reservation alone exceeded `MAX_BLOCK_FILE_BYTES`,
-    /// so `largest_fitting_prefix` returned zero and the producer halted
-    /// with a `Fatal` tick error — even though the block it would have
-    /// written carried exactly one 68-byte signature. The budget is the
-    /// producer's own single signature and must not grow with the
-    /// validator set.
+    /// M6: the sig-section budget covers the whole genesis validator set
+    /// (4 + N·68), not just the producer's own signature. The devin 🟡
+    /// finding on PR #47 (at ~124k validators the reservation alone blew
+    /// `MAX_BLOCK_FILE_BYTES` and halted the producer) does not apply:
+    /// D2 fixes the validator set in genesis, so N is bounded and known
+    /// at genesis time — and fail-closed budgeting must cover the worst
+    /// case the producer can actually attach, or it commits blocks no
+    /// follower can fetch (the exact ADR-0045 failure). Linear scaling
+    /// past modest N is the BLS aggregation follow-up, out of M6 scope.
     #[test]
-    fn sig_section_budget_ignores_validator_set_size() {
-        assert_eq!(producer_sig_section_bytes(), 4 + SIG_ENTRY_BYTE_LEN);
-        // At 130,000 validators the old formula (4 + n·68 ≈ 8.43 MiB)
-        // exceeded the whole sync budget; a small message must still fit
-        // under the production budget.
+    fn sig_section_budget_covers_genesis_set() {
+        assert_eq!(producer_sig_section_bytes(1), 4 + SIG_ENTRY_BYTE_LEN);
+        assert_eq!(producer_sig_section_bytes(4), 4 + 4 * SIG_ENTRY_BYTE_LEN);
+        // At M6's 4 validators the reservation is 276 bytes — trivial
+        // against the sync budget; a small message must still fit.
         let state = State::from_genesis(&test_genesis());
         // seq 0: the account's next expected on-chain nonce, state-derived.
         let msg = signed_transfer(&state, 0, 0);
-        assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes()) > 0);
+        assert!(largest_fitting_prefix(&[msg], producer_sig_section_bytes(4)) > 0);
     }
 
     /// ADR-0045: a candidate set bigger than the sync servable bound is
@@ -1195,8 +1415,8 @@ mod tests {
     fn oversize_candidate_set_is_trimmed_not_rejected() {
         let state = State::from_genesis(&test_genesis());
         let fee_collector = test_fee_collector();
-        // The producer's sig-section budget (one entry: its own signature).
-        let max_sig_section_bytes = producer_sig_section_bytes();
+        // The producer's sig-section budget (test genesis: 1 validator).
+        let max_sig_section_bytes = producer_sig_section_bytes(1);
         let payload = vec![0x5au8; 60_000];
         let mut candidates = Vec::new();
         // Per-account sequence offsets. The message nonce is each account's
@@ -1390,6 +1610,8 @@ mod tests {
             blocks_dir: root.join("blocks"),
             telemetry: None,
             signing_key: Some(validator_key),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         };
         std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
         let mut mempool =
@@ -1398,7 +1620,18 @@ mod tests {
 
         // Tick 1: the trim fires — a block commits with the fitting prefix
         // and the tail stays held in the mempool.
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         let hash1 = store.block_hash_for_seqno(1).unwrap().unwrap();
         let header1 = store.get_block_header(&hash1).unwrap().unwrap();
         let body1 = store.get_block_body(&hash1).unwrap().unwrap();
@@ -1435,7 +1668,18 @@ mod tests {
         );
 
         // Tick 2: the held tail commits. Everything lands, nothing rejected.
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.blocks_produced, 2);
         assert_eq!(stats.txs_rejected, 0);
         assert!(mempool.is_empty());
@@ -1595,16 +1839,40 @@ mod tests {
             blocks_dir: root.join("blocks"),
             telemetry: None,
             signing_key: Some(validator_key),
+            consensus_bind: None,
+            consensus_peers: Vec::new(),
         };
         std::fs::create_dir_all(&cfg.blocks_dir).unwrap();
         let mut mempool = Mempool::new(&tx_pool_dir, 1000, state.chain_id, fee_collector).unwrap();
         let mut stats = ProducerStats::default();
 
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.msgs_committed, 10, "ten calls fit under the cap");
         assert_eq!(mempool.len(), 2, "the other two are held, not dropped");
 
-        assert!(run_tick(&store, &mut mempool, &cfg, &mut stats).unwrap());
+        {
+            let mut driver =
+                build_consensus_driver(&store, cfg.signing_key.as_ref().unwrap()).unwrap();
+            assert!(run_bft_ticks(
+                &store,
+                &mut mempool,
+                &cfg,
+                &mut stats,
+                &mut driver,
+                10
+            ));
+        }
         assert_eq!(stats.blocks_produced, 2);
         assert_eq!(stats.msgs_committed, 12, "every call is committed");
         assert_eq!(stats.txs_rejected, 0);
