@@ -140,7 +140,7 @@ participants:
     status: AVAILABLE
     availability_check: ".github/workflows/review-relay.yml turn-2 job completes"
     last_successful_check: "2026-10-10"
-    failure_policy: "If turn 2 fails, turn 3 still runs on turn-1 + app reviews. Absence is logged in provenance."
+    failure_policy: "If turn 2 fails, turn 3 is blocked (review-relay.yml gates turn 3 on turn-2 success). The relay must be re-run."
     notes: "Not a separate vendor; a Claude-powered workflow stage. Listed separately because it has a distinct role and failure mode."
 
   - id: relay_turn3

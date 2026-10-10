@@ -5,8 +5,8 @@ What the council costs to run, per participant. Updated 2026-10-10.
 **Approach:** We do not try to track exact usage quotas in advance — that
 proved impractical. Instead, we record what we know and document outages
 when they happen. If a council member shows clear signs of being unable
-to operate (quota exhausted, trial expired, API errors), that goes in
-`incidents.md` as an `UNAVAILABLE` event. The status model handles the rest.
+to operate (quota exhausted, trial expired, API errors), record it in
+`incidents.md` and update their `status` in `registry.yaml`.
 
 **Why this exists:** The council at full effectiveness costs real money.
 This document makes the known costs visible so availability decisions
@@ -38,5 +38,9 @@ are explicit, not accidental.
 ## Policy
 
 - A cost-driven `UNAVAILABLE` is recorded in `incidents.md` like any other outage.
-- The "two-member floor" (Gokoo + Claude) is the minimum viable council; see `degraded-operation.md`.
+  After recording, update the participant's `status` field in `registry.yaml`
+  per `status-model.md` — the incident log alone does not change the status.
+- The minimum viable council is Gokoo (lead) + Claude (audit). Below this,
+  the council cannot function as a council — see `degraded-operation.md`
+  for the per-role blocking policy.
 - Update this file when known costs change (new billing, trial expiry, plan changes).

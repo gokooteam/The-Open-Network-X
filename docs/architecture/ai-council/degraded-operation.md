@@ -34,7 +34,7 @@ A blocked PR:
 
 1. Keeps the `review-blocking` label.
 2. Shows the missing required participant in the relay summary comment.
-3. Cannot merge until the participant recovers OR Amethyst applies the `review-consensus-override` label (explicit human override, recorded in provenance).
+3. Cannot merge until the participant recovers OR Amethyst applies the `consensus-override` label (explicit human override, recorded in provenance).
 
 A blocked PR does **not**:
 
@@ -53,7 +53,7 @@ A warning:
 
 ## Amethyst's override
 
-Amethyst may override any block with the `review-consensus-override` label (see `.github/workflows/review-consensus-override.yml`). The override:
+Amethyst may override any block with the `consensus-override` label (see `.github/workflows/consensus-override.yml`). The override:
 
 - is a deliberate human decision, not a system default;
 - is recorded in the PR's provenance;

@@ -86,14 +86,23 @@ jobs:
               if not isinstance(p.get("required"), bool):
                   errors.append(f"{pid}: required must be a boolean")
 
-          # At least one required independent_reviewer must exist
-          # (the primary audit cannot be waived for consensus changes)
-          has_required_auditor = any(
-              p.get("required") and p.get("role") == "independent_reviewer"
-              for p in reg.get("participants", [])
-          )
-          if not has_required_auditor:
-              errors.append("no required independent_reviewer in registry — the primary audit role must exist")
+          # Every required role must have at least one required participant.
+          # Required roles are those that the degraded-operation policy marks
+          # as blocking for consensus-impact PRs.
+          REQUIRED_ROLES = {
+              "lead_implementation",
+              "independent_reviewer",
+              "second_opinion",
+              "synthesis_moderator",
+              "live_verifier",
+          }
+          for role in REQUIRED_ROLES:
+              has_required = any(
+                  p.get("required") and p.get("role") == role
+                  for p in reg.get("participants", [])
+              )
+              if not has_required:
+                  errors.append(f"no required participant with role '{role}' — required roles must be filled")
 
           if errors:
               print("REGISTRY VALIDATION FAILED:")

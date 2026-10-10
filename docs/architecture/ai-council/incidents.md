@@ -34,8 +34,10 @@ monthly quota` (HTTP 402).
   unavailable tool is supplementary scanning, not a required council role.
 
 **Classification:**
-- Status: `UNAVAILABLE` (quota exhaustion — temporary, resolves on reset or billing change).
-- This is the **first recorded instance** of a review agent/tool becoming
+- This tool is not a registered council participant (`registry.yaml` has no
+  Copilot entry). It is supplementary scanning infrastructure. The `UNAVAILABLE`
+  label here is descriptive, not a registry status change.
+- This is the **first recorded instance** of a review tool becoming
   unavailable in production. It validates the core architectural distinction:
   the tool went down, the council kept working, and the absence was visible
   rather than silent.

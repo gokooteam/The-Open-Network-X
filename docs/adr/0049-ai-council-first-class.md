@@ -46,7 +46,7 @@ It means the council is now an explicit architectural subsystem with:
 - defined interfaces (GitHub PR reviews, review-relay turns, commit statuses);
 - defined review stages (turns 1–4, documented in `docs/guides/review-relay.md`);
 - defined state (the status model: AVAILABLE, DEGRADED, UNAVAILABLE, DISABLED, NOT_CONFIGURED);
-- defined availability (health checks, `scripts/ai-council/health.sh`);
+- defined availability (health checks, `scripts/ai-council/health.py`);
 - defined failure modes (what happens when a participant is unavailable);
 - defined participation records (review provenance per PR);
 - defined degraded-operation behavior (when full council is required vs. permitted to degrade).

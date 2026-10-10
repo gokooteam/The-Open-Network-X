@@ -51,7 +51,7 @@ The consensus verdict (GO or NO-GO), the `Review consensus` commit status, and â
 | Turn 3 synthesis | "Review relay: state of the review" comment |
 | Turn 4 verification | "Gokoo verification" comment |
 | Consensus verdict | `Review consensus` commit status |
-| Override (if any) | `review-consensus-override` label + who applied it |
+| Override (if any) | `consensus-override` label + who applied it |
 
 ## Provenance template
 
@@ -89,7 +89,7 @@ When documenting a PR's review after the fact (e.g., in a retrospective or audit
 ### Decision
 - Consensus: NO-GO
 - Blocking: [critical] <summary>, [high] <summary>
-- Merged: no (or: yes via review-consensus-override by <who> on <date>)
+- Merged: no (or: yes via consensus-override by <who> on <date>)
 ```
 
 ## Why this matters

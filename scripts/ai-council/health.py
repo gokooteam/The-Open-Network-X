@@ -42,14 +42,23 @@ def main():
     required_available = [p for p in required if p["status"] == "AVAILABLE"]
     required_missing = [p for p in required if p["status"] != "AVAILABLE"]
 
-    # Architecture health: FULL if all required are AVAILABLE, DEGRADED otherwise
-    if not required_missing and not degraded and not unavailable:
+    # Architecture health: FULL only if every council member is AVAILABLE
+    # and the lead is AVAILABLE. Any other status degrades it.
+    lead_unavailable = [p for p in lead if p["status"] != "AVAILABLE"]
+    non_available = [p for p in council if p["status"] != "AVAILABLE"]
+
+    if lead_unavailable:
+        arch = "STOPPED (lead unavailable — no work can proceed)"
+    elif not non_available:
         arch = "FULL"
     elif not required_missing:
-        arch = "DEGRADED (advisory members missing)"
+        arch = "DEGRADED (advisory members not AVAILABLE)"
     else:
         arch = "DEGRADED (required members missing — consensus PRs blocked)"
 
+    # This timestamp is when the REPORT was generated, not when statuses were
+    # verified. Statuses are hand-set in registry.yaml; see last_successful_check
+    # per participant for when each was actually confirmed.
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     if as_json:
@@ -67,7 +76,8 @@ def main():
                 "required_total": len(required),
             },
             "architecture": arch,
-            "checked_at": now,
+            "report_generated_at": now,
+            "note": "Statuses are hand-set in registry.yaml; report_generated_at is when this ran, not when statuses were verified.",
         }, indent=2))
         return
 
@@ -90,12 +100,16 @@ def main():
         print(f"  Unavailable: {', '.join(p['name'] for p in unavailable)}")
     if disabled:
         print(f"  Disabled: {', '.join(p['name'] for p in disabled)}")
+    if not_configured:
+        print(f"  Not configured: {', '.join(p['name'] for p in not_configured)}")
     print()
     print("Architecture:")
     print(f"  {arch}")
     print()
-    print("Last checked:")
+    print("Report generated:")
     print(f"  {now}")
+    print("  (Statuses are hand-set in registry.yaml; this timestamp is")
+    print("   when the report ran, not when statuses were verified.)")
     print()
     print("Registry: docs/architecture/ai-council/registry.yaml")
     print("ADR: docs/adr/0049-ai-council-first-class.md")
