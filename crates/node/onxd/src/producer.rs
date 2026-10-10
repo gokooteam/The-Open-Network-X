@@ -593,20 +593,26 @@ fn run_tick(
     }
 
     // 4. Inbound consensus messages from the network.
+    // A bad message is not fatal: log it and continue. Aborting the tick
+    // here would drop events (including Finalized) already in `outbound`.
     for msg in inbound.drain(..) {
-        let events = match msg {
+        let events: Option<Vec<DriverEvent>> = match msg {
             InboundConsensusMsg::Proposal(p, b) => driver
                 .receive_proposal(&p, &b, |bytes| {
                     onx::blockfile::decode_block_file(bytes)
                         .map(|sb| sb.block)
                         .map_err(|e| e.to_string())
                 })
-                .map_err(TickError::Retryable)?,
-            InboundConsensusMsg::Vote(v) => {
-                driver.receive_vote(&v).map_err(TickError::Retryable)?
-            }
+                .map_err(|e| eprintln!("producer: bad proposal, skipping: {e}"))
+                .ok(),
+            InboundConsensusMsg::Vote(v) => driver
+                .receive_vote(&v)
+                .map_err(|e| eprintln!("producer: bad vote, skipping: {e}"))
+                .ok(),
         };
-        outbound.extend(events);
+        if let Some(events) = events {
+            outbound.extend(events);
+        }
     }
 
     // 5. Propose when this node leads the round and has transactions.

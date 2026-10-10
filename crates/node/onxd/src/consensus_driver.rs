@@ -278,8 +278,21 @@ impl ConsensusDriver {
             }
         }
         let mut events = Vec::new();
-        if let Some(vote_bytes) = self.vote_phase(VotePhase::PreVote)? {
-            events.push(DriverEvent::BroadcastVote(vote_bytes));
+        // Vote all phases the engine advances through. With own-vote counting,
+        // a single validator can advance through multiple phases in one call.
+        // Loop until the engine stops advancing or we've voted all phases.
+        for _ in 0..3 {
+            // At most 3 phases: PreVote, PreCommit, Commit.
+            let phase = match self.engine.step() {
+                ConsensusStep::PreVote => VotePhase::PreVote,
+                ConsensusStep::PreCommit => VotePhase::PreCommit,
+                ConsensusStep::Commit => VotePhase::Commit,
+                _ => break,
+            };
+            match self.vote_phase(phase)? {
+                Some(vote_bytes) => events.push(DriverEvent::BroadcastVote(vote_bytes)),
+                None => break, // Already voted this phase; engine won't advance.
+            }
         }
         events.extend(self.check_finalized()?);
         Ok(events)
@@ -311,6 +324,12 @@ impl ConsensusDriver {
     fn receive_vote_inner(&mut self, vote_bytes: &[u8]) -> Result<Vec<DriverEvent>, String> {
         let (vote, header_sig) =
             decode_vote(vote_bytes).map_err(|e| format!("consensus: bad vote: {e}"))?;
+        // Idempotency: if this is our own vote for a phase we've already
+        // voted, we've already counted it (vote_phase feeds it directly).
+        // Skip to avoid a duplicate-signature error from the engine.
+        if vote.validator_id == self.own_id && self.voted.contains(&(vote.round, vote.phase)) {
+            return Ok(Vec::new());
+        }
         // A commit vote's header signature attests to the block this node
         // validated. Verify it now, against the stored block, before the
         // engine counts the vote.
@@ -341,19 +360,29 @@ impl ConsensusDriver {
                 self.pending.push(vote_bytes.to_vec());
                 return Ok(Vec::new());
             }
+            Err(onx_consensus::ConsensusError::ConflictingProposal)
+                if self.engine.proposal().is_none() =>
+            {
+                // Vote arrived before the proposal (gossip is unordered).
+                // Buffer it; it will be retried when the proposal lands.
+                self.pending.push(vote_bytes.to_vec());
+                return Ok(Vec::new());
+            }
             Err(e) => return Err(format!("consensus: vote rejected: {e}")),
         }
         let mut events = Vec::new();
         // The engine may have advanced a phase on quorum; vote the new one.
-        let next = match self.engine.step() {
-            ConsensusStep::PreVote => Some(VotePhase::PreVote),
-            ConsensusStep::PreCommit => Some(VotePhase::PreCommit),
-            ConsensusStep::Commit => Some(VotePhase::Commit),
-            _ => None,
-        };
-        if let Some(phase) = next {
-            if let Some(vote_bytes) = self.vote_phase(phase)? {
-                events.push(DriverEvent::BroadcastVote(vote_bytes));
+        // With own-vote counting, vote all phases the engine advances through.
+        for _ in 0..3 {
+            let phase = match self.engine.step() {
+                ConsensusStep::PreVote => VotePhase::PreVote,
+                ConsensusStep::PreCommit => VotePhase::PreCommit,
+                ConsensusStep::Commit => VotePhase::Commit,
+                _ => break,
+            };
+            match self.vote_phase(phase)? {
+                Some(vote_bytes) => events.push(DriverEvent::BroadcastVote(vote_bytes)),
+                None => break,
             }
         }
         events.extend(self.check_finalized()?);
@@ -402,7 +431,22 @@ impl ConsensusDriver {
         } else {
             None
         };
-        Ok(Some(encode_vote(&vote, header_sig.as_ref())))
+        let vote_bytes = encode_vote(&vote, header_sig.as_ref());
+        // Count our own vote locally. The network layer broadcasts to peers
+        // only; without this, a node would never count its own vote and
+        // liveness would require all peers (no fault tolerance).
+        // (The engine verifies the signature; our own signature is valid.)
+        //
+        // Also store our header signature (for Commit votes) so finalization
+        // includes it. receive_vote_inner does this for inbound votes; we do
+        // it here for our own.
+        if let Some(sig) = header_sig {
+            self.header_sigs.insert(self.own_id, sig);
+        }
+        self.engine
+            .receive_vote(vote)
+            .map_err(|e| format!("consensus: own vote rejected: {e}"))?;
+        Ok(Some(vote_bytes))
     }
 
     /// If the engine finalized, assemble the commit event.
