@@ -61,6 +61,10 @@ pub struct ConsensusDriver {
     /// unordered). Retried whenever the step advances; dropped on round
     /// change since votes never cross rounds.
     pending: Vec<Vec<u8>>,
+    /// Expected prev_hash for this height (the local head). Set via
+    /// `set_head()` before processing proposals. If unset, prev_hash
+    /// validation is skipped (test-only).
+    head_hash: Option<[u8; 32]>,
 }
 
 impl ConsensusDriver {
@@ -113,7 +117,15 @@ impl ConsensusDriver {
             voted: BTreeSet::new(),
             proposed_round: None,
             pending: Vec::new(),
+            head_hash: None,
         })
+    }
+
+    /// Set the expected prev_hash for this height (the local head).
+    /// Must be called before processing proposals; otherwise prev_hash
+    /// validation is skipped.
+    pub fn set_head(&mut self, head_hash: [u8; 32]) {
+        self.head_hash = Some(head_hash);
     }
 
     /// This node's validator id.
@@ -213,6 +225,23 @@ impl ConsensusDriver {
         if block.header.hash() != proposal.block_hash.0 {
             return Err("consensus: proposal block hash mismatch".to_string());
         }
+        // ADR-0049: validate the block before voting. A validator never votes
+        // for a block it has not validated.
+        if block.header.seqno != proposal.height as u32 {
+            return Err(format!(
+                "consensus: bad seqno: expected {}, got {}",
+                proposal.height, block.header.seqno
+            ));
+        }
+        if let Some(head) = self.head_hash {
+            if block.header.prev_hash != head {
+                return Err("consensus: proposal does not build on local head".to_string());
+            }
+        }
+        // TODO: STF dry-run validation (consensus.md §3.4). For now, the
+        // seqno and prev_hash checks catch the critical cases. Full
+        // re-execution requires the state at the head, which the driver
+        // does not yet have access to.
         // The proposal must build on this node's head; otherwise it is for
         // a fork or a future height we cannot validate yet. (Fork-choice
         // across heights is P5; for M6, heights advance in lockstep.)
