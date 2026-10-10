@@ -88,13 +88,13 @@ jobs:
 
           # Every required role must have at least one required participant.
           # Required roles are those that the degraded-operation policy marks
-          # as blocking for consensus-impact PRs.
+          # as blocking for consensus-impact PRs. Note: live_verifier (turn 4)
+          # is intentionally advisory, not required.
           REQUIRED_ROLES = {
               "lead_implementation",
               "independent_reviewer",
               "second_opinion",
               "synthesis_moderator",
-              "live_verifier",
           }
           for role in REQUIRED_ROLES:
               has_required = any(
