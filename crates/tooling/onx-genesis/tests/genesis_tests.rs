@@ -162,6 +162,9 @@ fn rekeyed_fixture_validator_is_test_secret_key_0x11() {
     // public, deterministic test key — so fixture blocks can actually be
     // signed (ONXBLK05). The old DEV label "validator-01" derived a key
     // with no known private key and could never sign.
+    //
+    // M6 (2026-10-09): the genesis now has 4 validators (0x11, 0x22, 0x33,
+    // 0x44) for BFT consensus. 0x11 must be among them.
     let cfg = parse_config(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../config/genesis.toml"
@@ -173,10 +176,10 @@ fn rekeyed_fixture_validator_is_test_secret_key_0x11() {
         .expect("fixed test seed decodes")
         .public_key()
         .encode();
-    assert_eq!(doc.validators.len(), 1);
-    assert_eq!(
-        doc.validators[0].pubkey, expected,
-        "fixture validator is not test_secret_key(0x11)"
+    assert_eq!(doc.validators.len(), 4);
+    assert!(
+        doc.validators.iter().any(|v| v.pubkey == expected),
+        "0x11 not among genesis validators"
     );
 
     // Property: the rekey changes the chain ID (the genesis hash commits to
