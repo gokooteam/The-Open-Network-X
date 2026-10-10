@@ -98,6 +98,12 @@ Human project intent / constitutional rules (Amethyst, MILESTONES.md, ADRs)
 
 The council does not become the ultimate authority merely because it is a first-class component. Its role is independent scrutiny and deliberation within the project's governing rules.
 
+### The gate binds its creator
+
+The consensus gate is a commitment device. It is designed so that no single person — including the project's founder — can merge a consensus-impact change on the strength of a feeling, a late night, or impatience with the process. The override mechanism exists for genuine emergencies, but the norm is that the gate holds until the council reaches GO.
+
+This is intentional. A review system that its own creator can casually bypass is not a review system; it is a suggestion box. The architecture treats the founder's restraint as a feature to be preserved, not an obstacle to be routed around. Future contributors — human or AI — will see that the bar applied to them is the same bar that applied to everyone before them, including the person who built it.
+
 ## Historical basis
 
 ### Why look at history
