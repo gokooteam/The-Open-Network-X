@@ -1,54 +1,42 @@
 # Council Operating Costs & Usage
 
 What the council costs to run, per participant. Updated 2026-10-10.
-This is a living document — update it when usage changes, quotas reset,
-or billing changes.
+
+**Approach:** We do not try to track exact usage quotas in advance — that
+proved impractical. Instead, we record what we know and document outages
+when they happen. If a council member shows clear signs of being unable
+to operate (quota exhausted, trial expired, API errors), that goes in
+`incidents.md` as an `UNAVAILABLE` event. The status model handles the rest.
 
 **Why this exists:** The council at full effectiveness costs real money.
-This document makes those costs visible so availability decisions
-("can we afford to run the full council on this PR?") are explicit,
-not accidental. A participant marked `UNAVAILABLE` for cost reasons
-gets the same visibility and governance as one down for technical reasons.
+This document makes the known costs visible so availability decisions
+are explicit, not accidental.
 
 ---
 
-## Current usage snapshot (2026-10-10)
+## Known operating costs (2026-10-10)
 
-| Participant | Plan / Quota | Used | Remaining | Resets / Expires | Notes |
-|---|---|---|---|---|---|
-| Gokoo (Muse tokens) | 3B referral tokens | ~6% (~180M) | ~2.8B | Never expires | Primary build + verification budget. Barely dented. |
-| Claude (audit) | _Unknown_ | _Unknown_ | _Unknown_ | _Unknown_ | Audit-only by policy (usage burns fast). Need actual numbers. |
-| CodeRabbit | _Unknown_ | _Unknown_ | _Unknown_ | _Unknown_ | Need plan/quota info. |
-| Devin | _Unknown_ | _Unknown_ | _Unknown_ | _Unknown_ | Need plan/quota info. |
-| Greptile | Unlimited | N/A (unlimited) | N/A | ~11–12 days remaining (as of 2026-10-10) | Unlimited window expiring soon — plan for what comes after. |
-| Copilot (Adv. Security) | Monthly quota | 100% (exhausted) | 0 | _Reset date TBD_ | First recorded outage (see `incidents.md`). |
-
----
-
-## Gaps to fill
-
-- [ ] **Claude:** Actual usage/billing. What plan, what's been spent, what remains?
-- [ ] **CodeRabbit:** Plan type, quota, current usage.
-- [ ] **Devin:** Plan type, quota, current usage.
-- [ ] **Copilot:** Exact quota reset date.
-- [ ] **Greptile:** What happens after the unlimited window? Paid plan cost?
+| Participant | What we know |
+|---|---|
+| Gokoo (Muse tokens) | ~2.8B tokens remaining (~6% used). Never expires. Primary build + verification budget. |
+| Claude (audit) | Audit-only by policy — usage burns fast. Exact billing not tracked; treat as constrained resource. |
+| CodeRabbit | Active on PRs. Billing details not tracked. |
+| Devin | Active on PRs. Billing details not tracked. |
+| Greptile | Unlimited for ~11–12 days (as of 2026-10-10). Plan for what comes after the window expires. |
+| Copilot (Adv. Security) | Quota exhausted 2026-10-10. First recorded outage (see `incidents.md`). Reset date TBD. |
 
 ---
 
-## Cost per PR (to be measured)
+## What to watch for
 
-Once we have baseline usage data, track approximate cost per PR:
-which reviewers ran, what they consumed. This informs the
-"budget council vs. full council" decision for future work.
-
-_No data yet — start logging after baseline is established._
+- **Greptile unlimited expiry** (~2026-10-21/22): When the window ends, either a paid plan kicks in or Greptile goes `UNAVAILABLE`. Record the outcome in `incidents.md`.
+- **Claude usage:** If audits start failing or slowing due to billing limits, that's an `UNAVAILABLE` event — document it, don't just work around it silently.
+- **Any new quota/trial:** When a new tool joins the council on a trial or limited quota, note the expiry here so the outage isn't a surprise.
 
 ---
 
 ## Policy
 
-- Update this file when any participant's quota, plan, or billing changes.
 - A cost-driven `UNAVAILABLE` is recorded in `incidents.md` like any other outage.
-- The "two-member floor" (Gokoo + Claude) is the minimum viable council;
-  see `degraded-operation.md`.
-- Do not merge PRs that expand council usage without updating this document.
+- The "two-member floor" (Gokoo + Claude) is the minimum viable council; see `degraded-operation.md`.
+- Update this file when known costs change (new billing, trial expiry, plan changes).
