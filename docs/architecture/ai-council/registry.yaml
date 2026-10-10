@@ -1,0 +1,177 @@
+# Open Network X — AI Council Registry
+#
+# Canonical source of truth for council membership. This file defines WHO
+# belongs to the intended council (architectural membership), WHAT role each
+# participant performs, and HOW to check whether they are currently
+# operational. It does NOT define current availability — that is determined
+# by running the health checks and recorded separately.
+#
+# Invariant: UNAVAILABLE does not mean REMOVED. If a participant's trial
+# expires or API fails, their `status` becomes UNAVAILABLE but they remain
+# in this registry. Removing a participant is an architectural change
+# requiring its own PR and review.
+#
+# Status values: AVAILABLE | DEGRADED | UNAVAILABLE | DISABLED | NOT_CONFIGURED
+# See status-model.md for definitions.
+
+schema_version: "1.0"
+last_reviewed: "2026-10-10"
+
+roles:
+  # Architectural roles, independent of specific vendors. Participants below
+  # are implementations of these roles.
+  lead_implementation:
+    description: "Builds the implementation. Owns the working branch and responds to review findings."
+    irreplaceable_for: ["all"]
+  independent_reviewer:
+    description: "Reviews PRs independently, without seeing other reviewers' findings first. The primary audit layer."
+    irreplaceable_for: ["consensus", "cryptography", "networking"]
+  adversarial_reviewer:
+    description: "Actively tries to break the change: finds attack vectors, safety violations, and liveness failures."
+    irreplaceable_for: ["consensus"]
+  security_reviewer:
+    description: "Scans for known vulnerability patterns, secret leaks, and dependency risks."
+    irreplaceable_for: []
+  synthesis_moderator:
+    description: "Reads all reviews, settles disagreements, merges duplicate findings, and produces the single consensus verdict."
+    irreplaceable_for: ["all"]
+  second_opinion:
+    description: "Re-reads every review so far, confirms or disputes findings, and adds what was missed."
+    irreplaceable_for: []
+  live_verifier:
+    description: "Independently verifies review claims against the actual code and CI state. Posts the final advisory verdict."
+    irreplaceable_for: ["consensus"]
+
+participants:
+  - id: gokoo
+    name: Gokoo
+    provider: meta
+    role: lead_implementation
+    review_stage: implementation
+    capabilities:
+      - implementation
+      - test_execution
+      - live_verification
+    independence_class: internal
+    required: true
+    status: AVAILABLE
+    availability_check: "n/a — the lead agent is always present when work is being done"
+    last_successful_check: "2026-10-10"
+    failure_policy: "If the lead agent is unavailable, no work proceeds. This is not a degraded state; it is a stopped state."
+    notes: "Gokoo also performs turn-4 live verification, in which capacity the role is live_verifier, not lead_implementation."
+
+  - id: claude
+    name: Claude
+    provider: anthropic
+    role: independent_reviewer
+    review_stage: turn_1
+    capabilities:
+      - deep_code_audit
+      - adversarial_analysis
+      - consensus_safety
+      - inline_findings
+    independence_class: external_model
+    required: true
+    status: AVAILABLE
+    availability_check: ".github/workflows/claude-review.yml completes successfully on a PR push"
+    last_successful_check: "2026-10-10"
+    failure_policy: "Turn 1 is the primary audit. If Claude is UNAVAILABLE, the relay's tally() still requires 2 GO verdicts with no standing NO-GO — but without the primary audit, confidence is reduced. Consensus-impact PRs SHOULD NOT proceed without an explicit Amethyst override. Docs-only PRs may proceed with a warning."
+    notes: "Audit-only per the checks-only rule. Also powers turn-2 (second_opinion) and turn-3 (synthesis_moderator) via review-relay.yml."
+
+  - id: coderabbit
+    name: CodeRabbit
+    provider: coderabbit
+    role: independent_reviewer
+    review_stage: app_review
+    capabilities:
+      - automated_code_review
+      - style_and_correctness
+      - inline_suggestions
+    independence_class: external_app
+    required: false
+    status: AVAILABLE
+    availability_check: "CodeRabbit review appears on a PR within 15 minutes of push"
+    last_successful_check: "2026-10-10"
+    failure_policy: "Advisory only. Absence produces a warning in the health report but does not block."
+    notes: "GitHub App; cannot be sequenced by the relay, runs on every push independently."
+
+  - id: devin
+    name: Devin
+    provider: devin_ai
+    role: independent_reviewer
+    review_stage: app_review
+    capabilities:
+      - automated_code_review
+      - agentic_analysis
+    independence_class: external_app
+    required: false
+    status: AVAILABLE
+    availability_check: "Devin review appears on a PR within 15 minutes of push"
+    last_successful_check: "2026-10-10"
+    failure_policy: "Advisory only. Absence produces a warning in the health report but does not block."
+    notes: "GitHub App; cannot be sequenced by the relay, runs on every push independently."
+
+  - id: greptile
+    name: Greptile
+    provider: greptile
+    role: independent_reviewer
+    review_stage: app_review
+    capabilities:
+      - automated_code_review
+      - codebase_aware_analysis
+    independence_class: external_app
+    required: false
+    status: AVAILABLE
+    availability_check: "Greptile review appears on a PR within 15 minutes of push"
+    last_successful_check: "2026-10-10"
+    failure_policy: "Advisory only. Absence produces a warning in the health report but does not block."
+    notes: "GitHub App; availability has varied with trial/subscription state. See ADR-0049: trial expiry sets status to UNAVAILABLE, never removes the entry."
+
+  - id: relay_turn2
+    name: "Review Relay Turn 2"
+    provider: anthropic
+    role: second_opinion
+    review_stage: turn_2
+    capabilities:
+      - cross_review_synthesis
+      - disagreement_detection
+    independence_class: external_model
+    required: true
+    status: AVAILABLE
+    availability_check: ".github/workflows/review-relay.yml turn-2 job completes"
+    last_successful_check: "2026-10-10"
+    failure_policy: "If turn 2 fails, turn 3 is blocked (review-relay.yml gates turn 3 on turn-2 success). The relay must be re-run."
+    notes: "Not a separate vendor; a Claude-powered workflow stage. Listed separately because it has a distinct role and failure mode."
+
+  - id: relay_turn3
+    name: "Review Relay Turn 3"
+    provider: anthropic
+    role: synthesis_moderator
+    review_stage: turn_3
+    capabilities:
+      - verdict_synthesis
+      - consensus_computation
+    independence_class: external_model
+    required: true
+    status: AVAILABLE
+    availability_check: ".github/workflows/review-relay.yml turn-3 job completes and sets the Review consensus commit status"
+    last_successful_check: "2026-10-10"
+    failure_policy: "If turn 3 fails, no consensus status is set; the PR cannot merge until the relay is re-run. This is a hard block, not a silent pass."
+    notes: "Produces the single 'Review relay: state of the review' comment and the GO/NO-GO commit status."
+
+  - id: gokoo_turn4
+    name: "Gokoo Verification (Turn 4)"
+    provider: meta
+    role: live_verifier
+    review_stage: turn_4
+    capabilities:
+      - code_claim_verification
+      - ci_state_verification
+      - advisory_verdict
+    independence_class: internal
+    required: false
+    status: AVAILABLE
+    availability_check: "n/a — event-driven, runs on PR push via the pr-event-watch hook"
+    last_successful_check: "2026-10-10"
+    failure_policy: "Advisory only. Absence does not block, but the PR description should note that live verification did not run."
+    notes: "Gokoo in a different capacity from lead_implementation. Verifies the relay's claims against the actual code; never merges."
