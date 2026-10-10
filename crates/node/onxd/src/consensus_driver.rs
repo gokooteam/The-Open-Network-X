@@ -710,4 +710,131 @@ mod tests {
             s.len()
         }
     }
+
+    /// ADR-0049 regression: a proposal with a block whose seqno does not
+    /// match the height is rejected before voting. (Probe 4: previously the
+    /// block was finalized, then commit failed fatally.)
+    #[test]
+    fn proposal_with_bad_seqno_is_rejected() {
+        let chain_id = [0x99u8; 32];
+        let shard = test_shard();
+        let seeds: [[u8; 32]; 2] = [[0x11; 32], [0x22; 32]];
+        let keys: Vec<SecretKey> = seeds
+            .iter()
+            .map(|s| SecretKey::from_seed(s).unwrap())
+            .collect();
+        let validators: Vec<(PublicKey, u64)> = keys
+            .iter()
+            .map(|k| (k.public_key(), 1_000_000))
+            .collect();
+        let mut driver =
+            ConsensusDriver::new(chain_id, shard, 1, &validators, keys[0].clone(), 0).unwrap();
+
+        // Build a block with seqno 999 (wrong; height is 1).
+        let block = test_block(999);
+        let block_hash = block.header.hash();
+        let proposal = ConsensusProposal {
+            height: 1,
+            round: 0,
+            block_hash: Uint256(block_hash),
+            proposer_id: 0,
+            signature: keys[0].sign(
+                &VALIDATOR_SIGN_V1,
+                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash)),
+            ),
+            qc_round: None,
+            qc_block: None,
+        };
+        let proposal_bytes = encode_proposal(&proposal);
+        // Encode block as bytes (simplified: we pass the block directly via closure).
+        let result = driver.receive_proposal(
+            &proposal_bytes,
+            &[], // block bytes unused; closure provides the block
+            |_| Ok(block),
+        );
+        assert!(
+            result.is_err(),
+            "proposal with bad seqno should be rejected"
+        );
+        assert!(
+            result.unwrap_err().contains("bad seqno"),
+            "error should mention bad seqno"
+        );
+    }
+
+    /// ADR-0049 regression: votes arriving before the proposal are buffered,
+    /// not rejected. (Probe 2: previously they were rejected as
+    /// ConflictingProposal, stalling validators on reordered delivery.)
+    #[test]
+    fn votes_before_proposal_are_buffered() {
+        let chain_id = [0x99u8; 32];
+        let shard = test_shard();
+        let seeds: [[u8; 32]; 2] = [[0x11; 32], [0x22; 32]];
+        let keys: Vec<SecretKey> = seeds
+            .iter()
+            .map(|s| SecretKey::from_seed(s).unwrap())
+            .collect();
+        let validators: Vec<(PublicKey, u64)> = keys
+            .iter()
+            .map(|k| (k.public_key(), 1_000_000))
+            .collect();
+        let mut driver =
+            ConsensusDriver::new(chain_id, shard, 1, &validators, keys[1].clone(), 0).unwrap();
+
+        // Validator 0 (leader) creates a proposal and votes.
+        let block = test_block(1);
+        let block_hash = block.header.hash();
+        let proposal = ConsensusProposal {
+            height: 1,
+            round: 0,
+            block_hash: Uint256(block_hash),
+            proposer_id: 0,
+            signature: keys[0].sign(
+                &VALIDATOR_SIGN_V1,
+                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash)),
+            ),
+            qc_round: None,
+            qc_block: None,
+        };
+        let proposal_bytes = encode_proposal(&proposal);
+
+        // Validator 0's PreVote (created before driver sees the proposal).
+        let vote = ConsensusVote {
+            height: 1,
+            round: 0,
+            phase: VotePhase::PreVote,
+            block_hash: Uint256(block_hash),
+            validator_id: 0,
+            signature: keys[0].sign(
+                &VALIDATOR_SIGN_V1,
+                &vote_signing_bytes(&shard, 1, 0, VotePhase::PreVote, &Uint256(block_hash)),
+            ),
+        };
+        let vote_bytes = encode_vote(&vote, None);
+
+        // Deliver the vote BEFORE the proposal. Should be buffered, not rejected.
+        let result = driver.receive_vote(&vote_bytes);
+        assert!(
+            result.is_ok(),
+            "vote before proposal should be buffered, not rejected: {:?}",
+            result.err()
+        );
+
+        // Now deliver the proposal. The buffered vote should be counted.
+        let events = driver
+            .receive_proposal(&proposal_bytes, &[], |_| Ok(block))
+            .unwrap();
+        // Driver should have voted (PreVote) and the buffered vote should
+        // have been processed. With 2 validators, we need both votes for
+        // quorum (>2/3 of 2 = >1.33, so 2 votes needed).
+        // The driver (validator 1) votes, plus the buffered vote from validator 0.
+        // Engine should be at PreCommit (2 PreVotes = quorum).
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                DriverEvent::BroadcastVote(_)
+            )),
+            "driver should broadcast its vote"
+        );
+    }
 }
