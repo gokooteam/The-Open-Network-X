@@ -91,9 +91,41 @@ Masterchain blocks are validated by the entire active global validator set (or t
 - **Propagation Overlay (§2.6.10):** Task group members form a dedicated overlay multicast mesh. The primary proposer splits the candidate block into $N_{\mathrm{chunks}}$ signed $1\text{ KB}$ chunks, augments them using RaptorQ / Reed-Solomon erasure coding to $M_{\mathrm{chunks}} \ge \frac{3}{2} N_{\mathrm{chunks}}$, and streams them across the mesh.
 - **Validation (§2.6.11):** Receiving validators reconstruct the candidate block, verify the proposer's signature, and re-execute transactions using supplied Merkle proofs.
 - **BFT Quorum Threshold (§2.6.12):**
-  A shard block candidate $B$ is eligible for commit if and only if it collects valid Ed25519 signatures from a set of task group validators $S(B)$ representing at least two-thirds of the total task group stake:
-  $$\sum_{v \in S(B)} s'_v \ge \frac{2}{3} \sum_{u \in \mathrm{TaskGroup}(w,s)} s'_u$$
-- **Masterchain Quorum (§2.6.15, §2.6.24):** A masterchain block requires signatures from validators representing at least two-thirds of total global validator stake (or top $T'$ validator set).
+  A shard block candidate $B$ is eligible for commit if and only if it collects valid Ed25519 signatures from a set of task group validators $S(B)$ representing **more than** two-thirds of the total task group stake:
+  $$\sum_{v \in S(B)} s'_v > \frac{2}{3} \sum_{u \in \mathrm{TaskGroup}(w,s)} s'_u$$
+  (ADR-0049: unified on "more than 2/3"; the "at least 2/3" phrasing in earlier drafts is superseded.)
+- **Masterchain Quorum (§2.6.15, §2.6.24):** A masterchain block requires signatures from validators representing more than two-thirds of total global validator stake (or top $T'$ validator set).
+
+### 3.7 BFT locking protocol (ADR-0049)
+
+The three-phase vote (PreVote → PreCommit → Commit) is insufficient without
+locking: honest validators can finalize conflicting blocks. The protocol
+below (Tendermint-style) provides safety.
+
+**State per validator per height:**
+- `locked_block`: block hash or nil.
+- `locked_round`: round number or -1.
+
+**Voting rules:**
+1. **PreVote:** Upon receiving a proposal for round R, validate the block
+   (§3.4: height, seqno, prev_hash, STF re-execution). If valid and (not
+   locked, or locked on this block, or proposal carries a QC from round >
+   `locked_round`), broadcast PreVote. Otherwise, do not vote.
+2. **PreCommit:** Upon seeing >2/3 PreVotes for B at round R, lock on
+   (B, R) and broadcast PreCommit for B.
+3. **Commit:** Upon seeing >2/3 PreCommits for B at round R, broadcast
+   Commit for B. Upon seeing >2/3 Commits, finalize B.
+
+**Quorum certificates:** A QC for (B, R) is >2/3 PreCommit signatures.
+Proposals for round R' must include the highest QC the proposer has seen.
+A validator unlocks from (B, R) only if the proposal's QC is for round R''
+with R'' > R.
+
+**View changes:** On timeout, increment round, discard votes (never cross
+rounds), retain locks. Timeouts use a monotonic clock.
+
+**Safety:** If two honest validators finalize different blocks at the same
+height, >1/3 of stake is Byzantine.
 
 ### 3.5 Signature depth and late-signature reward decay
 
