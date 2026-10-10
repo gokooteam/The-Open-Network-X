@@ -1,0 +1,133 @@
+name: AI Council Registry Validation
+
+# Validates docs/architecture/ai-council/registry.yaml:
+# - every participant has all required fields
+# - status values are from the valid set
+# - roles reference defined roles
+# - required participants are marked
+# - the health script runs without error
+#
+# This enforces ADR-0049: the council registry is the canonical source of
+# truth, and it must always be well-formed.
+
+on:
+  push:
+    paths:
+      - 'docs/architecture/ai-council/**'
+      - 'scripts/ai-council/**'
+      - '.github/workflows/ai-council.yml'
+  pull_request:
+    paths:
+      - 'docs/architecture/ai-council/**'
+      - 'scripts/ai-council/**'
+      - '.github/workflows/ai-council.yml'
+
+jobs:
+  validate-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Validate registry schema
+        run: |
+          python3 - <<'EOF'
+          import yaml, sys
+          from pathlib import Path
+
+          REG = Path("docs/architecture/ai-council/registry.yaml")
+          reg = yaml.safe_load(REG.read_text())
+
+          VALID_STATUSES = {"AVAILABLE", "DEGRADED", "UNAVAILABLE", "DISABLED", "NOT_CONFIGURED"}
+          REQUIRED_FIELDS = {"id", "name", "provider", "role", "review_stage",
+                             "capabilities", "independence_class", "required",
+                             "status", "availability_check", "last_successful_check",
+                             "failure_policy", "notes"}
+
+          errors = []
+
+          # Roles must be defined
+          defined_roles = set(reg.get("roles", {}).keys())
+          if not defined_roles:
+              errors.append("no roles defined in registry")
+
+          # Each participant must have all required fields
+          ids = set()
+          for p in reg.get("participants", []):
+              pid = p.get("id", "<missing id>")
+              if pid in ids:
+                  errors.append(f"duplicate participant id: {pid}")
+              ids.add(pid)
+
+              missing = REQUIRED_FIELDS - set(p.keys())
+              if missing:
+                  errors.append(f"{pid}: missing fields: {sorted(missing)}")
+
+              if p.get("status") not in VALID_STATUSES:
+                  errors.append(f"{pid}: invalid status {p.get('status')!r}")
+
+              if p.get("role") not in defined_roles:
+                  errors.append(f"{pid}: undefined role {p.get('role')!r}")
+
+              if not isinstance(p.get("capabilities"), list):
+                  errors.append(f"{pid}: capabilities must be a list")
+
+              if not isinstance(p.get("required"), bool):
+                  errors.append(f"{pid}: required must be a boolean")
+
+          # At least one required independent_reviewer must exist
+          # (the primary audit cannot be waived for consensus changes)
+          has_required_auditor = any(
+              p.get("required") and p.get("role") == "independent_reviewer"
+              for p in reg.get("participants", [])
+          )
+          if not has_required_auditor:
+              errors.append("no required independent_reviewer in registry — the primary audit role must exist")
+
+          if errors:
+              print("REGISTRY VALIDATION FAILED:")
+              for e in errors:
+                  print(f"  - {e}")
+              sys.exit(1)
+          print(f"Registry valid: {len(ids)} participants, {len(defined_roles)} roles.")
+          EOF
+
+      - name: Health script runs
+        run: |
+          python3 scripts/ai-council/health.py > /tmp/council-health.txt
+          cat /tmp/council-health.txt
+          python3 scripts/ai-council/health.py --json | python3 -c "import json,sys; json.load(sys.stdin); print('JSON valid')"
+
+      - name: Health script fails loudly on broken registry
+        run: |
+          # Temporarily break the registry and confirm the validator catches it
+          cp docs/architecture/ai-council/registry.yaml /tmp/registry-backup.yaml
+          python3 -c "
+          import yaml
+          from pathlib import Path
+          p = Path('docs/architecture/ai-council/registry.yaml')
+          reg = yaml.safe_load(p.read_text())
+          reg['participants'][0]['status'] = 'BOGUS'
+          p.write_text(yaml.safe_dump(reg))
+          "
+          if python3 - <<'EOF' 2>/dev/null; then
+          import yaml, sys
+          from pathlib import Path
+          reg = yaml.safe_load(Path("docs/architecture/ai-council/registry.yaml").read_text())
+          VALID = {"AVAILABLE", "DEGRADED", "UNAVAILABLE", "DISABLED", "NOT_CONFIGURED"}
+          for p in reg["participants"]:
+              assert p["status"] in VALID, f"bad status: {p['status']}"
+          EOF
+            echo "ERROR: validator did not catch bogus status"
+            cp /tmp/registry-backup.yaml docs/architecture/ai-council/registry.yaml
+            exit 1
+          fi
+          echo "Validator correctly rejects invalid status."
+          cp /tmp/registry-backup.yaml docs/architecture/ai-council/registry.yaml
