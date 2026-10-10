@@ -184,14 +184,21 @@ impl ConsensusDriver {
             round,
             block_hash: Uint256(hash),
             proposer_id: self.own_id,
-            signature: self.signing_key.sign(
-                &VALIDATOR_SIGN_V1,
-                &proposal_signing_bytes(&self.shard, height, round, &Uint256(hash)),
-            ),
             // ADR-0049: include the highest QC round this validator has seen.
             // (For now: the locked round, if any. Full QC tracking is future work.)
             qc_round: self.engine.locked_round(),
             qc_block: self.engine.locked_block(),
+            signature: self.signing_key.sign(
+                &VALIDATOR_SIGN_V1,
+                &proposal_signing_bytes(
+                    &self.shard,
+                    height,
+                    round,
+                    &Uint256(hash),
+                    self.engine.locked_round(),
+                    self.engine.locked_block(),
+                ),
+            ),
         };
         let proposal_bytes = encode_proposal(&proposal);
         self.blocks.insert(hash, block);
@@ -723,10 +730,8 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> = keys
-            .iter()
-            .map(|k| (k.public_key(), 1_000_000))
-            .collect();
+        let validators: Vec<(PublicKey, u64)> =
+            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
         let mut driver =
             ConsensusDriver::new(chain_id, shard, 1, &validators, keys[0].clone(), 0).unwrap();
 
@@ -740,7 +745,7 @@ mod tests {
             proposer_id: 0,
             signature: keys[0].sign(
                 &VALIDATOR_SIGN_V1,
-                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash)),
+                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash), None, None),
             ),
             qc_round: None,
             qc_block: None,
@@ -774,10 +779,8 @@ mod tests {
             .iter()
             .map(|s| SecretKey::from_seed(s).unwrap())
             .collect();
-        let validators: Vec<(PublicKey, u64)> = keys
-            .iter()
-            .map(|k| (k.public_key(), 1_000_000))
-            .collect();
+        let validators: Vec<(PublicKey, u64)> =
+            keys.iter().map(|k| (k.public_key(), 1_000_000)).collect();
         let mut driver =
             ConsensusDriver::new(chain_id, shard, 1, &validators, keys[1].clone(), 0).unwrap();
 
@@ -791,12 +794,14 @@ mod tests {
             proposer_id: 0,
             signature: keys[0].sign(
                 &VALIDATOR_SIGN_V1,
-                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash)),
+                &proposal_signing_bytes(&shard, 1, 0, &Uint256(block_hash), None, None),
             ),
             qc_round: None,
             qc_block: None,
         };
         let proposal_bytes = encode_proposal(&proposal);
+
+        // Validator 0's PreVote (created before driver sees the proposal).
 
         // Validator 0's PreVote (created before driver sees the proposal).
         let vote = ConsensusVote {
@@ -830,10 +835,9 @@ mod tests {
         // The driver (validator 1) votes, plus the buffered vote from validator 0.
         // Engine should be at PreCommit (2 PreVotes = quorum).
         assert!(
-            events.iter().any(|e| matches!(
-                e,
-                DriverEvent::BroadcastVote(_)
-            )),
+            events
+                .iter()
+                .any(|e| matches!(e, DriverEvent::BroadcastVote(_))),
             "driver should broadcast its vote"
         );
     }

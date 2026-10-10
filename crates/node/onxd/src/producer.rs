@@ -517,14 +517,19 @@ fn build_consensus_driver(
         workchain_id: onx_data_structures::WorkchainIdent(onx_primitives::Int32(-1)),
         shard_prefix_ident: onx_primitives::Uint64(onx_data_structures::ShardIdent::ROOT_PREFIX),
     };
-    crate::consensus_driver::ConsensusDriver::new(
+    let driver = crate::consensus_driver::ConsensusDriver::new(
         state.chain_id,
         shard,
         state.seqno as u64 + 1,
         &validators,
         signing_key.clone(),
         wall_clock_ms(),
-    )
+    )?;
+    // TODO(ADR-0049): call driver.set_head() with the head hash once the
+    // producer sets block.header.prev_hash correctly. Currently the producer
+    // does not set prev_hash, so enabling the check would reject all blocks.
+    // The check is dead until then.
+    Ok(driver)
 }
 
 #[derive(Debug)]

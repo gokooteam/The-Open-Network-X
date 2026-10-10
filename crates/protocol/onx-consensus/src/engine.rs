@@ -88,12 +88,24 @@ pub fn proposal_signing_bytes(
     height: u64,
     round: u32,
     hash: &Uint256,
+    qc_round: Option<u32>,
+    qc_block: Option<Uint256>,
 ) -> Vec<u8> {
     let mut bytes = b"ONX_CATCHAIN_PROPOSAL_V1".to_vec();
     bytes.extend_from_slice(&shard.to_bytes());
     bytes.extend_from_slice(&height.to_be_bytes());
     bytes.extend_from_slice(&round.to_be_bytes());
     bytes.extend_from_slice(&hash.0);
+    // ADR-0049: the QC fields are signed. Otherwise a Byzantine proposer could
+    // lie about the QC round to unlock honest validators (safety fork).
+    bytes.push(if qc_round.is_some() { 1 } else { 0 });
+    if let Some(r) = qc_round {
+        bytes.extend_from_slice(&r.to_be_bytes());
+    }
+    bytes.push(if qc_block.is_some() { 1 } else { 0 });
+    if let Some(b) = qc_block {
+        bytes.extend_from_slice(&b.0);
+    }
     bytes
 }
 
@@ -251,6 +263,8 @@ impl ConsensusEngine {
                     proposal.height,
                     proposal.round,
                     &proposal.block_hash,
+                    proposal.qc_round,
+                    proposal.qc_block,
                 ),
                 &proposal.signature,
             )

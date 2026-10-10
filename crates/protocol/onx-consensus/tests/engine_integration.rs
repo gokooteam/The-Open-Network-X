@@ -37,7 +37,7 @@ fn finalize(
         proposer_id: leader as u32,
         signature: keys[leader].sign(
             &VALIDATOR_SIGN_V1,
-            &proposal_signing_bytes(&shard, 42, engine.round(), &hash),
+            &proposal_signing_bytes(&shard, 42, engine.round(), &hash, None, None),
         ),
         qc_round: None,
         qc_block: None,
@@ -107,8 +107,7 @@ fn seven_nodes_change_view_after_byzantine_leader_and_finalize() {
 fn validator_locks_on_precommit_quorum() {
     let shard = ShardIdent::root(WorkchainIdent::BASIC);
     let (vals, keys) = validators(4);
-    let mut engine =
-        ConsensusEngine::new(shard, 42, vals, 0, RoundTimeouts::default()).unwrap();
+    let mut engine = ConsensusEngine::new(shard, 42, vals, 0, RoundTimeouts::default()).unwrap();
 
     let b1 = Uint256([1; 32]);
     // 3 of 4 validators (> 2/3) vote through all phases.
