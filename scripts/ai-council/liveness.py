@@ -71,8 +71,8 @@ def get_pr_participants(repo, pr_number):
             user = (r.get("user") or {}).get("login", "")
             if user:
                 participants.add(user)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: could not fetch reviews for PR #{pr_number}: {e}", file=sys.stderr)
 
     # Issue comments (relay bot posts turn summaries here)
     try:
@@ -82,10 +82,22 @@ def get_pr_participants(repo, pr_number):
             # Only count bot accounts and known relay posters to reduce noise
             if user and ("[bot]" in user or user in ("gokoo",)):
                 participants.add(user)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: could not fetch comments for PR #{pr_number}: {e}", file=sys.stderr)
 
     return participants
+
+
+def load_registry_participants():
+    """Load expected participant IDs from registry.yaml. Returns None if unavailable."""
+    try:
+        import yaml
+        with open(REGISTRY) as f:
+            reg = yaml.safe_load(f)
+        return {p["id"] for p in reg.get("participants", [])}
+    except Exception as e:
+        print(f"Warning: could not load registry at {REGISTRY}: {e}", file=sys.stderr)
+        return None
 
 
 def main():
@@ -121,6 +133,10 @@ def main():
         older_active.update(pr_activity[number]["mapped_participants"])
     gone_quiet = sorted(older_active - latest_active)
 
+    # Compare against registry expectations
+    expected = load_registry_participants()
+    missing_from_latest = sorted(expected - latest_active) if expected else []
+
     result = {
         "prs_checked": args.prs,
         "latest_pr": latest_pr,
@@ -129,11 +145,13 @@ def main():
         "all_observed_across_window": sorted(all_observed),
         "per_pr": pr_activity,
         "note": (
-            "Observed activity only. Compare against registry.yaml expected "
-            "participants to find gaps. A participant 'gone quiet' may be "
+            "Observed activity only. A participant 'gone quiet' may be "
             "UNAVAILABLE, or the PR may not have needed their review class."
         ),
     }
+    if expected is not None:
+        result["registry_expected"] = sorted(expected)
+        result["expected_but_absent_from_latest"] = missing_from_latest
 
     if args.json:
         print(json.dumps(result, indent=2))
@@ -149,6 +167,11 @@ def main():
             print("Gone quiet since last PR (seen before, not on latest):")
             for p in gone_quiet:
                 print(f"  ? {p}")
+        if missing_from_latest:
+            print()
+            print("In registry but absent from latest PR:")
+            for p in missing_from_latest:
+                print(f"  ✗ {p}")
         print()
         print("Per-PR breakdown:")
         for number, info in pr_activity.items():

@@ -75,7 +75,7 @@ participants:
     status: AVAILABLE
     availability_check: ".github/workflows/claude-review.yml completes successfully on a PR push"
     last_successful_check: "2026-10-10"
-    failure_policy: "Turn 1 is the primary audit. If Claude is UNAVAILABLE, consensus-impact PRs MUST NOT proceed without an explicit Amethyst override. Docs-only PRs may proceed with a warning."
+    failure_policy: "Turn 1 is the primary audit. If Claude is UNAVAILABLE, the relay's tally() still requires 2 GO verdicts with no standing NO-GO — but without the primary audit, confidence is reduced. Consensus-impact PRs SHOULD NOT proceed without an explicit Amethyst override. Docs-only PRs may proceed with a warning."
     notes: "Audit-only per the checks-only rule. Also powers turn-2 (second_opinion) and turn-3 (synthesis_moderator) via review-relay.yml."
 
   - id: coderabbit

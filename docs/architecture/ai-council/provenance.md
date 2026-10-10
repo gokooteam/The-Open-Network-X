@@ -44,7 +44,7 @@ The consensus verdict (GO or NO-GO), the `Review consensus` commit status, and â
 
 | Element | Location |
 |---------|----------|
-| Expected participants | `registry.yaml` (at the merge commit) |
+| Expected participants | `registry.yaml` at the reviewed commit (not the merge commit â€” the registry may change between review and merge) |
 | Actual reviews | PR review list (GitHub API) |
 | Turn 1 findings | Claude's summary comment |
 | Turn 2 second opinion | Relay turn-2 review |
