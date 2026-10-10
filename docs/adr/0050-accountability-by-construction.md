@@ -42,11 +42,7 @@ Specifically:
 
 The goal is to make dishonesty **irrational**, not just difficult.
 
-If detection is certain and the evidence is undeniable, the expected cost
-of cheating (certainty × penalty) exceeds any possible gain for a rational
-actor. This is stronger than making cheating *hard* — hard just raises the
-bar for sophisticated attackers. Certain detection changes the incentive
-calculation entirely.
+Every protocol message carries enough context that misbehavior is provable by anyone, from the messages alone — no trusted observer needed. Because detection is certain and the cost always exceeds the gain, a rational actor does not cheat. This is stronger than making cheating *hard* — hard just raises the bar for sophisticated attackers. Certain detection changes the incentive calculation entirely.
 
 This principle also simplifies the security model. Instead of reasoning
 about "what if an attacker does X and we don't catch them," we reason about

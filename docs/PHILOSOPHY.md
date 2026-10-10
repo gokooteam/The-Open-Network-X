@@ -8,7 +8,7 @@ This is not marketing. It is the reasoning behind our decisions, written down so
 
 ## Accountability by construction
 
-> Every protocol message carries enough context that equivocation is cryptographically provable by anyone, no trusted observer needed. The goal isn't to make cheating hard — it's to make it irrational, because detection is certain.
+> Every protocol message carries enough context that misbehavior is provable by anyone, from the messages alone — no trusted observer needed. The goal isn't to make cheating hard; it's to make it irrational, because detection is certain and the cost always exceeds the gain.
 
 We do not merely resist attack. We structure the protocol so that attacking generates undeniable proof of the attack. A rational actor, knowing detection is certain, does not cheat. (ADR-0050)
 
