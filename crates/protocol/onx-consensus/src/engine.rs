@@ -151,6 +151,14 @@ pub struct ConsensusEngine {
     /// round for a different block.
     locked_block: Option<Uint256>,
     locked_round: Option<u32>,
+    /// Proof of Lock (Tendermint POL): block hash -> highest round in which
+    /// this validator observed 2/3+ PreVotes for that block. Persists across
+    /// rounds (NOT cleared on timeout). A locked validator unlocks for a
+    /// proposal carrying a different block only if its own POL shows 2/3+
+    /// PreVotes for that block at a round higher than the lock round.
+    /// This replaces trusting the proposer's claimed qc_round, which a
+    /// Byzantine leader could forge to unlock honest validators (safety fork).
+    pol: BTreeMap<Uint256, u32>,
 }
 
 /// Quorum certificate: >2/3 stake of PreCommit votes for a block at a round.
@@ -196,6 +204,7 @@ impl ConsensusEngine {
             finalized: None,
             locked_block: None,
             locked_round: None,
+            pol: BTreeMap::new(),
         })
     }
     pub fn step(&self) -> ConsensusStep {
@@ -276,12 +285,17 @@ impl ConsensusEngine {
             return Ok(());
         }
         // ADR-0049 locking: if locked on a different block, only accept if
-        // the proposal carries a QC from a higher round than the lock.
+        // this validator has PERSONALLY observed 2/3+ PreVotes for the
+        // proposed block at a round higher than the lock round (Tendermint
+        // Proof-of-Lock). We do NOT trust the proposer's claimed qc_round:
+        // a Byzantine leader could forge it to unlock honest validators and
+        // cause a safety fork. The qc_round/qc_block fields remain in the
+        // proposal as informational hints only.
         if let (Some(locked), Some(locked_r)) = (self.locked_block, self.locked_round) {
             if proposal.block_hash != locked {
-                match proposal.qc_round {
-                    Some(qc_r) if qc_r > locked_r => {
-                        // Unlock: the QC justifies a different block.
+                match self.pol.get(&proposal.block_hash) {
+                    Some(&pol_r) if pol_r > locked_r => {
+                        // Unlock: our own observed POL justifies the switch.
                         self.locked_block = None;
                         self.locked_round = None;
                     }
@@ -370,7 +384,17 @@ impl ConsensusEngine {
     }
     fn advance_after_quorum(&mut self, phase: VotePhase) {
         match phase {
-            VotePhase::PreVote => self.step = ConsensusStep::PreCommit,
+            VotePhase::PreVote => {
+                // Record Proof-of-Lock: 2/3+ PreVotes observed for this block
+                // at this round. Persists across rounds for unlock decisions.
+                if let Some(p) = &self.proposal {
+                    let entry = self.pol.entry(p.block_hash).or_insert(0);
+                    if self.round > *entry {
+                        *entry = self.round;
+                    }
+                }
+                self.step = ConsensusStep::PreCommit;
+            }
             VotePhase::PreCommit => {
                 // ADR-0049: lock on the block when PreCommit quorum is reached.
                 // A locked validator only votes for this block in future rounds,

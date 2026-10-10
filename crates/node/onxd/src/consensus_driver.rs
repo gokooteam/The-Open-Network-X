@@ -156,11 +156,13 @@ impl ConsensusDriver {
     /// changed (view change).
     pub fn on_tick(&mut self, now: u64) -> bool {
         if self.engine.on_timeout(now) {
-            // Votes never cross round boundaries.
+            // Votes never cross round boundaries (engine clears its own).
+            // But DON'T clear the pending buffer: it may hold votes for the
+            // new round (buffered as future-round). They'll be retried on the
+            // next receive_vote and accepted if valid, or rejected if stale.
             self.header_sigs.clear();
             self.voted.clear();
             self.proposed_round = None;
-            self.pending.clear();
             return true;
         }
         false
@@ -372,11 +374,13 @@ impl ConsensusDriver {
                     .map_err(|_| "consensus: bad header signature on commit vote".to_string())?;
                 Some((vote.validator_id, sig))
             } else {
-                None
+                // A Commit vote WITHOUT a header signature is rejected: it
+                // would count toward engine finality but contribute no
+                // SigEntry, leaving the block under-authenticated. The engine
+                // doesn't know about header sigs, so the driver must enforce
+                // this.
+                return Err("consensus: commit vote missing header signature".to_string());
             }
-            // Note: a commit vote WITHOUT a header sig is still a valid
-            // engine vote (the engine doesn't know about header sigs), but
-            // it contributes no SigEntry at finalization.
         } else {
             None
         };
