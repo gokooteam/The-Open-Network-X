@@ -397,7 +397,10 @@ impl ConsensusDriver {
                     self.pending.push(vote_bytes.to_vec());
                     return Ok(Vec::new());
                 }
-                return Err(format!("consensus: vote rejected: {:?}", onx_consensus::ConsensusError::InvalidRound));
+                return Err(format!(
+                    "consensus: vote rejected: {:?}",
+                    onx_consensus::ConsensusError::InvalidRound
+                ));
             }
             Err(onx_consensus::ConsensusError::ConflictingProposal)
                 if self.engine.proposal().is_none() =>
